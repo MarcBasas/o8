@@ -6,6 +6,10 @@ These are candidates for the next release, not shipped claims. Rows stay pending
 until their acceptance checks pass and release inclusion is verified. GitHub may
 close an issue when its PR merges; keep that row here until it ships.
 
+Integration PR #2812 carries the completed stack onto main without draft worker
+layout changes. The original PRs below retain their individual review evidence.
+Restart receipt recovery is tracked separately in #2813.
+
 ## Candidate closures
 
 | Issue | Change | PR | Remaining acceptance |
@@ -26,6 +30,7 @@ close an issue when its PR merges; keep that row here until it ships.
 | #2804 | Align dialog packages for native bundling | #2805 | Release inclusion |
 | #2806 | Keep keyboard focus inside onboarding | #2807 | Release inclusion |
 | #2808 | Visible microphone-test button | #2809 | Release inclusion |
+| #2811 | Recover unfinished agent setup receipts after restart | #2813 | Release inclusion |
 
 ## Final acceptance
 
