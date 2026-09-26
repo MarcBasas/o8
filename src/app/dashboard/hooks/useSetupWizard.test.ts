@@ -78,6 +78,15 @@ describe('setup wizard startup detection', () => {
     expect(current.value?.setupWizardOpen).toBe(true);
     expect(current.value?.setupCheckComplete).toBe(true);
   });
+  it('recovers an unfinished agent receipt even after setup completion was saved', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ setupComplete: true, agentSetupPending: true })));
+    const current = { value: null as ReturnType<typeof useSetupWizard> | null };
+    mounted = mountHook((value) => { current.value = value; });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(current.value?.setupWizardOpen).toBe(true);
+    expect(current.value?.setupCheckComplete).toBe(true);
+    expect(mocks.loadSetupDetection).not.toHaveBeenCalled();
+  });
   it('returns to the saved permission check even on a previously completed install', async () => {
     localStorage.setItem('o8:onboarding-permissions-resume:v1', 'pending');
     const fetch = vi.fn(async () => Response.json({ setupComplete: true }));

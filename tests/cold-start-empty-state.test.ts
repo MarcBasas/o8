@@ -36,6 +36,7 @@ describe('cold start with only CORTEX_IDE_DATA_DIR configured', () => {
     await expect(configResponse.json()).resolves.toEqual({
       setupComplete: false,
       skippedSteps: [],
+      agentSetupPending: false,
     });
     await expect(listRepos()).resolves.toEqual([]);
 

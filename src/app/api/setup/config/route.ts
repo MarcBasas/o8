@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { installClaudeCodePreToolHook } from '@/lib/hooks/install-hooks';
 import { getDataDir } from '@/lib/data-dir-migration';
 import type { SetupConfig } from '@/lib/setup/types';
+import { readAgentSetupRequest } from '@/lib/setup/agent-request-store';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -57,7 +58,12 @@ function mergeConfig(current: SetupConfig, patch: Partial<SetupConfig>): SetupCo
 
 export async function GET() {
   const config = readConfig();
-  return NextResponse.json(config);
+  try {
+    const request = readAgentSetupRequest();
+    return NextResponse.json({ ...config, agentSetupPending: Boolean(request && !['opened', 'cancelled'].includes(request.status)) });
+  } catch {
+    return NextResponse.json({ error: { code: 'setup_recovery_unavailable', message: 'Could not read the pending setup request.' } }, { status: 500 });
+  }
 }
 
 export async function POST(request: NextRequest) {
