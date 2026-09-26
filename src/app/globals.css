@@ -1049,6 +1049,15 @@ button.workflow-file-item.workflow-file-item-active {
   box-shadow: 0 10px 24px rgba(59, 130, 246, 0.08);
 }
 
+/* Compact worker meshes scroll without drawing a competing rail. */
+[data-session-worker-scroll] {
+  scrollbar-width: none;
+}
+
+[data-session-worker-scroll]::-webkit-scrollbar {
+  display: none;
+}
+
 .workflow-file-item p,
 .workflow-pr-item p,
 .workflow-worktree-item p,

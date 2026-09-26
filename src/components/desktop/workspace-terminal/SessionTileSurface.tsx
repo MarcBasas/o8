@@ -11,7 +11,7 @@
  * component state across split/resize/close changes.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
-import { ConnectedLiveSessionMesh, projectLiveSessionMeshParticipants } from '@/components/desktop/workspace-terminal/LiveSessionMesh';
+import { projectLiveSessionMeshParticipants } from '@/components/desktop/workspace-terminal/LiveSessionMesh';
 import { SessionTranscriptPane } from '@/components/desktop/SessionTranscriptPane';
 export { projectLiveSessionMeshParticipants };
 import { ThreadChatPane } from '@/components/desktop/workspace-terminal/ThreadChatPane';
@@ -19,11 +19,11 @@ import {
   collectAllLeaves,
   computeSessionTileLayout,
   type SessionTileLayout,
+  type SessionTileLeaf,
   type SessionTileRect,
   type SessionTileSplitDirection,
   type SessionTileSplitFrame,
 } from '@/lib/orchestrator/session-tiles';
-import { collectSessionTileMeshGroups } from '@/lib/orchestrator/session-tile-mesh';
 
 interface SessionTileSurfaceProps {
   layout: SessionTileLayout;
@@ -34,6 +34,12 @@ interface SessionTileSurfaceProps {
   onResizeSplit: (splitId: string, ratio: number) => void;
   onCloseLeaf: (leafId: string) => void;
   onFocusSession: (sessionKey: string) => void;
+  /** Compact automatic worker stacks have presentation-only split IDs. */
+  disableResizeHandles?: boolean;
+  /** Compact worker rows scroll independently while chat remains full-height. */
+  workerScrollRows?: number;
+  /** Development previews can exercise the real split geometry without launching agents. */
+  renderSessionPane?: (leaf: SessionTileLeaf) => ReactNode;
 }
 
 const HANDLE_SIZE = 8;
@@ -47,6 +53,9 @@ export function SessionTileSurface({
   onResizeSplit,
   onCloseLeaf,
   onFocusSession,
+  disableResizeHandles = false,
+  workerScrollRows = 0,
+  renderSessionPane,
 }: SessionTileSurfaceProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Track listeners so we can remove them on unmount-during-drag (issue #818).
@@ -70,37 +79,19 @@ export function SessionTileSurface({
     };
   }, []);
 
-  const { leaves, leafRects, splitFrames, meshFrames, meshedLeafIds } = useMemo(() => {
+  const { leaves, leafRects, splitFrames } = useMemo(() => {
     const { leafRects, splitFrames } = computeSessionTileLayout(layout.root);
     const leaves = collectAllLeaves(layout.root);
-    const meshGroups = collectSessionTileMeshGroups(layout.root);
-    const meshedLeafIds = new Set(meshGroups.flatMap((group) => (
-      group.leaves.map((leaf) => leaf.id)
-    )));
-    const meshFrames = meshGroups.flatMap((group) => {
-      const rects = group.leaves
-        .map((leaf) => leafRects.get(leaf.id))
-        .filter((rect): rect is SessionTileRect => Boolean(rect));
-      if (rects.length === 0) return [];
-      const left = Math.min(...rects.map((rect) => rect.left));
-      const top = Math.min(...rects.map((rect) => rect.top));
-      const right = Math.max(...rects.map((rect) => rect.left + rect.width));
-      const bottom = Math.max(...rects.map((rect) => rect.top + rect.height));
-      return [{
-        ...group,
-        rect: { left, top, width: right - left, height: bottom - top },
-      }];
-    });
-    const internalMeshSplitIds = new Set(
-      meshGroups.flatMap((group) => group.internalSplitIds),
-    );
-    return {
-      leaves,
-      leafRects,
-      splitFrames: splitFrames.filter((frame) => !internalMeshSplitIds.has(frame.id)),
-      meshFrames,
-      meshedLeafIds,
-    };
+    return { leaves, leafRects, splitFrames };
+  }, [layout.root]);
+  const workerGroup = useMemo(() => {
+    const root = layout.root;
+    if (root.type !== 'split' || root.direction !== 'vertical'
+      || root.children[0].type !== 'leaf' || root.children[0].kind !== 'chat') return null;
+    const workers = collectAllLeaves(root.children[1]);
+    return workers.length > 0 && workers.every((leaf) => leaf.kind === 'session' && leaf.sessionSurface === 'mesh')
+      ? { chat: root.children[0], workers, ratio: root.ratio }
+      : null;
   }, [layout.root]);
 
   // FLIP morph (motion audit 003): the percentage rect stays the resting
@@ -115,7 +106,7 @@ export function SessionTileSurface({
     const prev = prevRectsRef.current;
     prevRectsRef.current = leafRects;
     const container = containerRef.current;
-    if (!prev || !container) return;
+    if (!prev || !container || workerGroup) return;
 
     const structural = prev.size !== leafRects.size
       || Array.from(leafRects.keys()).some((id) => !prev.has(id));
@@ -153,14 +144,7 @@ export function SessionTileSurface({
         node.style.transform = '';
       }
     };
-  }, [leafRects]);
-
-  useEffect(() => {
-    const meshed = new Set(meshFrames.flatMap((mesh) => (
-      mesh.leaves.map((leaf) => leaf.id)
-    )));
-    for (const leafId of meshed) leafNodesRef.current.delete(leafId);
-  }, [meshFrames]);
+  }, [leafRects, workerGroup]);
 
   const makeResizeStart = useCallback(
     (splitId: string, direction: SessionTileSplitDirection, container: SessionTileRect) =>
@@ -197,33 +181,25 @@ export function SessionTileSurface({
     [onResizeSplit],
   );
 
-  return (
-    <div
-      ref={containerRef}
-      data-session-tile-surface="true"
-      style={{
-        position: 'relative',
-        flex: 1,
-        minHeight: 0,
-        minWidth: 0,
-        background: 'var(--t-chat-surface-bg, #ffffff)',
-      }}
-    >
-      {leaves.filter((leaf) => !meshedLeafIds.has(leaf.id)).map((leaf) => {
-        const rect = leafRects.get(leaf.id);
-        if (!rect) return null;
-        return (
+  const renderLeaf = (leaf: SessionTileLeaf) => {
+    const rect = leafRects.get(leaf.id);
+    if (!rect) return null;
+    const inWorkerGroup = workerGroup !== null && leaf.kind === 'session';
+    const left = inWorkerGroup ? (rect.left - workerGroup.ratio) / (1 - workerGroup.ratio) : rect.left;
+    const width = inWorkerGroup ? rect.width / (1 - workerGroup.ratio) : rect.width;
+    return (
           <div
             key={leaf.id}
+            data-session-tile-leaf-id={leaf.id}
             ref={(node) => {
               if (node) leafNodesRef.current.set(leaf.id, node);
               else leafNodesRef.current.delete(leaf.id);
             }}
             style={{
               position: 'absolute',
-              left: `${rect.left * 100}%`,
+              left: `${left * 100}%`,
               top: `${rect.top * 100}%`,
-              width: `${rect.width * 100}%`,
+              width: `${width * 100}%`,
               height: `${rect.height * 100}%`,
               display: 'flex',
               flexDirection: 'column',
@@ -241,7 +217,8 @@ export function SessionTileSurface({
                   minWidth: 0,
                   display: 'flex',
                   flexDirection: 'column',
-                }}
+                  '--o8-compose-first-rail-clearance': leaves.some((entry) => entry.kind === 'session') ? '0px' : undefined,
+                } as CSSProperties}
               >
                 {chatSlot}
               </div>
@@ -284,42 +261,55 @@ export function SessionTileSurface({
                   paddingLeft: 8,
                 }}
               >
-                <SessionTranscriptPane
-                  sessionKey={leaf.sessionKey}
-                  focused={focusedSessionKey === leaf.sessionKey}
-                  onFocus={onFocusSession}
-                  onClose={() => onCloseLeaf(leaf.id)}
-                />
+                {renderSessionPane ? renderSessionPane(leaf) : (
+                  <SessionTranscriptPane
+                    sessionKey={leaf.sessionKey}
+                    focused={focusedSessionKey === leaf.sessionKey}
+                    onFocus={onFocusSession}
+                    onClose={() => onCloseLeaf(leaf.id)}
+                  />
+                )}
               </div>
             ) : null}
           </div>
-        );
-      })}
-      {meshFrames.map((mesh) => (
+    );
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      data-session-tile-surface="true"
+      style={{
+        position: 'relative',
+        flex: 1,
+        minHeight: 0,
+        minWidth: 0,
+        background: 'var(--t-chat-surface-bg, #ffffff)',
+      }}
+    >
+      {workerGroup ? [renderLeaf(workerGroup.chat)] : leaves.map(renderLeaf)}
+      {workerGroup ? (
         <div
-          key={`mesh-${mesh.id}`}
-          data-live-session-mesh-region={mesh.id}
+          data-session-worker-scroll={workerScrollRows > 0 ? 'true' : undefined}
+          tabIndex={workerScrollRows > 0 ? 0 : undefined}
+          aria-label={workerScrollRows > 0 ? 'Worker panes' : undefined}
           style={{
             position: 'absolute',
-            left: `${mesh.rect.left * 100}%`,
-            top: `${mesh.rect.top * 100}%`,
-            width: `${mesh.rect.width * 100}%`,
-            height: `${mesh.rect.height * 100}%`,
-            minWidth: 0,
-            minHeight: 0,
-            display: 'flex',
-            overflow: 'hidden',
+            left: `${workerGroup.ratio * 100}%`,
+            top: 0,
+            width: `${(1 - workerGroup.ratio) * 100}%`,
+            height: '100%',
+            overflowY: workerScrollRows > 0 ? 'auto' : 'hidden',
+            overflowX: 'hidden',
+            overscrollBehavior: 'contain',
           }}
         >
-          <ConnectedLiveSessionMesh
-            leaves={mesh.leaves}
-            focusedSessionKey={focusedSessionKey}
-            onFocusSession={onFocusSession}
-            onCloseLeaf={onCloseLeaf}
-          />
+          <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: workerScrollRows > 0 ? workerScrollRows * 240 : undefined }}>
+            {workerGroup.workers.map(renderLeaf)}
+          </div>
         </div>
-      ))}
-      {splitFrames.map((frame) => (
+      ) : null}
+      {!disableResizeHandles && splitFrames.map((frame) => (
         <SessionResizeHandle
           key={frame.id}
           frame={frame}

@@ -254,7 +254,8 @@ const O8_SPEC_PANEL_TARGET_WIDTH = 600;
 // ~960px; 3+ horizontally scroll (see ComparisonMatrix).
 const O8_COMPARE_PANEL_TARGET_WIDTH = 960;
 const RESPONSIVE_RIGHT_PANEL_COLLAPSE_WIDTH = 1180;
-const RESPONSIVE_LEFT_PANEL_COLLAPSE_WIDTH = 900;
+// Fold to the existing rail before a four-worker split loses readable width.
+const RESPONSIVE_LEFT_PANEL_COLLAPSE_WIDTH = 1280;
 const RESPONSIVE_COMPACT_SHELL_WIDTH = 420;
 const O8_ACTIVE_TAB_STORAGE_KEY = 'o8ActiveTab';
 // The right panel opens on Browser — a calm launcher ("get to anything") rather
