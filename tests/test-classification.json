@@ -139,6 +139,12 @@
       ]
     },
     {
+      "path": "src/components/desktop/onboarding/onboarding-projects.test.ts",
+      "reasons": [
+        "native-build"
+      ]
+    },
+    {
       "path": "src/components/desktop/thoughts/mission-panel/PacketMetaRows.test.ts",
       "reasons": [
         "apfs-tool"
@@ -1064,6 +1070,15 @@
     {
       "path": "tests/agent-message-bus-real-path.test.ts",
       "reasons": [
+        "real-path"
+      ]
+    },
+    {
+      "path": "tests/agent-setup-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "network-listener",
         "real-path"
       ]
     },

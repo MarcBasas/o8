@@ -15,8 +15,8 @@ const MAX_EFFORTS = ['max'] as const satisfies readonly ManualThinkingEffort[];
 
 /**
  * Verified model-catalog receipt: ~/.codex/models_cache.json client_version
- * 0.158.0, fetched 2026-09-26T13:39:47Z. This is separate from the installed
- * CLI binary receipt (0.153.4 observed 2026-09-19). Use exact own-key matches;
+ * 0.158.0, fetched 2026-09-26T22:55:29Z. This is separate from the installed
+ * CLI binary receipt (0.157.1 observed 2026-09-26). Use exact own-key matches;
  * do not infer support from a provider prefix, a future model name, or a version.
  */
 export const CODEX_HIGH_END_EFFORT_CATALOG: Readonly<Record<string, readonly ManualThinkingEffort[]>> = Object.freeze({

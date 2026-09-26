@@ -31,6 +31,10 @@ describe('model setup navigation', () => {
     defaultsFetch.mockReset();
     defaultsFetch.mockImplementation(async () => Response.json(defaults));
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).startsWith('/api/panel/operator-defaults')) return Response.json({ dispatchableRuntimes: [
+        { id: 'gemini', label: 'Gemini', available: false, unavailableReason: 'needs_auth', detail: '', fix: 'Sign in' },
+        { id: 'antigravity', label: 'Antigravity', available: true, unavailableReason: null, detail: '', fix: '' },
+      ] });
       if (String(input) === '/api/setup/detect') return Response.json({ tools: [
         { id: 'gemini', detected: true, ready: false },
         { id: 'antigravity', detected: true, ready: true },
@@ -59,7 +63,7 @@ describe('model setup navigation', () => {
     expect(tools?.querySelector('summary')?.textContent).toContain('Ready: Antigravity');
     expect(tools?.textContent).toContain('Legacy Gemini CLI (gemini) for enterprise or paid API access');
     expect(tools?.textContent).toContain('Google Antigravity CLI (agy) for free and AI Pro/Ultra accounts');
-    expect(tools?.textContent).toContain('GitHub Copilot CLI');
+    expect(tools?.textContent).not.toContain('GitHub Copilot CLI');
     expect(tools?.textContent).toContain('Not checked');
     const review = [...container.querySelectorAll('span')].find(element => element.textContent === 'Code review provider');
     expect(review).toBeDefined();
