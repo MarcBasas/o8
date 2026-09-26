@@ -31,6 +31,7 @@ const token = 'setup-operator-fixture-token';
 writeFileSync(join(data, 'ws-token'), token);
 writeFileSync(join(data, 'worker-token'), 'local-worker-token-setup-fixture');
 const route = await import('@/app/api/setup/agent/route');
+const configRoute = await import('@/app/api/setup/config/route');
 const { panelGateMiddleware } = await import('@/middleware');
 const { handleOperatorMcpMessage } = await import('@/lib/mcp/operator-mcp-host');
 const { setApiBase } = await import('@/lib/mcp/operator-handlers/shared');
@@ -40,7 +41,8 @@ const server = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk.toString();
     const request = new NextRequest(`http://127.0.0.1:${port}${req.url}`, { method: req.method, headers: req.headers as Record<string, string>, ...(body ? { body } : {}) });
     const gate = panelGateMiddleware(request);
-    const response = gate.status !== 200 ? gate : req.method === 'POST' ? await route.POST(request) : await route.GET(request);
+    const response = gate.status !== 200 ? gate : req.url === '/api/setup/config' ? await configRoute.GET()
+      : req.method === 'POST' ? await route.POST(request) : await route.GET(request);
     res.writeHead(response.status, { 'Content-Type': 'application/json' }); res.end(await response.text());
   } catch (error) { res.writeHead(500); res.end(JSON.stringify({ error: String(error) })); }
 });
@@ -131,4 +133,27 @@ it('registers once, keeps requests pending until the app acknowledges, and makes
   expect((await mcp({ action: 'status' })).data.request.status).toBe('interrupted');
   expect((await post({ action: 'renew', requestId: expired.id, claimId: expired.claimId })).ok).toBe(false);
   expect((await mcp({ action: 'cancel', requestId: expired.id })).data.request.status).toBe('cancelled');
+});
+
+it('restores setup recovery after completion was saved but the app receipt was lost', async () => {
+  const open = await mcp({ action: 'open', path: repo });
+  const id = open.data.request.id;
+  expect((await post({ action: 'claim', requestId: id })).ok).toBe(true);
+  writeFileSync(join(data, 'setup.json'), JSON.stringify({ setupComplete: true }));
+  const receiptPath = join(data, 'agent-setup-request.json');
+  const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+  writeFileSync(receiptPath, JSON.stringify({ ...receipt, leaseExpiresAt: new Date(0).toISOString() }));
+  const readConfig = async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/setup/config`, { headers: { authorization: `Bearer ${token}` } });
+    expect(response.ok).toBe(true);
+    return response.json();
+  };
+  expect(await readConfig()).toMatchObject({ setupComplete: true, agentSetupPending: true });
+  expect((await mcp({ action: 'status' })).data.request.status).toBe('interrupted');
+  expect((await post({ action: 'claim', requestId: id })).ok).toBe(true);
+  expect((await post({ action: 'ack', requestId: id, status: 'opened' })).ok).toBe(true);
+  expect(await readConfig()).toMatchObject({ setupComplete: true, agentSetupPending: false });
+  const next = await mcp({ action: 'open', path: repo });
+  expect((await mcp({ action: 'cancel', requestId: next.data.request.id })).error).not.toBe(true);
+  expect((await readConfig()).agentSetupPending).toBe(false);
 });

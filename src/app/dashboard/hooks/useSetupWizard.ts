@@ -27,7 +27,7 @@ export function useSetupWizard() {
         // dashboard startup. That route probes several local binaries and can
         // hold the server event loop long enough to delay UI chunks. Detection
         // remains part of the onboarding and explicit settings paths.
-        if (config.setupComplete || config.completedAt) return;
+        if ((config.setupComplete || config.completedAt) && !config.agentSetupPending) return;
         // The combined tools step owns discovery when the user reaches it.
         setSetupWizardOpen(true);
       } catch { /* silent — don't block dashboard */ }
