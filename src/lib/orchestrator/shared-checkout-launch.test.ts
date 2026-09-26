@@ -41,6 +41,44 @@ afterEach(() => {
 });
 
 describe('Fast worker launch', () => {
+  it('admits ten concurrent workers with distinct scopes into one checkout', async () => {
+    const repoPath = fixture();
+    const parentThreadId = 'thoughts-ten-worker-team';
+    const watched: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      watched.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return { ok: true };
+    }));
+
+    const workers = await Promise.all(Array.from({ length: 10 }, (_, index) => launchSharedCheckoutWorker({
+      repoPath,
+      parentThreadId,
+      runtime: 'codex',
+      model: 'gpt-6-sol',
+      readOnly: false,
+      repoInProject: true,
+      prompt: `Edit worker ${index}`,
+      taskName: `Worker ${index}`,
+      clientMutationId: `ten-worker-${index}`,
+      assignedPaths: [`proof/worker-${index}.txt`],
+    })));
+
+    expect(workers.every((worker) => worker.ok)).toBe(true);
+    expect(new Set(workers.map((worker) => worker.surfaceId)).size).toBe(10);
+    expect(new Set(launchRuntimeSurface.mock.calls.map(([input]) => input.repoPath)).size).toBe(1);
+    expect(launchRuntimeSurface).toHaveBeenCalledTimes(10);
+    expect(watched).toHaveLength(10);
+    expect(watched.every((receipt) => (
+      (receipt.launchContext as { parentThreadId?: string })?.parentThreadId === parentThreadId
+    ))).toBe(true);
+    const team = readSharedCheckoutTeam({ repoPath, parentThreadId });
+    expect(team?.members).toHaveLength(10);
+    expect(team?.members.every((member) => member.state === 'running')).toBe(true);
+    expect(team?.members.flatMap((member) => member.paths).sort()).toEqual(
+      Array.from({ length: 10 }, (_, index) => `proof/worker-${index}.txt`).sort(),
+    );
+  });
+
   it('launches two runtime surfaces into one checkout and binds both to the parent chat', async () => {
     const repoPath = fixture();
     const parentThreadId = 'thoughts-fast-team';
