@@ -47,9 +47,20 @@ import { brainRouteCacheKeySync, usesManagedBrainInferenceSync } from '@/lib/ope
 
 const CACHE_TTL_MS = 30 * 60_000;
 
+type CachedSourcesPayload = {
+  count: number;
+  retrievalMs: number;
+  top: Array<{ kind: string; title: string }>;
+  classifier?: 'referee';
+  classificationReceiptId?: string | null;
+};
+
 interface CacheEntry {
   answer: string;
   citations: Citation[];
+  /** The retrieval provenance emitted with the answer. Optional because an
+   *  entry can outlive a hot reload that introduced this field. */
+  sources?: CachedSourcesPayload;
   expiresAt: number;
   /** Scope fingerprint (repoPath + projectId) — semantic matches must never
    *  cross repo/project boundaries. */
@@ -219,11 +230,7 @@ function classifierMeta(classification: { classifier?: 'referee'; receiptId?: st
  * sources" live while the model is still writing, with the top titles as
  * the minimal preview ("what is he looking at").
  */
-function buildSourcesPayload(topRows: TypedRow[], retrievalMs: number, meta: ClassifierMeta = {}): {
-  count: number;
-  retrievalMs: number;
-  top: Array<{ kind: string; title: string }>;
-} & ClassifierMeta {
+function buildSourcesPayload(topRows: TypedRow[], retrievalMs: number, meta: ClassifierMeta = {}): CachedSourcesPayload {
   return {
     count: topRows.length,
     retrievalMs,
@@ -430,6 +437,7 @@ async function runAskCortexUncached(
     setCache(key, {
       answer: result.answer,
       citations,
+      sources: buildSourcesPayload(topRows, retrievalMs, classifierMeta(classification)),
       scope: scopeKey(repoPath, projectId, composeOptions.terse === true),
     });
     attachVector(key, question);
@@ -461,6 +469,9 @@ export async function runAskPipeline(
     const cached = getCached(key);
     if (cached) {
       // Replay cached answer from SSE frames.
+      // Older in-memory entries predate stored provenance. Do not manufacture
+      // a count or classifier for them.
+      if (cached.sources) emit('sources', cached.sources);
       emit('token', { text: cached.answer });
       for (const c of cached.citations) {
         emit('citation', c);
@@ -471,6 +482,9 @@ export async function runAskPipeline(
     // Semantic cache (#1226) — replay a cosine-near duplicate's answer.
     const semantic = await getSemanticCached(question, scopeKey(repoPath, projectId, options.terse === true));
     if (semantic) {
+      // Semantic entries retain the source provenance of their original
+      // answer and use the same old-entry boundary as exact hits.
+      if (semantic.sources) emit('sources', semantic.sources);
       emit('token', { text: semantic.answer });
       for (const c of semantic.citations) {
         emit('citation', c);
@@ -489,6 +503,7 @@ export async function runAskPipeline(
     bm25Variants: [question],
   };
   let topRows: TypedRow[] = grepRows ?? [];
+  let cachedSources: CachedSourcesPayload;
 
   if (!grepRows) {
     // 1+2. Classify and retrieve OVERLAPPED (#1227) — see askCortex for the
@@ -525,9 +540,11 @@ export async function runAskPipeline(
     }
     // Surface what retrieval found BEFORE composition starts — the live
     // "found N sources" signal every UI renders while the model writes.
-    emit('sources', buildSourcesPayload(topRows, Date.now() - retrievalStart, classifierMeta(classification)));
+    cachedSources = buildSourcesPayload(topRows, Date.now() - retrievalStart, classifierMeta(classification));
+    emit('sources', cachedSources);
   } else {
-    emit('sources', buildSourcesPayload(topRows, 0));
+    cachedSources = buildSourcesPayload(topRows, 0);
+    emit('sources', cachedSources);
   }
 
   // 3. Compose — stream answer tokens + citations.
@@ -570,6 +587,7 @@ export async function runAskPipeline(
     setCache(key, {
       answer: cachedAnswer.trim(),
       citations: cachedCitations,
+      sources: cachedSources,
       scope: scopeKey(repoPath, projectId, options.terse === true),
     });
     attachVector(key, question);
