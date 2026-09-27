@@ -4,11 +4,10 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useO8Auth } from '@/components/auth/O8AuthProvider';
 import { useEntitlement } from '@/lib/entitlement/context';
-import { ChromeButton } from '../chrome/ChromeButton';
+import { ChromeButton, SIDEBAR_FOOTER_HIT_SIZE } from '../chrome/ChromeButton';
 import { DeviceMobileIcon } from '../desktop-status-bar/status-bar-icons';
 import { SettingsQuickDrawer } from '../SettingsQuickDrawer';
-import { WhatsNewCard } from './WhatsNewCard';
-import { SymonMachineControl, SymonOrbStatusLine } from '../dictation/SymonMachineControl';
+import { SymonMachineControl, SymonOrbStatusLine, useSymonOrbMinimized } from '../dictation/SymonMachineControl';
 
 interface AccountBlockProps {
   onOpenSettings?: () => void;
@@ -17,7 +16,7 @@ interface AccountBlockProps {
   onOpenMobilePairing?: () => void;
 }
 
-type AccountPopover = 'menu' | 'whats-new' | null;
+type AccountPopover = 'menu' | null;
 
 const NOOP = () => {};
 
@@ -33,6 +32,8 @@ function symonVoiceActive() {
 
 function SymonVoiceEntry() {
   const active = useSyncExternalStore(subscribeToSymonVoice, symonVoiceActive, () => false);
+  const minimized = useSymonOrbMinimized();
+  if (minimized) return null;
   return (
     <button
       type="button"
@@ -43,16 +44,16 @@ function SymonVoiceEntry() {
       style={{
         display: 'inline-flex',
         alignItems: 'center',
-        gap: 5,
-        height: 30,
+        justifyContent: 'center',
+        width: SIDEBAR_FOOTER_HIT_SIZE,
+        height: SIDEBAR_FOOTER_HIT_SIZE,
         paddingTop: 0,
-        paddingRight: 5,
+        paddingRight: 0,
         paddingBottom: 0,
-        paddingLeft: 5,
+        paddingLeft: 0,
         borderWidth: 0,
         borderRadius: 7,
-        background: active ? 'var(--t-hover)' : 'transparent',
-        color: active ? 'var(--t-text)' : 'var(--t-text-muted)',
+        background: 'transparent',
         cursor: 'pointer',
         fontFamily: 'var(--font-sans-system)',
         fontSize: 11.5,
@@ -60,10 +61,28 @@ function SymonVoiceEntry() {
         flexShrink: 0,
       }}
     >
-      <svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
-        <path d="M2 8v4M6 4v12M10 7v6M14 2v16M18 8v4" />
-      </svg>
-      Voice
+      <span
+        aria-hidden="true"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 26,
+          height: 26,
+          borderRadius: 7,
+          background: active ? 'var(--t-hover)' : 'transparent',
+        }}
+      >
+        <span
+          style={{
+            width: 17,
+            height: 17,
+            borderRadius: '50%',
+            background: 'radial-gradient(circle at 64% 28%, color-mix(in srgb, var(--t-text) 90%, transparent), transparent 30%), conic-gradient(from 210deg at 50% 50%, #88d1f1, #b1b4e5 32%, #f5b8c4 62%, #f4c977 82%, #88d1f1)',
+            boxShadow: active ? '0 0 0 2px var(--t-accent), 0 0 9px rgba(136, 209, 241, 0.45)' : '0 0 9px rgba(136, 209, 241, 0.45)',
+          }}
+        />
+      </span>
     </button>
   );
 }
@@ -77,7 +96,6 @@ export function AccountBlock({
   const accountRowRef = useRef<HTMLDivElement | null>(null);
   const [popover, setPopover] = useState<AccountPopover>(null);
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
-  const [anchorElement, setAnchorElement] = useState<HTMLElement | null>(null);
   const [failedAvatarUrl, setFailedAvatarUrl] = useState<string | null>(null);
   // Clerk can fail to finish loading (offline boot, dev-bridge localhost
   // origin) — after a grace window, stop waiting and show the signed-out row
@@ -109,7 +127,6 @@ export function AccountBlock({
 
   const syncAnchor = useCallback(() => {
     const element = accountRowRef.current;
-    setAnchorElement(element);
     setAnchorRect(element?.getBoundingClientRect() ?? null);
   }, []);
   const closePopover = useCallback(() => {
@@ -119,11 +136,6 @@ export function AccountBlock({
     syncAnchor();
     setPopover((current) => current === 'menu' ? null : 'menu');
   }, [syncAnchor]);
-  const openWhatsNew = useCallback(() => {
-    syncAnchor();
-    setPopover('whats-new');
-  }, [syncAnchor]);
-
   useEffect(() => {
     if (!popover) return;
     const handleViewportChange = () => syncAnchor();
@@ -138,6 +150,8 @@ export function AccountBlock({
   return (
     <div
       style={{
+        position: 'relative',
+        zIndex: 60,
         flexShrink: 0,
         borderTopWidth: 1,
         borderTopStyle: 'solid',
@@ -275,20 +289,21 @@ export function AccountBlock({
                 </span>
               </span>
             </button>
-            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 3, paddingTop: 2, paddingRight: 3, paddingBottom: 2, paddingLeft: 3, borderRadius: 10, background: 'var(--t-hover)', flexShrink: 0 }}>
-              <SymonVoiceEntry />
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
               <SymonOrbStatusLine />
+              <SymonVoiceEntry />
               <SymonMachineControl placement="sidebar" />
             </div>
             {/* Account settings remain on the account row; the footer actions
                 beside it open voice, Symon's machine, and mobile pairing. */}
             {onOpenMobilePairing ? (
-              <span style={{ marginLeft: 7, display: 'inline-flex', alignItems: 'center' }}>
+              <span style={{ marginLeft: 3, display: 'inline-flex', alignItems: 'center' }}>
                 <ChromeButton
                   icon={<DeviceMobileIcon size={14} color="var(--t-text-muted)" />}
                   label="Pair mobile device"
                   onClick={onOpenMobilePairing}
                   size={22}
+                  hitSize={SIDEBAR_FOOTER_HIT_SIZE}
                   radius={6}
                 />
               </span>
@@ -297,11 +312,9 @@ export function AccountBlock({
         ) : null}
       </div>
 
-      {/* The account click opens the FULL quick-settings drawer (operator
-          ruling 2026-07-13: "we still wanted our settings modal from old") —
-          account section, Settings ⌘,, theme, usage, updates, What's new,
-          Get help, MCP setup. The slimmer AccountMenu is retired in favor of
-          this superset; sign in/out live in the drawer's account section. */}
+      {/* The account click opens the full quick-settings drawer: account,
+          Settings, theme, usage, updates, Help, and MCP setup. Sign in/out
+          live in the drawer's account section. */}
       <SettingsQuickDrawer
         open={popover === 'menu' && anchorRect !== null}
         anchorRect={anchorRect}
@@ -310,15 +323,7 @@ export function AccountBlock({
           closePopover();
           openSettings();
         }}
-        onWhatsNew={openWhatsNew}
       />
-      {popover === 'whats-new' && anchorRect ? (
-        <WhatsNewCard
-          anchorRect={anchorRect}
-          anchorElement={anchorElement}
-          onClose={closePopover}
-        />
-      ) : null}
     </div>
   );
 }

@@ -10,14 +10,12 @@ export interface WorkspaceHeaderStripProps {
    *  does not dismiss it. */
   onSidebarHoverEnter?: () => void;
   onSidebarHoverLeave?: () => void;
-  /** Terminal toggle. Shown only when a handler is provided. */
-  bottomPanelVisible?: boolean;
-  onToggleBottomPanel?: () => void;
   /** Split the active workspace tile into a second pane. */
   onSplitWorkspacePanel?: () => void;
   /** O8 panel re-open toggle. Rendered as the rightmost icon only when the
    *  panel is collapsed, because the open panel owns its toggle. */
   rightPanelOpen?: boolean;
+  rightPanelDisabled?: boolean;
   onToggleRightPanel?: () => void;
   /** Pending approvals badge shown only when the right panel header is absent. */
   approvalCount?: number;
@@ -32,6 +30,10 @@ export interface WorkspaceHeaderStripProps {
     runtime: string | null;
     packetStatus: string | null;
   }>;
+  /** Session owner for the tabs, which may differ from the active pane. */
+  tabWorkspaceId?: string | null;
+  /** Number of visible panes in this workspace page. */
+  paneCount?: number;
   /** Stable workspace id for routing header pill events back to the owning tile. */
   workspaceId?: string | null;
   terminalModeActive?: boolean;
@@ -43,20 +45,4 @@ export interface WorkspaceHeaderStripProps {
   projectContextRailAvailable?: boolean;
   projectContextRailVisible?: boolean;
   onToggleProjectContextRail?: () => void;
-  /** Side-by-side pill strips for split workspaces. */
-  splitHeaderWorkspaces?: Array<{
-    workspaceId: string;
-    tabs: Array<{
-      id: string;
-      label: string;
-      kind: string;
-      runtime: string | null;
-      packetStatus: string | null;
-    }>;
-    activeTabId: string | null;
-    finishedTabCount?: number;
-    contextRailAvailable?: boolean;
-    contextRailVisible?: boolean;
-    terminalModeActive?: boolean;
-  }> | null;
 }

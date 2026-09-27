@@ -2,6 +2,8 @@
 
 /** Provider and model choices share one settings state; task behavior lives in Dispatch. */
 
+import { useRuntimeInventory } from '../onboarding/useRuntimeInventory';
+import { visibleRuntimeInventory } from '@/lib/setup/runtime-recommendation';
 import { useEffect, useState } from 'react';
 
 import {
@@ -29,6 +31,7 @@ import { ModelRoutingControls } from './ModelRoutingControls';
 import { DispatchFoundersSection } from './DispatchFoundersSection';
 import { SettingsAdvanced } from './SettingsAdvanced';
 import { AgentRoleRoutingSection } from './AgentRoleRoutingSection';
+import { CliUpdatePrompt } from './CliUpdatePrompt';
 
 // ── Runtime detection (real, via /api/setup/detect) ──
 
@@ -73,12 +76,12 @@ function CpuIcon() {
 const RUNTIME_BLURB: Record<string, string> = {
   codex: 'Codex connection and default worker effort',
   'claude-code': 'Claude Code connection and default worker effort',
-  antigravity: 'Google account connection for agent tasks',
+  antigravity: 'Google Antigravity CLI (agy) for free and AI Pro/Ultra accounts',
   '3code': 'Uses the providers and models configured in 3code',
   opencode: 'Uses the providers configured in OpenCode',
   cursor: 'Cursor account or API key connection',
   grok: 'Uses the model selected in Grok Build',
-  gemini: 'Standalone Gemini CLI; separate from Antigravity',
+  gemini: 'Legacy Gemini CLI (gemini) for enterprise or paid API access',
 };
 
 function DetectionPill({ tool, state }: { tool: DetectedTool | undefined; state: DetectState }) {
@@ -129,6 +132,9 @@ export function ModelsTab({ onNavigateTab }: { onNavigateTab?: (tab: SettingsTab
     return () => { alive = false; };
   }, []);
 
+  const runtimeInventory = useRuntimeInventory();
+  const visibleTools = new Set(visibleRuntimeInventory(runtimeInventory.inventory ?? [], [...(data?.values.workerRuntimes ?? []), ...(data?.values.defaultDispatchRuntime ? [data.values.defaultDispatchRuntime] : [])]).map((item) => item.id));
+
   if (loading && !data) {
     return (
       <div style={{ paddingTop: 40, color: 'var(--t-text-muted)', fontSize: 13, fontFamily: APP_FONT_STACK }}>
@@ -168,6 +174,8 @@ export function ModelsTab({ onNavigateTab }: { onNavigateTab?: (tab: SettingsTab
         title="models & providers"
         subtitle="Manage orchestrator and worker connections here. Choose their models in the workspace composer."
       />
+
+      <CliUpdatePrompt />
 
       {notice ? (
         <div style={{ marginBottom: 28, fontSize: 13, color: 'var(--t-text)', lineHeight: 1.55 }}>
@@ -254,7 +262,7 @@ export function ModelsTab({ onNavigateTab }: { onNavigateTab?: (tab: SettingsTab
           footnote="Supported workers and available connection checks. Not checked means setup has no result for that tool; it does not mean the tool is missing. Local model connections and API keys have their own pages."
         >
           {/* Codex — worker effort */}
-          <SettingsRow
+          {visibleTools.has('codex') ? <SettingsRow
             icon={<RuntimeDot color={ORCHESTRATOR_RUNTIMES.codex.accentColor} />}
             label={ORCHESTRATOR_RUNTIMES.codex.label}
             subtitle={lockedSub('codexWorkerEffort', runtimeSubtitle('codex'))}
@@ -271,9 +279,9 @@ export function ModelsTab({ onNavigateTab }: { onNavigateTab?: (tab: SettingsTab
               </TrailingCluster>
             }
             divider
-          />
+          /> : null}
           {/* Claude Code — worker effort */}
-          <SettingsRow
+          {visibleTools.has('claude-code') ? <SettingsRow
             icon={<RuntimeDot color={ORCHESTRATOR_RUNTIMES['claude-code'].accentColor} />}
             label={ORCHESTRATOR_RUNTIMES['claude-code'].label}
             subtitle={lockedSub('claudeWorkerEffort', runtimeSubtitle('claude-code'))}
@@ -290,8 +298,8 @@ export function ModelsTab({ onNavigateTab }: { onNavigateTab?: (tab: SettingsTab
               </TrailingCluster>
             }
             divider
-          />
-          {Object.entries(ORCHESTRATOR_RUNTIMES).filter(([id, runtime]) => runtime.dispatchable && !['codex', 'claude-code', 'opencode'].includes(id)).map(([id, runtime]) => (
+          /> : null}
+          {Object.entries(ORCHESTRATOR_RUNTIMES).filter(([id, runtime]) => runtime.dispatchable && visibleTools.has(id as keyof typeof ORCHESTRATOR_RUNTIMES) && !['codex', 'claude-code', 'opencode'].includes(id)).map(([id, runtime]) => (
             <SettingsRow key={id}
               icon={<RuntimeDot color={runtime.accentColor} />}
               label={runtime.label}
@@ -301,7 +309,7 @@ export function ModelsTab({ onNavigateTab }: { onNavigateTab?: (tab: SettingsTab
             />
           ))}
           {/* opencode — enable toggle (experimentalOpencode) */}
-          <SettingsRow
+          {visibleTools.has('opencode') ? <SettingsRow
             icon={<RuntimeDot color={ORCHESTRATOR_RUNTIMES.opencode.accentColor} />}
             label={ORCHESTRATOR_RUNTIMES.opencode.label}
             subtitle={lockedSub('experimentalOpencode', runtimeSubtitle('opencode'))}
@@ -313,14 +321,11 @@ export function ModelsTab({ onNavigateTab }: { onNavigateTab?: (tab: SettingsTab
                   disabled={envLocked('experimentalOpencode') || busyField === 'experimentalOpencode'}
                   onChange={(next) => {
                     updateField('experimentalOpencode', next);
-                    if (!next && values.defaultDispatchRuntime === 'opencode') {
-                      updateField('defaultDispatchRuntime', 'codex');
-                    }
                   }}
                 />
               </TrailingCluster>
             }
-          />
+          /> : null}
         </SettingsGroup>
       </SettingsAdvanced>
 

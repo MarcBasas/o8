@@ -30,6 +30,7 @@ export interface RegisteredRepo {
 }
 
 export interface OrchestratorTurnInjection {
+  autoSend?: boolean;
   id: string;
   text: string;
   previewImageDataUri?: string;
@@ -66,6 +67,8 @@ export interface TerminalTab {
    */
   kind: 'terminal' | 'chat' | 'llm-chat' | 'canvas' | 'orchestrator' | 'fleet-canvas';
   tmuxSession: string | null;
+  /** Live run views attach to an existing PTY but must never send it input. */
+  readOnly?: boolean;
   cliAgent?: string;
   repo?: RegisteredRepo;
   createdAt: number;
@@ -148,6 +151,7 @@ export type WorkspaceChatRuntime = OrchestratorRuntime | 'chat';
 
 export interface TerminalTabHandle {
   writeToTerminal: (sessionName: string, data: string) => void;
+  setTerminalSourceDimensions?: (sessionName: string, cols: number, rows: number) => void;
   writeRaw: (sessionName: string, data: string) => void;
   terminalVisibilityReady?: (sessionName: string, epoch: number) => void;
   applyTerminalResync?: (sessionName: string, data: string, epoch: number, historyTruncated: boolean, source: 'tmux' | 'scrollback') => void;
@@ -214,6 +218,7 @@ export interface TerminalTabHandle {
     autoArchiveOnIdle?: boolean;
   }) => string;
   injectIntoOrchestrator: (tabId: string, text: string, options?: {
+    autoSend?: boolean;
     previewImageDataUri?: string;
   }) => boolean;
   focusTab: (tabId: string) => boolean;
@@ -284,13 +289,13 @@ export interface WorkspaceTerminalProps {
   onInjectChatContext?: (payload: AgentPanelChatInjectionPayload) => void;
   onSelectCommit?: (hash: string, meta?: Record<string, string>) => void;
   onLaunchWorkspaceTask?: (request: CanvasRepoTaskLaunchRequest) => Promise<void>;
-  onSplitVertical?: () => void;
-  onSplitHorizontal?: () => void;
+  onSplitVertical?: (initialTab?: 'chat' | 'terminal') => void;
+  onSplitHorizontal?: (initialTab?: 'chat' | 'terminal') => void;
   canCloseTile?: boolean;
   onCloseTile?: () => void;
   conversationNavigation?: 'tabs' | 'sidebar';
   sendTerminalCreate: (cols: number, rows: number, requestId?: string, cwd?: string, ownerKey?: string) => void;
-  sendTerminalAttach: (sessionName: string, cols: number, rows: number) => void;
+  sendTerminalAttach: (sessionName: string, cols: number, rows: number, readOnly?: boolean) => void;
   sendTerminalInput: (sessionName: string, data: string) => void;
   sendTerminalResize: (sessionName: string, cols: number, rows: number) => void;
   sendTerminalVisibility: (sessionName: string, visible: boolean, options?: { epoch?: number; needsResync?: boolean; cols?: number; rows?: number }) => void;

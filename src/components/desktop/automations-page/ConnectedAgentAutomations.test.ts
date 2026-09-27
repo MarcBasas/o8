@@ -39,17 +39,20 @@ it('shows the source schedule and changes the source job through the connected r
   });
   vi.stubGlobal('fetch', fetchMock);
   const onActiveCountChange = vi.fn();
+  const onTotalCountChange = vi.fn();
   await act(async () => {
-    root.render(createElement(ConnectedAgentAutomations, { onActiveCountChange }));
+    root.render(createElement(ConnectedAgentAutomations, { onActiveCountChange, onTotalCountChange }));
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
   expect(container.textContent).toContain('Daily at 11:00 AM · America/New_York');
   expect(container.textContent).toContain('symon');
   expect(onActiveCountChange).toHaveBeenLastCalledWith(1);
+  expect(onTotalCountChange).toHaveBeenLastCalledWith(1);
   await act(async () => {
     container.querySelector<HTMLButtonElement>('[role="switch"]')?.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
   expect(container.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('false');
   expect(onActiveCountChange).toHaveBeenLastCalledWith(0);
+  expect(onTotalCountChange).toHaveBeenLastCalledWith(1);
 });
