@@ -91,20 +91,16 @@ describe('WorkspaceHeaderStrip session tabs (#2146)', () => {
     }
   });
 
-  it('keeps the bottom panel action separate from a new terminal pane', async () => {
-    const toggleBottomPanel = vi.fn();
+  it('offers a terminal pane without the redundant bottom-panel header toggle', async () => {
     const splits: Array<{ kind: string; direction: string; workspaceId: string }> = [];
     const onSplit = (event: Event) => {
       splits.push((event as CustomEvent<{ kind: string; direction: string; workspaceId: string }>).detail);
     };
     window.addEventListener('o8:request-split-workspace-tab', onSplit);
     try {
-      await act(async () => root.render(createElement(WorkspaceHeaderStrip, stripProps({
-        onToggleBottomPanel: toggleBottomPanel,
-      }))));
+      await act(async () => root.render(createElement(WorkspaceHeaderStrip, stripProps())));
       expect(container.querySelector('button[aria-label="Choose bottom panel surface"]')).toBeNull();
-      await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open bottom panel"]')?.click());
-      expect(toggleBottomPanel).toHaveBeenCalledOnce();
+      expect(container.querySelector('button[aria-label="Open bottom panel"]')).toBeNull();
       expect(splits).toEqual([]);
 
       await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Add pane (workspace)"]')?.click());
@@ -113,7 +109,6 @@ describe('WorkspaceHeaderStrip session tabs (#2146)', () => {
       const items = Array.from(menu!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
       await act(async () => items.find((item) => item.textContent === 'Terminal')?.click());
       expect(splits).toEqual([{ kind: 'terminal', direction: 'right', workspaceId: 'ws-1' }]);
-      expect(toggleBottomPanel).toHaveBeenCalledOnce();
     } finally {
       window.removeEventListener('o8:request-split-workspace-tab', onSplit);
     }
@@ -149,22 +144,18 @@ describe('WorkspaceHeaderStrip session tabs (#2146)', () => {
     }
   });
 
-  it('targets a new chat pane without opening the bottom panel', async () => {
-    const toggleBottomPanel = vi.fn();
+  it('targets a new chat pane from the same add control', async () => {
     const splits: Array<{ kind: string; direction: string; workspaceId: string }> = [];
     const onSplit = (event: Event) => {
       splits.push((event as CustomEvent<{ kind: string; direction: string; workspaceId: string }>).detail);
     };
     window.addEventListener('o8:request-split-workspace-tab', onSplit);
     try {
-      await act(async () => root.render(createElement(WorkspaceHeaderStrip, stripProps({
-        onToggleBottomPanel: toggleBottomPanel,
-      }))));
+      await act(async () => root.render(createElement(WorkspaceHeaderStrip, stripProps())));
       await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Add pane (workspace)"]')?.click());
       const items = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
       await act(async () => items.find((item) => item.textContent === 'Chat')?.click());
       expect(splits).toEqual([{ kind: 'chat', direction: 'right', workspaceId: 'ws-1' }]);
-      expect(toggleBottomPanel).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener('o8:request-split-workspace-tab', onSplit);
     }

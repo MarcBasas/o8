@@ -51,8 +51,9 @@ import { ORCHESTRATOR_TOKEN_EVENT, type OrchestratorTokenUsageDetail } from '@/c
 import { ORCHESTRATOR_HOME_REPO_SENTINEL, resolveOrchestratorClientRepoPath } from '@/components/desktop/thoughts/orchestrator-home-mode';
 import { buildAgentTargets } from '@/components/desktop/thoughts/utils';
 import { SessionPillContextMenu } from '@/components/desktop/SessionPillContextMenu';
-import { SessionTileSurface, projectLiveSessionMeshParticipants } from './SessionTileSurface';
-import { ThreadDropLayer, type ThreadDropAction } from './ThreadDropLayer';
+import { projectLiveSessionMeshParticipants } from './SessionTileSurface';
+import { ResponsiveSessionSurface } from './ResponsiveSessionSurface';
+import type { ThreadDropAction } from './ThreadDropLayer';
 import { useSessionTiles, buildPillContextMenuItems } from './use-session-tiles';
 import { HISTORY_NAVIGATION_SUPERSEDED_EVENT, publishWorkspaceThreadBinding, WORKSPACE_THREAD_ID_EVENT } from './utils';
 import type { OrchestratorTurnInjection } from './types';
@@ -877,9 +878,9 @@ function OrchestratorTabInner({
     setScopeCleared(false);
     if (typeof window === 'undefined') return;
     window.dispatchEvent(new CustomEvent('o8:select-workspace-scope', {
-      detail: { repoPath: target.localPath, repoName: target.repoName },
+      detail: { tabId, repoPath: target.localPath, repoName: target.repoName },
     }));
-  }, []);
+  }, [tabId]);
   const handleEmptyAddProject = useCallback((mode?: 'scratch' | 'existing') => {
     if (typeof window === 'undefined') return;
     window.dispatchEvent(new CustomEvent('o8:open-add-repo-flow', { detail: { mode } }));
@@ -890,9 +891,9 @@ function OrchestratorTabInner({
     setScopeCleared(true);
     if (typeof window === 'undefined') return;
     window.dispatchEvent(new CustomEvent('o8:select-workspace-scope', {
-      detail: { repoPath: ORCHESTRATOR_HOME_REPO_SENTINEL, repoName: null },
+      detail: { tabId, repoPath: ORCHESTRATOR_HOME_REPO_SENTINEL, repoName: null },
     }));
-  }, []);
+  }, [tabId]);
 
   const emptyStateNode = useMemo(
     () => (
@@ -1038,6 +1039,8 @@ function OrchestratorTabInner({
       sessionTargets={sessionTargets}
       workspaceTargets={data.workspaceTargets ?? []}
       repoPath={effectiveRepoPath}
+      scopeTabId={tabId}
+      ownerTabId={publishWorkspaceThread ? tabId : undefined}
       projectId={data.activeProjectId ?? null}
       thoughtsBodyBackground={thoughtsBodyBackground}
       thoughtsElevatedSurface={thoughtsElevatedSurface}
@@ -1127,9 +1130,9 @@ function OrchestratorTabInner({
         </div>
       ) : null}
 
-      {/* Live `o8 run` sessions — click a chip to watch the raw stdout in the
-          bottom panel without leaving the chat. Self-hides when none run. */}
-      <OrchestratorRunStrip active={active} />
+      {/* Live `o8 run` sessions — click a chip to watch stdout in a read-only
+          workspace terminal tab. Self-hides when none run. */}
+      <OrchestratorRunStrip active={active} workspaceId={workspaceId} />
 
       {/* Body: chat (flex) | branch details (self-hides). Threads/Archive
           moved into LeftPanelProjectFocus → Chats + Agents tabs. */}
@@ -1142,39 +1145,24 @@ function OrchestratorTabInner({
         }}
       >
         {/* Chat body */}
-        <div
-          style={{
-            flex: 1,
-            minWidth: 0,
-            display: 'flex',
-            flexDirection: 'column',
-            position: 'relative',
-          }}
-        >
-          {/* ALWAYS render through the tile surface — even a lone chat leaf.
+        {/* ALWAYS render through the tile surface — even a lone chat leaf.
               The old `isTiled ? surface : panel` ternary moved the chat
               panel between tree positions on every tile/untile flip, which
               REMOUNTED ThoughtsChatPanel: transcript flash + a fresh
               auto-restore pass that could adopt whatever thread was touched
               seconds ago (hit live 2026-07-15 when closing a dragged-in
               thread pane). A single-leaf surface renders the same visual. */}
-          <SessionTileSurface
-            layout={sessionTiles.layout}
-            focusedSessionKey={sessionTiles.focusedSessionKey}
-            chatSlot={thoughtsChatPanel}
-            repoPath={repoPath ?? null}
-            onResizeSplit={sessionTiles.resizeSplit}
-            onCloseLeaf={sessionTiles.closeSessionLeafById}
-            onFocusSession={sessionTiles.setFocusedSessionKey}
-          />
-          {/* Drag-to-split drop targets — only paints while a thread drag
-              from the left rail is in flight (split-screen parity). */}
-          <ThreadDropLayer
-            active={active}
-            layout={sessionTiles.layout}
-            onDrop={handleThreadDrop}
-          />
-        </div>
+        <ResponsiveSessionSurface
+          active={active}
+          onThreadDrop={handleThreadDrop}
+          layout={sessionTiles.layout}
+          focusedSessionKey={sessionTiles.focusedSessionKey}
+          chatSlot={thoughtsChatPanel}
+          repoPath={repoPath ?? null}
+          onResizeSplit={sessionTiles.resizeSplit}
+          onCloseLeaf={sessionTiles.closeSessionLeafById}
+          onFocusSession={sessionTiles.setFocusedSessionKey}
+        />
         {/* Branch-details rail moved INSIDE the panel (transcriptSideRail) so
             it sits beside the transcript, not the composer — see branchRail. */}
       </div>

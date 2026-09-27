@@ -2,7 +2,7 @@
 
 /**
  * WorkspaceHeaderStrip — header strip for the center workspace column.
- * Hosts workspace chrome like the terminal toggle. When the left column is
+ * Hosts workspace chrome like the pane controls. When the left column is
  * collapsed this strip becomes the leftmost one, so it can also carry the
  * macOS traffic-light inset + the sidebar toggle. Part of epic #1089.
  *
@@ -23,7 +23,6 @@ import { ApprovalInboxBadge } from '../title-bar/ApprovalInboxBadge';
 import { IconColumns } from '../title-bar/icons';
 import { RightPanelMorphButton } from '../title-bar/RightPanelMorphButton';
 import { CanvasModeButton } from '../title-bar/CanvasModeButton';
-import { StatusBottomPanelControl } from '../DesktopStatusBar';
 import type { WorkspaceHeaderStripProps } from './workspace-header-strip-types';
 
 /** Right-edge inset that lands the header's rightmost control on the branch rail
@@ -50,8 +49,6 @@ export function WorkspaceHeaderStrip({
   onSidebarHoverEnter,
   onSidebarHoverLeave,
   onSplitWorkspacePanel,
-  bottomPanelVisible = false,
-  onToggleBottomPanel,
   rightPanelOpen = false,
   rightPanelDisabled = false,
   onToggleRightPanel,
@@ -130,33 +127,23 @@ export function WorkspaceHeaderStrip({
                 yNudge={1.3}
               />
             ) : null}
-            {/* Sits immediately before the panel toggle — the header's
+            {/* Sits immediately before the right-panel toggle — the header's
                 "leaves this view" slot (Q 2026-07-16, mirroring Cursor's
                 `IDE ↗`). Moved off the bottom-left status bar: these little
                 buttons carry weight and belong where they're reached for.
 
                 The nudge rides whichever control is RIGHTMOST, because that's
-                the one sitting over the rail capsule. With the panel closed
-                that's the toggle; open, the toggle isn't rendered here at all
-                (it moves into the panel's own strip) and the canvas button
-                inherits the column — and the misalignment with it
-                (Q 2026-07-16). */}
+                the one sitting over the rail capsule. When the right panel is
+                open, its toggle moves into the panel's own strip and the canvas
+                button inherits the column. */}
             <div
               style={{
                 display: 'inline-flex',
-                marginRight: onToggleBottomPanel ? -HEADER_CLUSTER_GAP : (showRightPanelFallbackToggle ? -HEADER_CLUSTER_GAP : RAIL_COLUMN_ALIGN_NUDGE),
+                marginRight: showRightPanelFallbackToggle ? -HEADER_CLUSTER_GAP : RAIL_COLUMN_ALIGN_NUDGE,
               }}
             >
               <CanvasModeButton onClick={() => { window.location.assign('/preview/canvas-glass'); }} />
             </div>
-            {onToggleBottomPanel ? (
-              <div style={{ display: 'inline-flex', marginRight: showRightPanelFallbackToggle ? -HEADER_CLUSTER_GAP : RAIL_COLUMN_ALIGN_NUDGE }}>
-                <StatusBottomPanelControl
-                  active={bottomPanelVisible}
-                  onToggle={onToggleBottomPanel}
-                />
-              </div>
-            ) : null}
             {showRightPanelFallbackToggle ? (
               <div style={{ display: 'inline-flex', marginRight: RAIL_COLUMN_ALIGN_NUDGE }}>
                 <RightPanelMorphButton

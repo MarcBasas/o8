@@ -37,12 +37,6 @@ function exchangeGroups(messages: AgentMessage[]): Array<{ id: string; messages:
   return [...groups].map(([id, entries]) => ({ id, messages: entries.reverse() }));
 }
 
-function agentOptionLabel(agent: AgentPresence): string {
-  const runtime = agent.runtime === 'claude-code' ? 'Claude' : agent.runtime === 'codex' ? 'Codex' : agent.runtime;
-  const shortId = agent.sessionKey?.replace(/[^a-zA-Z0-9]/g, '').slice(-6).toUpperCase();
-  return `@${agent.name} · ${runtime}${shortId ? ` · ${shortId}` : ''}`;
-}
-
 function agentIdentity(name: string, identity?: AgentMessageIdentity | null): string {
   if (name === 'operator') return 'Operator';
   if (!identity) return `@${name}`;
@@ -104,7 +98,6 @@ export function O8HandoffsPane({
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [target, setTarget] = useState('');
   const [replyToId, setReplyToId] = useState<string | null>(null);
-  const [composerOpen, setComposerOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
@@ -127,7 +120,6 @@ export function O8HandoffsPane({
     setMessages([]);
     setTarget('');
     setReplyToId(null);
-    setComposerOpen(false);
     setDraft('');
     setError(null);
     setSendError(null);
@@ -162,7 +154,6 @@ export function O8HandoffsPane({
         if (!messageResponse.ok) throw new Error(errorText(messageResponse, messageBody));
         if (controller.signal.aborted) return;
         setAgents(presenceBody.agents ?? []);
-        setTarget((current) => current && !presenceBody.agents?.some((agent) => agent.name === current && agent.live !== false) ? '' : current);
         setMessages(messageBody.messages ?? []);
         setError(null);
       } catch (caught) {
@@ -189,7 +180,7 @@ export function O8HandoffsPane({
 
   const send = async () => {
     const text = draft.trim();
-    if (!scopedRepo || !target || !agents.some((agent) => agent.name === target && agent.live !== false) || !text || sendInFlightRef.current) return;
+    if (!scopedRepo || !target || !replyToId || !agents.some((agent) => agent.name === target && agent.live !== false) || !text || sendInFlightRef.current) return;
     sendInFlightRef.current = true;
     setSending(true);
     setSendError(null);
@@ -205,7 +196,7 @@ export function O8HandoffsPane({
       setMessages((current) => [body.message!, ...current.filter((message) => message.id !== body.message!.id)].slice(0, MESSAGE_LIMIT));
       setDraft('');
       setReplyToId(null);
-      setComposerOpen(false);
+      setTarget('');
     } catch (caught) {
       if (scopedRepoRef.current === scopedRepo) setSendError(caught instanceof Error ? caught.message : 'Message could not be sent.');
     } finally {
@@ -287,7 +278,7 @@ export function O8HandoffsPane({
         </div>
       </div>
 
-      <div role="log" aria-label="Agent exchanges" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+      <div role="log" aria-label="Agent exchanges" style={{ flex: 1, minHeight: 0, overflowY: 'auto', scrollbarWidth: 'none' }}>
         {!scopedRepo ? (
           <div style={{ gridColumn: '1 / -1', paddingTop: 44, textAlign: 'center', color: 'var(--t-text-muted)', fontSize: 12.5, lineHeight: 1.5 }}>Choose a repository to see its agents and messages.</div>
         ) : error ? (
@@ -295,7 +286,7 @@ export function O8HandoffsPane({
         ) : loading && messages.length === 0 ? (
           <div style={{ gridColumn: '1 / -1', color: 'var(--t-text-muted)', fontSize: 12.5, padding: 18 }}>Loading exchanges…</div>
         ) : messages.length === 0 ? (
-          <div style={{ gridColumn: '1 / -1', paddingTop: 44, textAlign: 'center', color: 'var(--t-text-muted)', fontSize: 12.5, lineHeight: 1.5 }}>No agent exchanges yet. Select a live agent below to start one.</div>
+          <div style={{ gridColumn: '1 / -1', paddingTop: 44, textAlign: 'center', color: 'var(--t-text-muted)', fontSize: 12.5, lineHeight: 1.5 }}>No agent exchanges yet. Handoffs from your agent sessions will appear here.</div>
         ) : (
           <>
           <nav aria-label="Conversations" style={{ minHeight: 0, background: 'var(--t-panel)' }}>
@@ -328,7 +319,7 @@ export function O8HandoffsPane({
                   {conversation?.status === 'open' ? <button type="button" disabled={sending} onClick={() => void changeConversation(conversation.id, 'close')} style={{ minHeight: 36, paddingTop: 6, paddingRight: 12, paddingBottom: 6, paddingLeft: 12, border: '1px solid var(--t-divider)', borderRadius: 8, background: 'transparent', color: 'var(--t-text-muted)', fontSize: 11.5, cursor: sending ? 'default' : 'pointer' }}>{sending ? 'Working…' : 'Stop'}</button> : null}
                   {conversation?.status === 'closed' ? <button type="button" disabled={sending} onClick={() => void changeConversation(conversation.id, 'extend')} style={{ minHeight: 36, paddingTop: 6, paddingRight: 12, paddingBottom: 6, paddingLeft: 12, border: '1px solid var(--t-divider)', borderRadius: 8, background: 'transparent', color: 'var(--t-text-muted)', fontSize: 11.5, cursor: sending ? 'default' : 'pointer' }}>{sending ? 'Working…' : 'Extend +4'}</button> : null}
                 </header>
-                <div data-agent-conversation-detail={conversation?.id ?? selectedGroup.id} style={{ width: 'min(920px, 100%)', alignSelf: 'center', minHeight: 0, flex: 1, overflowY: 'auto', paddingTop: 24, paddingRight: 32, paddingBottom: 32, paddingLeft: 32 }}>
+                <div data-agent-conversation-detail={conversation?.id ?? selectedGroup.id} style={{ width: 'min(920px, 100%)', alignSelf: 'center', minHeight: 0, flex: 1, overflowY: 'auto', scrollbarWidth: 'none', paddingTop: 24, paddingRight: 32, paddingBottom: 32, paddingLeft: 32 }}>
                   {selectedGroup.messages.map((message) => (
                     <article key={message.id} data-agent-message-id={message.id} style={{ paddingTop: 16, paddingRight: 18, paddingBottom: 16, paddingLeft: 18, borderTop: message.id === first.id ? 'none' : '1px solid var(--t-divider-subtle)' }}>
                       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
@@ -340,7 +331,7 @@ export function O8HandoffsPane({
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 11 }}>
                         <span title={message.deliveryNote ?? undefined} style={{ flex: 1, color: message.delivery === 'failed' ? 'var(--t-danger)' : 'var(--t-text-faint)', fontSize: 11 }}>{deliveryLabel(message, selectedGroup.messages.some((reply) => reply.conversation?.replyToId === message.id))} · {new Date(message.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
                         {message.id === latest.id && message.to === 'operator' && conversation?.status === 'open' && liveAgents.some((agent) => agent.name === message.from) ? (
-                          <button type="button" onClick={() => { setTarget(message.from); setReplyToId(message.id); setComposerOpen(true); setDetailOpen(false); rememberSelection(scopedRepo, selectedGroup.id, false); }} style={{ minHeight: 34, paddingTop: 5, paddingRight: 10, paddingBottom: 5, paddingLeft: 10, border: '1px solid var(--t-divider)', borderRadius: 8, background: 'transparent', color: 'var(--t-accent)', fontSize: 11.5, cursor: 'pointer' }}>Reply</button>
+                          <button type="button" onClick={() => { setTarget(message.from); setReplyToId(message.id); setSendError(null); setDetailOpen(false); rememberSelection(scopedRepo, selectedGroup.id, false); }} style={{ minHeight: 34, paddingTop: 5, paddingRight: 10, paddingBottom: 5, paddingLeft: 10, border: '1px solid var(--t-divider)', borderRadius: 8, background: 'transparent', color: 'var(--t-accent)', fontSize: 11.5, cursor: 'pointer' }}>Reply</button>
                         ) : null}
                       </div>
                     </article>
@@ -354,28 +345,17 @@ export function O8HandoffsPane({
       </div>
 
       {actionError ? <div role="alert" style={{ paddingTop: 8, paddingRight: 18, paddingBottom: 8, paddingLeft: 18, color: 'var(--t-danger)', fontSize: 11.5 }}>{actionError}</div> : null}
-      <div style={{ paddingTop: composerOpen ? 14 : 10, paddingRight: 18, paddingBottom: composerOpen ? 17 : 10, paddingLeft: 18, borderTop: '1px solid var(--t-divider)', background: 'var(--t-bg)', flexShrink: 0 }}>
-        {!composerOpen ? (
-          <button type="button" onClick={() => setComposerOpen(true)} disabled={!scopedRepo} style={{ width: '100%', paddingTop: 9, paddingRight: 12, paddingBottom: 9, paddingLeft: 12, border: '1px solid var(--t-divider)', borderRadius: 9, background: 'var(--t-panel)', color: 'var(--t-text)', textAlign: 'left', cursor: 'pointer', fontSize: 12 }}>New handoff to a live agent</button>
-        ) : (
-        <>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}><strong style={{ flex: 1, fontSize: 11.5, fontWeight: 300 }}>Message an agent</strong><button type="button" onClick={() => { setComposerOpen(false); setReplyToId(null); }} style={{ border: 'none', background: 'transparent', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 11 }}>Close</button></div>
-        <label htmlFor="o8-handoff-recipient" style={{ display: 'block', marginBottom: 7, color: 'var(--t-text-muted)', fontSize: 11 }}>Send to a live agent</label>
-        <select id="o8-handoff-recipient" value={target} onChange={(event) => { setTarget(event.target.value); setReplyToId(null); }} disabled={!scopedRepo || liveAgents.length === 0 || sending} style={{ ...fieldStyle, paddingLeft: 10, paddingRight: 10 }}>
-          <option value="">{liveAgents.length === 0 ? 'No agents live in this repository' : 'Choose an agent'}</option>
-          {liveAgents.map((agent) => <option key={agent.agentId} value={agent.name}>{agentOptionLabel(agent)}</option>)}
-        </select>
-        {replyToId ? <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, color: 'var(--t-text-muted)', fontSize: 10.5 }}>Replying to {replyToId}<button type="button" onClick={() => setReplyToId(null)} style={{ border: 'none', background: 'transparent', color: 'var(--t-accent)', cursor: 'pointer', fontSize: 10.5 }}>Start new</button></div> : null}
+      {replyToId ? <div style={{ paddingTop: 14, paddingRight: 18, paddingBottom: 17, paddingLeft: 18, borderTop: '1px solid var(--t-divider)', background: 'var(--t-bg)', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}><strong style={{ flex: 1, fontSize: 11.5, fontWeight: 300 }}>Reply to @{target}</strong><button type="button" onClick={() => { setReplyToId(null); setTarget(''); }} style={{ border: 'none', background: 'transparent', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 11 }}>Close</button></div>
+        {!liveAgents.some((agent) => agent.name === target) ? <div role="status" style={{ color: 'var(--t-text-muted)', fontSize: 11 }}>This agent is no longer live. Your draft stays here.</div> : null}
         <label htmlFor="o8-handoff-message" style={{ display: 'block', marginTop: 12, marginBottom: 7, color: 'var(--t-text-muted)', fontSize: 11 }}>Message</label>
         <textarea id="o8-handoff-message" value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={TEXT_LIMIT} disabled={!scopedRepo || sending} placeholder="Give the agent a clear request or update…" rows={3} style={{ ...fieldStyle, resize: 'vertical', minHeight: 72, maxHeight: 180, paddingTop: 9, paddingRight: 10, paddingBottom: 9, paddingLeft: 10, lineHeight: 1.45 }} />
         {sendError ? <div role="alert" style={{ marginTop: 8, color: 'var(--t-danger)', fontSize: 11.5 }}>{sendError}</div> : null}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 10 }}>
           <span style={{ flex: 1, color: 'var(--t-text-faint)', fontSize: 10.5, lineHeight: 1.4 }}>Sent means submitted to a terminal or held in an inbox. It does not confirm a reply.</span>
-          <button type="button" onClick={() => void send()} disabled={!scopedRepo || !liveAgents.some((agent) => agent.name === target) || !draft.trim() || sending} style={{ paddingTop: 8, paddingRight: 14, paddingBottom: 8, paddingLeft: 14, border: 'none', borderRadius: 8, background: 'var(--t-accent)', color: 'var(--t-accent-contrast, #fff)', cursor: sending ? 'default' : 'pointer', opacity: !scopedRepo || !liveAgents.some((agent) => agent.name === target) || !draft.trim() || sending ? 0.45 : 1, fontSize: 11.5, fontWeight: 300, whiteSpace: 'nowrap' }}>{sending ? 'Sending…' : 'Send message'}</button>
+          <button type="button" onClick={() => void send()} disabled={!scopedRepo || !liveAgents.some((agent) => agent.name === target) || !draft.trim() || sending} style={{ paddingTop: 8, paddingRight: 14, paddingBottom: 8, paddingLeft: 14, border: 'none', borderRadius: 8, background: 'var(--t-accent)', color: 'var(--t-accent-contrast, #fff)', cursor: sending ? 'default' : 'pointer', opacity: !scopedRepo || !liveAgents.some((agent) => agent.name === target) || !draft.trim() || sending ? 0.45 : 1, fontSize: 11.5, fontWeight: 300, whiteSpace: 'nowrap' }}>{sending ? 'Sending…' : 'Send reply'}</button>
         </div>
-        </>
-        )}
-      </div>
+      </div> : null}
     </div>
   );
 }

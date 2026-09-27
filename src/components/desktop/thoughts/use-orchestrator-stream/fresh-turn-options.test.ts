@@ -12,6 +12,8 @@ import { act, createElement, createRef, useEffect, useRef, useState, type RefObj
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET, POST } from '@/app/api/panel/operator-defaults/route';
+import { DELETE as DELETE_CHAT, GET as GET_CHAT, PATCH as PATCH_CHAT, POST as POST_CHAT } from '@/app/api/v2/chat-history/route';
+import { NextRequest } from 'next/server';
 import type { OrchestratorMissionState } from '@/lib/orchestrator/types';
 import { readStoredOrchestratorModel, writeStoredOrchestratorModel } from '@/lib/orchestrator/store';
 import { ThoughtsChatPanel, type ThoughtsChatPanelHandle } from '../ThoughtsChatPanel';
@@ -38,6 +40,8 @@ let freshFetchFails = false;
 let freshFetchGate: Promise<void> | null = null;
 let releaseFreshFetch: (() => void) | null = null;
 let historyResponse: Record<string, unknown> | null = null;
+let useRealHistoryRoute = false;
+let historyPatchGate: Promise<void> | null = null;
 
 interface ComposerTestWindow extends Window {
   interruptComposerTurn?: () => void;
@@ -185,6 +189,19 @@ beforeEach(async () => {
     if (url.startsWith('/api/v2/chat-history?tabId=') && historyResponse) {
       return new Response(JSON.stringify(historyResponse), { headers: { 'Content-Type': 'application/json' } });
     }
+    if (useRealHistoryRoute && url.startsWith('/api/v2/chat-history')) {
+      const request = new NextRequest(`http://127.0.0.1${url}`, {
+        method: init?.method,
+        headers: init?.headers,
+        body: init?.body ? String(init.body) : undefined,
+      });
+      if (init?.method === 'PATCH') {
+        if (historyPatchGate) await historyPatchGate;
+        return PATCH_CHAT(request);
+      }
+      if (init?.method === 'POST') return POST_CHAT(request);
+      return GET_CHAT(request);
+    }
     return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
   }));
   transport.socket = { readyState: WebSocket.OPEN, send: vi.fn(), close: vi.fn() } as unknown as WebSocket;
@@ -192,6 +209,8 @@ beforeEach(async () => {
   freshFetchGate = null;
   releaseFreshFetch = null;
   historyResponse = null;
+  useRealHistoryRoute = false;
+  historyPatchGate = null;
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
@@ -208,6 +227,154 @@ afterEach(async () => {
 });
 
 describe('composer fresh operator defaults at the send seam', () => {
+  it('keeps an existing thread on the selected repository through send and history reload', async () => {
+    const oldRepo = '/repo/old-thread-home';
+    const newRepo = '/repo/new-turn-home';
+    const tabId = `thoughts-existing-target-${Date.now()}`;
+    const saved = await POST_CHAT(new NextRequest('http://127.0.0.1/api/v2/chat-history', {
+      method: 'POST',
+      body: JSON.stringify({
+        tabId,
+        repoPath: oldRepo,
+        repoName: 'old-thread-home',
+        messages: [{ id: 'history-user', role: 'user', content: 'Previous turn', timestamp: 1 }],
+      }),
+    }));
+    expect(saved.ok).toBe(true);
+    useRealHistoryRoute = true;
+    let releasePatch: () => void = () => {};
+    historyPatchGate = new Promise<void>((resolve) => { releasePatch = resolve; });
+    const historyUpdates: string[] = [];
+    const onHistoryUpdate = (event: Event) => {
+      historyUpdates.push((event as CustomEvent<{ threadId: string }>).detail.threadId);
+    };
+    window.addEventListener('o8:chat-history-updated', onHistoryUpdate);
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    const panelRef = createRef<ThoughtsChatPanelHandle>();
+    try {
+      await act(async () => root.render(createElement(ThoughtsChatPanel, {
+        ref: panelRef,
+        open: true,
+        agents: [],
+        missionState: { version: 2, prompt: '', summary: '', packets: [], updatedAt: new Date(0).toISOString() },
+        preferredRuntime: 'codex',
+        sessionTargets: [],
+        workspaceTargets: [
+          { id: oldRepo, label: 'Old thread home', repoName: 'old-thread-home', localPath: oldRepo, branch: 'main', isWorktree: false },
+          { id: newRepo, label: 'New turn home', repoName: 'new-turn-home', localPath: newRepo, branch: 'main', isWorktree: false },
+        ],
+        repoPath: oldRepo,
+        scopeTabId: 'owning-tab',
+        ownerTabId: 'owning-tab',
+        initialMode: 'fleet',
+        onModePersist: () => {},
+        suppressAutoRestore: true,
+        suppressRuntimePrewarm: true,
+        thoughtsBodyBackground: 'var(--t-bg)',
+        thoughtsElevatedSurface: 'var(--t-panel)',
+        thoughtsElevatedBorder: 'var(--t-border)',
+        thoughtsElevatedShadow: 'var(--t-panel-shadow)',
+        thoughtsMutedGlass: 'var(--t-muted)',
+        onMissionStateChange: () => {},
+        onChromeChange: () => {},
+      })));
+      await act(async () => {
+        panelRef.current!.loadThread(tabId);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      const pickProject = async (current: string, next: string) => {
+        const trigger = host.querySelector<HTMLButtonElement>(`button[aria-label="Project target: ${current}"]`);
+        expect(trigger).toBeTruthy();
+        await act(async () => trigger!.click());
+        const choice = [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+          .find((button) => button.textContent?.includes(next));
+        expect(choice).toBeTruthy();
+        await act(async () => choice!.click());
+      };
+      await pickProject('old-thread-home', newRepo);
+      await pickProject('new-turn-home', oldRepo);
+      await pickProject('old-thread-home', newRepo);
+      expect(host.querySelector('button[aria-label="Project target: new-turn-home"]')).toBeTruthy();
+      await act(async () => {
+        expect(panelRef.current?.sendNow('Continue in the new repository')).toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      });
+      expect(sentTurnPayloads()).toHaveLength(0);
+      await act(async () => {
+        releasePatch();
+        await waitForPayload(1);
+      });
+      expect(historyUpdates).toEqual([tabId]);
+      expect(sentTurnPayloads()[0]?.repoPath).toBe(newRepo);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 950)); });
+      const record = await GET_CHAT(new NextRequest(`http://127.0.0.1/api/v2/chat-history?tabId=${tabId}`));
+      expect((await record.json()).repoPath).toBe(newRepo);
+      await act(async () => {
+        panelRef.current!.loadThread(tabId);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      expect(host.querySelector('button[aria-label="Project target: new-turn-home"]')).toBeTruthy();
+    } finally {
+      releasePatch();
+      historyPatchGate = null;
+      window.removeEventListener('o8:chat-history-updated', onHistoryUpdate);
+      await DELETE_CHAT(new NextRequest(`http://127.0.0.1/api/v2/chat-history?tabId=${tabId}`));
+    }
+  });
+
+  it('sends a Project picker selection to the owning workspace tab', async () => {
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    const scopeEvents: Array<{ tabId: string; repoPath: string; repoName: string }> = [];
+    const onScope = (event: Event) => {
+      scopeEvents.push((event as CustomEvent<{ tabId: string; repoPath: string; repoName: string }>).detail);
+    };
+    window.addEventListener('o8:select-workspace-scope', onScope);
+    try {
+      await act(async () => root.render(createElement(ThoughtsChatPanel, {
+        open: true,
+        agents: [],
+        missionState: { version: 2, prompt: '', summary: '', packets: [], updatedAt: new Date(0).toISOString() },
+        preferredRuntime: 'codex',
+        sessionTargets: [],
+        workspaceTargets: [
+          { id: repoPath, label: 'Original', repoName: 'original', localPath: repoPath, branch: 'main', isWorktree: false },
+          { id: '/repo/selected', label: 'Selected', repoName: 'selected', localPath: '/repo/selected', branch: 'main', isWorktree: false },
+        ],
+        repoPath,
+        scopeTabId: 'owning-tab',
+        ownerTabId: 'owning-tab',
+        initialMode: 'fleet',
+        onModePersist: () => {},
+        suppressAutoRestore: true,
+        suppressRuntimePrewarm: true,
+        thoughtsBodyBackground: 'var(--t-bg)',
+        thoughtsElevatedSurface: 'var(--t-panel)',
+        thoughtsElevatedBorder: 'var(--t-border)',
+        thoughtsElevatedShadow: 'var(--t-panel-shadow)',
+        thoughtsMutedGlass: 'var(--t-muted)',
+        onMissionStateChange: () => {},
+        onChromeChange: () => {},
+      })));
+      const trigger = host.querySelector<HTMLButtonElement>('button[aria-label="Project target: original"]');
+      expect(trigger).toBeTruthy();
+      await act(async () => trigger?.click());
+      const selected = [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+        .find((button) => button.textContent?.includes('/repo/selected'));
+      expect(selected).toBeTruthy();
+      await act(async () => selected?.click());
+      expect(scopeEvents).toEqual([{ tabId: 'owning-tab', repoPath: '/repo/selected', repoName: 'selected' }]);
+      expect(host.querySelector('button[aria-label="Project target: selected"]')).toBeTruthy();
+      await act(async () => window.dispatchEvent(new CustomEvent('o8:select-workspace-scope', {
+        detail: { tabId: 'another-tab', repoPath, repoName: 'original' },
+      })));
+      expect(host.querySelector('button[aria-label="Project target: selected"]')).toBeTruthy();
+    } finally {
+      window.removeEventListener('o8:select-workspace-scope', onScope);
+    }
+  });
+
   it('reaches the live resolver through the real ThoughtsChatPanel send callback', async () => {
     const composerModeStorageId = 'live-mode-tab';
     localStorage.setItem('o8:composer-selector-v1', '0');

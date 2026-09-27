@@ -10,9 +10,6 @@ export interface WorkspaceHeaderStripProps {
    *  does not dismiss it. */
   onSidebarHoverEnter?: () => void;
   onSidebarHoverLeave?: () => void;
-  /** Terminal toggle. Shown only when a handler is provided. */
-  bottomPanelVisible?: boolean;
-  onToggleBottomPanel?: () => void;
   /** Split the active workspace tile into a second pane. */
   onSplitWorkspacePanel?: () => void;
   /** O8 panel re-open toggle. Rendered as the rightmost icon only when the

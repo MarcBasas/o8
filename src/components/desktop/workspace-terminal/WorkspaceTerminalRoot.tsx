@@ -105,6 +105,9 @@ export const WorkspaceTerminalRoot = forwardRef<TerminalTabHandle, WorkspaceTerm
     const onCloseTile = props.onCloseTile;
     const onSplitVertical = props.onSplitVertical;
     const onSplitHorizontal = props.onSplitHorizontal;
+    const attachLiveRun = controller.attachWorkspaceTerminalSession;
+    const selectLiveRunTab = controller.handleSelectTab;
+    const activeWorkspaceSurface = props.activeWorkspaceSurface === true;
     useEffect(() => {
       if (typeof window === 'undefined') return;
       const matchWorkspace = (eventWorkspaceId: string | null | undefined, eventTileId?: string) => {
@@ -133,15 +136,29 @@ export const WorkspaceTerminalRoot = forwardRef<TerminalTabHandle, WorkspaceTerm
         if (detail.direction === 'right') onSplitVertical?.(detail.kind);
         if (detail.direction === 'below') onSplitHorizontal?.(detail.kind);
       };
+      const onOpenAgentTerminal = (event: Event) => {
+        const detail = (event as CustomEvent<{ session?: string; label?: string; workspaceId?: string }>).detail;
+        if (detail?.workspaceId ? detail.workspaceId !== workspaceInstanceId : !activeWorkspaceSurface) return;
+        if (!detail?.session) return;
+        const tabId = attachLiveRun({
+          sessionKey: detail.session,
+          tmuxSession: detail.session,
+          label: detail.label,
+          readOnly: true,
+        }, preferredRepo ?? activeRepo ?? null);
+        if (tabId) selectLiveRunTab(tabId);
+      };
       window.addEventListener('o8:request-spawn-tab', onSpawn as EventListener);
       window.addEventListener('o8:request-close-workspace', onCloseWorkspace as EventListener);
       window.addEventListener('o8:request-split-workspace-tab', onSplitWorkspace as EventListener);
+      window.addEventListener('o8:open-agent-terminal', onOpenAgentTerminal as EventListener);
       return () => {
         window.removeEventListener('o8:request-spawn-tab', onSpawn as EventListener);
         window.removeEventListener('o8:request-close-workspace', onCloseWorkspace as EventListener);
         window.removeEventListener('o8:request-split-workspace-tab', onSplitWorkspace as EventListener);
+        window.removeEventListener('o8:open-agent-terminal', onOpenAgentTerminal as EventListener);
       };
-    }, [props.canCloseTile, props.stateScope, handleNewTab, handleNewLLMChatTab, spawnOrchestratorTab, spawnFleetCanvasTab, activeRepo, preferredRepo, onCloseTile, onSplitVertical, onSplitHorizontal, workspaceInstanceId]);
+    }, [props.canCloseTile, props.stateScope, handleNewTab, handleNewLLMChatTab, spawnOrchestratorTab, spawnFleetCanvasTab, activeRepo, preferredRepo, onCloseTile, onSplitVertical, onSplitHorizontal, workspaceInstanceId, activeWorkspaceSurface, attachLiveRun, selectLiveRunTab]);
 
     // Broadcast the active-tab label + tabId + kind + workspaceId + full
     // tabs list so the dashboard can route the title to the column-level

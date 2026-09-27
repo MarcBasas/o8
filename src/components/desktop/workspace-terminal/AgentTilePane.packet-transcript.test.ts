@@ -174,6 +174,26 @@ describe('AgentTilePane structured packet transcript delivery', () => {
     vi.unstubAllGlobals();
   });
 
+  it('labels a worker with the launched lane model when discovery metadata is stale', async () => {
+    stubPacketTranscript(() => []);
+    const packet = packetFixture('codex');
+    packet.model = 'gpt-5.6-sol';
+    packet.lane = { ...packet.lane!, model: 'gpt-5.6-terra' };
+    await act(async () => {
+      root.render(createElement(AgentTilePane, {
+        sessionKey: 'opencode-owned:worker-pane',
+        agent: { name: 'Worker', status: 'running', runtime: 'codex', model: 'gpt-6-sol' },
+        packet,
+        focused: true,
+        onClose: () => {},
+        onFocus: () => {},
+      }));
+    });
+    expect(host.querySelector('[data-worker-model]')?.textContent).toContain('gpt-5.6-terra');
+    expect(host.querySelector('[data-worker-model]')?.getAttribute('title')).toBe('OpenCode 2 · gpt-5.6-terra');
+    expect(host.textContent).not.toContain('gpt-6-sol');
+  });
+
   it('refreshes the mounted pane when a later route poll returns another persisted event', async () => {
     vi.useFakeTimers();
     Object.defineProperty(dom.window, 'setInterval', {

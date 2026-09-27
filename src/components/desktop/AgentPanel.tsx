@@ -561,6 +561,7 @@ function MiniAgentPanelHeader({
             onCreateTerminal={() => runSessionAction(onCreateTerminal)}
           />
         ) : null}
+        <MiniAgentPanelAction icon={Terminal} label="Terminal" onClick={() => runSessionAction(onCreateTerminal)} disabled={!onCreateTerminal} />
         <MiniAgentPanelAction
           icon={SearchIcon}
           label="Search"
@@ -584,7 +585,6 @@ function MiniAgentPanelHeader({
           onClick={() => {
             setSessionMenuOpen(false);
             // Dashboard listens for this and flips activeNavSection to 'automations'.
-            // Same pattern as o8:open-inbox-tab keeps AgentPanel decoupled.
             if (typeof window !== 'undefined') {
               window.dispatchEvent(new CustomEvent('o8:open-automations'));
             }

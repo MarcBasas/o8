@@ -10,6 +10,8 @@ import { retainInlineTerminalImages, TERMINAL_SCROLLBACK_LINES } from '@/lib/ter
 import { ClientTerminalHiddenBuffer } from '@/components/desktop/workspace-terminal/terminal-hidden-buffer';
 import { recordTerminalDiagnostic } from '@/components/desktop/workspace-terminal/terminal-diagnostics';
 import { decodeTerminalBase64 } from './terminal-base64';
+import type { InlineImage, XtermPanelHandle, XtermPanelProps } from './xterm-panel-types';
+export type { InlineImage, XtermPanelHandle, XtermPanelProps } from './xterm-panel-types';
 import {
   recordTerminalBenchDelivery,
   recordTerminalBenchDimensions,
@@ -33,50 +35,6 @@ function readTerminalText(term: { buffer?: { active?: { length?: number; getLine
     out.push(active.getLine(index)?.translateToString(true) ?? '');
   }
   return out.join('\n').replace(/\s+$/g, '');
-}
-
-export interface InlineImage {
-  id: string;
-  dataUrl: string;
-  filename: string;
-}
-
-export interface XtermPanelProps {
-  tmuxSession: string;
-  sendTerminalAttach: (sessionName: string, cols: number, rows: number) => void;
-  sendTerminalInput: (sessionName: string, data: string) => void;
-  sendTerminalResize: (sessionName: string, cols: number, rows: number) => void;
-  sendTerminalVisibility?: (sessionName: string, visible: boolean, options?: { epoch?: number; needsResync?: boolean; cols?: number; rows?: number }) => void;
-  sendTerminalDetach: (sessionName: string) => void;
-  visible: boolean;
-  /** Render with no background so the host surface (canvas glass) reads
-   *  through. The host owns legibility (its own tint/veil behind the text). */
-  transparent?: boolean;
-  /** Override the terminal font size (default 13). */
-  fontSize?: number;
-  /** Override the line-height multiplier (default 1.45). The canvas passes 1.0
-   *  so xterm's DOM-renderer selection overlay aligns with the glyph baseline —
-   *  a taller line offsets the highlight ~½ line up from the text under CSS zoom (#1245). */
-  lineHeight?: number;
-  /** Bump on every WebSocket (re)connect. Terminal sends drop silently on a
-   *  closed socket and the server never re-attaches us — without this, any
-   *  transport bounce leaves the view permanently deaf while the pty lives
-   *  on. Each bump resets the buffer and re-attaches; the server replays
-   *  scrollback, so the repaint is idempotent. */
-  connectionEpoch?: number;
-  /** One-shot "o8" materialization in the dead air between attach and the
-   *  first prompt byte — written into the view only (never the PTY), and
-   *  cancelled the instant real data arrives. */
-  spawnReveal?: boolean;
-  /** Guarantee the sweep + shimmer play even when the shell beats them:
-   *  PTY data is buffered (~800ms worst case) and flushed at the hold
-   *  point. For the occasional "show it anyway" spawn — never the default,
-   *  because it trades real latency for the moment. */
-  revealMinPlay?: boolean;
-  /** Surface-scoped xterm theme keys merged OVER the built theme — the
-   *  canvas passes its own ink so terminals follow the glass vocabulary
-   *  instead of whatever --t-terminal-* happens to be stamped globally. */
-  themeOverrides?: Record<string, string>;
 }
 
 type TerminalVisibilityOptions = {
@@ -105,22 +63,8 @@ function sendBenchTerminalVisibility(
   sendTerminalVisibility?.(sessionName, visible, options);
 }
 
-export interface XtermPanelHandle {
-  fit: () => void;
-  focus: () => void;
-  writeData: (data: string) => void;
-  writeRaw: (data: string) => void;
-  readText: (lines?: number) => string;
-  visibilityReady?: (epoch: number) => void;
-  applyResync?: (data: string, epoch: number, historyTruncated: boolean, source: 'tmux' | 'scrollback') => void;
-  recordDiagnostic?: (diagnostic: Record<string, unknown>) => void;
-  showImage: (imageB64: string, filename: string) => void;
-  setError: (error: string) => void;
-  setExited: () => void;
-}
-
 export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function XtermPanel(
-  { tmuxSession, sendTerminalAttach, sendTerminalInput, sendTerminalResize, sendTerminalVisibility, sendTerminalDetach, visible, transparent, fontSize, lineHeight, connectionEpoch, spawnReveal, revealMinPlay, themeOverrides },
+  { tmuxSession, readOnly = false, sendTerminalAttach, sendTerminalInput, sendTerminalResize, sendTerminalVisibility, sendTerminalDetach, visible, transparent, fontSize, lineHeight, connectionEpoch, spawnReveal, revealMinPlay, themeOverrides },
   ref,
 ) {
   const { themeId } = useTheme();
@@ -145,6 +89,7 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
   const visibilityEpochRef = useRef(1);
   const awaitingVisibilityRef = useRef(Boolean(sendTerminalVisibility && visible));
   const queuedInputRef = useRef<string[]>([]);
+  const sourceDimensionsRef = useRef<{ cols: number; rows: number } | null>(null);
 
   /** Real output is about to paint — kill the reveal, clean slate.
    *  Ref nulls BEFORE invoking so re-entrant calls (the cancel fires the
@@ -167,7 +112,7 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
     let proposedDimensions = null;
     try {
       proposedDimensions = fitAddon.proposeDimensions?.() ?? null;
-      fitAddon.fit();
+      if (!readOnly || !sourceDimensionsRef.current) fitAddon.fit();
       recordTerminalBenchEvent('xterm-fit', {
         sessionName: tmuxSession,
         initCount: initCountRef.current,
@@ -177,7 +122,7 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
         proposedDimensions,
       });
       recordTerminalBenchDimensions(tmuxSession, term.cols, term.rows);
-      sendTerminalResize(tmuxSession, term.cols, term.rows);
+      if (!readOnly) sendTerminalResize(tmuxSession, term.cols, term.rows);
     } catch (error) {
       recordTerminalBenchEvent('xterm-fit', {
         sessionName: tmuxSession,
@@ -190,15 +135,15 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
       });
       // The terminal may be disposed while a queued fit is running.
     }
-  }, [sendTerminalResize, tmuxSession]);
+  }, [readOnly, sendTerminalResize, tmuxSession]);
 
   const finishReveal = useCallback((epoch: number) => {
     if (epoch !== visibilityEpochRef.current || !visibleRef.current) return;
     awaitingVisibilityRef.current = false;
     const queuedInput = queuedInputRef.current;
     queuedInputRef.current = [];
-    for (const data of queuedInput) sendTerminalInput(tmuxSession, data);
-  }, [sendTerminalInput, tmuxSession]);
+    if (!readOnly) for (const data of queuedInput) sendTerminalInput(tmuxSession, data);
+  }, [readOnly, sendTerminalInput, tmuxSession]);
 
   const finishRevealAfterPaint = useCallback((epoch: number) => {
     requestAnimationFrame(() => finishReveal(epoch));
@@ -228,6 +173,11 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
 
   useImperativeHandle(ref, () => ({
     fit: fitTerminal,
+    setSourceDimensions: (cols: number, rows: number) => {
+      if (!readOnly || !Number.isSafeInteger(cols) || !Number.isSafeInteger(rows) || cols < 1 || rows < 1) return;
+      sourceDimensionsRef.current = { cols, rows };
+      try { termRef.current?.resize(cols, rows); } catch { /* disposed during attach */ }
+    },
     focus: () => termRef.current?.focus(),
     writeData: (data: string) => {
       if (!termRef.current) return;
@@ -372,7 +322,7 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
     },
     setError: (nextError: string) => setError(nextError),
     setExited: () => setExited(true),
-  }), [fitTerminal, flushHiddenBytes, queueHiddenBytes, tmuxSession]);
+  }), [fitTerminal, flushHiddenBytes, queueHiddenBytes, readOnly, tmuxSession]);
 
   useEffect(() => (
     registerTerminalBenchPanel(
@@ -404,10 +354,10 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
     sendBenchTerminalVisibility(sendTerminalVisibility, tmuxSession, true, {
       epoch,
       needsResync,
-      cols: term?.cols,
-      rows: term?.rows,
+      cols: readOnly ? undefined : term?.cols,
+      rows: readOnly ? undefined : term?.rows,
     }, 'effect');
-  }, [sendTerminalVisibility, tmuxSession, visible]);
+  }, [readOnly, sendTerminalVisibility, tmuxSession, visible]);
 
   useEffect(() => {
     if (visible) {
@@ -456,6 +406,7 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
           lineHeight: lineHeight ?? 1.45,
           cursorBlink: true,
           cursorStyle: 'block',
+          disableStdin: readOnly,
           allowTransparency: transparent === true,
           allowProposedApi: true,
           scrollback: TERMINAL_SCROLLBACK_LINES,
@@ -507,6 +458,7 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
           })
           : null;
         term.onData((data) => {
+          if (readOnly) return;
           if (awaitingVisibilityRef.current) {
             queuedInputRef.current.push(data);
             return;
@@ -580,13 +532,13 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
             initialNeedsResyncRef.current = true;
             awaitingVisibilityRef.current = visibleRef.current;
           }
-          sendTerminalAttach(tmuxSession, liveTerm.cols, liveTerm.rows);
+          sendTerminalAttach(tmuxSession, liveTerm.cols, liveTerm.rows, readOnly);
           sendBenchTerminalVisibility(sendTerminalVisibility, tmuxSession, visibleRef.current, {
             epoch: visibilityEpochRef.current,
             needsResync: visibleRef.current
               && (initialNeedsResyncRef.current || hiddenNeedsResyncRef.current),
-            cols: liveTerm.cols,
-            rows: liveTerm.rows,
+            cols: readOnly ? undefined : liveTerm.cols,
+            rows: readOnly ? undefined : liveTerm.rows,
           }, 'init');
         }));
         return () => {
@@ -636,7 +588,7 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
       fitAddonRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- cancelReveal only touches refs
-  }, [tmuxSession, sendTerminalAttach, sendTerminalDetach, sendTerminalInput, sendTerminalVisibility, fitTerminal, transparent, fontSize, lineHeight, spawnReveal, revealMinPlay]);
+  }, [tmuxSession, readOnly, sendTerminalAttach, sendTerminalDetach, sendTerminalInput, sendTerminalVisibility, fitTerminal, transparent, fontSize, lineHeight, spawnReveal, revealMinPlay]);
 
   // Re-attach after a transport (re)connect. The init effect's attach is
   // dropped silently if the socket isn't open yet, and the server never
@@ -655,18 +607,18 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
       hiddenNeedsResyncRef.current = true;
       hiddenBufferRef.current.clear();
       term.reset();
-      sendTerminalAttach(tmuxSession, term.cols, term.rows);
+      sendTerminalAttach(tmuxSession, term.cols, term.rows, readOnly);
       sendBenchTerminalVisibility(sendTerminalVisibility, tmuxSession, visibleRef.current, {
         epoch,
         needsResync: true,
-        cols: term.cols,
-        rows: term.rows,
+        cols: readOnly ? undefined : term.cols,
+        rows: readOnly ? undefined : term.rows,
       }, 'reconnect');
     } catch {
       // disposed mid-update; the next mount attaches fresh
     }
 
-  }, [connectionEpoch, tmuxSession, sendTerminalAttach, sendTerminalVisibility]);
+  }, [connectionEpoch, readOnly, tmuxSession, sendTerminalAttach, sendTerminalVisibility]);
 
   // Live-update xterm theme on theme switch without recreating the terminal.
   // The canvas repaints next frame with the new palette, PTY state is preserved.
@@ -781,7 +733,7 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
           flex: 1,
           minHeight: 0,
           width: '100%',
-          overflow: 'hidden',
+          overflow: readOnly ? 'auto' : 'hidden',
           background: transparent ? 'transparent' : 'var(--t-terminal-bg, #16191e)',
           paddingTop: 2,
           paddingLeft: 2,

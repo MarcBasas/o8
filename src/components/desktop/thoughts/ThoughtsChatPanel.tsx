@@ -90,6 +90,7 @@ import { usePersistChatThread } from './chat-panel/usePersistChatThread';
 import { useTurnSummaryReceipt } from './chat-panel/useTurnSummaryReceipt';
 import { useSuggestedReplies } from './chat-panel/useSuggestedReplies';
 import { useThoughtsComposerAttachments } from './chat-panel/useThoughtsComposerAttachments';
+import { useComposerRepoTarget } from './chat-panel/useComposerRepoTarget';
 import { useThreadHistoryBackfill } from './chat-panel/useThreadHistoryBackfill';
 import {
   fetchOlderThreadPage,
@@ -138,6 +139,10 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
   sessionTargets: AgentTarget[];
   workspaceTargets: OrchestratorWorkspaceTarget[];
   repoPath?: string | null;
+  /** Identity for the outer Project picker, including isolated panels. */
+  scopeTabId?: string;
+  /** Workspace tab that owns this composer, when rendered in the main workspace. */
+  ownerTabId?: string;
   projectId?: string | null;
   thoughtsBodyBackground: string;
   thoughtsElevatedSurface: string;
@@ -217,6 +222,8 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
   sessionTargets,
   workspaceTargets,
   repoPath: repoPathProp,
+  scopeTabId,
+  ownerTabId,
   projectId: projectIdProp,
   thoughtsBodyBackground,
   thoughtsElevatedSurface,
@@ -486,12 +493,7 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
   // session (that was the stuck-on-Codex trap).
   const isSingleMode = lockedMode === 'single';
   const isChatMode = orchestrationMode === 'chat';
-  // Solo vs fleet is now decided SILENTLY by installed runtime count (Q ruling
-  // 2026-07-11) — the manual Fleet/Solo chip was removed. One usable runtime →
-  // the orchestrator runs lean/inline (solo); two or more → fleet orchestration
-  // (dispatch). While the one-time probe is loading (null), default to fleet —
-  // dispatch is the thesis, and never gate the orchestrator's tools on a
-  // pending fetch.
+  // One available runtime runs inline; pending readiness preserves fleet routing.
   const soloOrchestrator = operatorDefaults.readyRuntimeCount === 1 && lockedMode !== 'single' && !isChatMode;
   const isOrchestratorMode = !isSingleMode && !isChatMode && (targetAgentKey === '__claude__' || !sessionTargets.some((s) => s.key === targetAgentKey));
 
@@ -562,19 +564,11 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
     () => workspaceTargets.find((target) => target.localPath === resolvedRepoPath) ?? null,
     [resolvedRepoPath, workspaceTargets],
   );
-  // When the empty-state surface is showing, the Project chip above
-  // the composer already owns the repo selector — duplicating it
-  // inside the composer pill row reads as visual redundancy (operator
-  // dogfood call). Hide it until messages arrive; on first message
-  // the composer slides down to its bottom rest and the repo chip
-  // reappears in the pill row so the operator can re-target during
-  // the conversation. Final `composerRepoLabel` is derived further
-  // down (after `displayMessages`) so the check matches what the
-  // empty-state slot uses.
+  // The empty-state Project chip owns selection until messages arrive.
   const composerRepoLabelBase = selectedWorkspaceTarget?.label
     ?? repoLabel
     ?? repoPathLabel(resolvedRepoPath);
-  const handleSelectComposerRepoPath = useCallback((next: string) => {
+  const applyComposerRepoPath = useCallback((next: string) => {
     setResolvedRepoPath(next);
     setPlanText(null);
     setWaitingForReply(false);
@@ -582,24 +576,14 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
     singleRuntimeSessionRef.current = null;
     singleRuntimeLaunchPromiseRef.current = null;
   }, []);
-
-  // Listen for the empty-state Project chip's selection. Only the
-  // currently OPEN panel responds (gated on `open`) so a multi-tab
-  // workspace doesn't fan the picker click out to every tab. Empty
-  // path = "don't work in a project" → clears resolvedRepoPath.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (!open) return;
-    const onScope = (event: Event) => {
-      const detail = (event as CustomEvent<{ repoPath?: string | null }>).detail;
-      const nextPath = typeof detail?.repoPath === 'string' && detail.repoPath.trim()
-        ? detail.repoPath
-        : '';
-      handleSelectComposerRepoPath(nextPath);
-    };
-    window.addEventListener('o8:select-workspace-scope', onScope as EventListener);
-    return () => window.removeEventListener('o8:select-workspace-scope', onScope as EventListener);
-  }, [handleSelectComposerRepoPath, open]);
+  const { selectRepoPath: handleSelectComposerRepoPath, ensureSelectedRepoPersisted, targetSaveError } = useComposerRepoTarget({
+    activeThreadId: threadId,
+    applyRepoPath: applyComposerRepoPath,
+    ownerTabId,
+    scopeTabId,
+    threadIdRef,
+    workspaceTargets,
+  });
 
   // ── Resolve repo path for orchestrator stream ──
   useEffect(() => {
@@ -1576,9 +1560,21 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
 
   const sendOrchestrator = useCallback((message: string, options: OrchestratorSendOptions) => {
     const handoffMode = backendSwitch.currentHandoffMode();
+    const sendingThreadId = threadIdRef.current;
     return orchStream.send(message, {
       ...options, pickedMode: composerModeRef.current,
       ...(handoffMode ? { handoffMode } : {}),
+      beforeSend: async (signal) => {
+        const ready = await ensureSelectedRepoPersisted(signal);
+        if (!ready && !signal.aborted && threadIdRef.current === sendingThreadId) {
+          setInput((draft) => draft ? `${message}\n\n${draft}` : message);
+          for (const image of options.attachments ?? []) {
+            addAttachedImage({ name: image.name ?? 'Image', dataUri: image.dataUri,
+              mimeType: image.dataUri.match(/^data:([^;]+);/)?.[1] ?? 'image/png' });
+          }
+        }
+        return ready;
+      },
       resolveTurnOptions: (signal) => resolveFreshComposerTurnOptions({
         repoPath: resolvedRepoPath,
         backend: orchestratorBackend,
@@ -1586,7 +1582,7 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
         setModel: setOrchestratorModel, setOperatorDefaults,
       }, signal),
     });
-  }, [backendSwitch, orchStream, orchestratorBackend, resolvedRepoPath, setOrchestratorModel]);
+  }, [addAttachedImage, backendSwitch, ensureSelectedRepoPersisted, orchStream, orchestratorBackend, resolvedRepoPath, setOrchestratorModel]);
 
   const startSlashOrchestration = useCallback(async (request: SlashOrchestrationRequest) => {
     const localEntriesAfterUser = request.commandEntry ? [request.commandEntry] : [];
@@ -2223,7 +2219,7 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
           // At narrow widths the floating rail shares the empty-state row.
           // Reserve its footprint so the prompt cannot paint beneath it.
           paddingRight: composeFirstRailClearance
-            ? `clamp(0px, calc(1000px - 100cqw), ${composeFirstRailClearance}px)`
+            ? `clamp(0px, calc(1000px - 100cqw), var(--o8-compose-first-rail-clearance, ${composeFirstRailClearance}px))`
             : 0,
           boxSizing: 'border-box',
         }}
@@ -2271,6 +2267,7 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
       </div>
       {composeFirst && transcriptSideRail ? <div style={{ position: 'absolute', top: 0, right: 0, height: 'max-content' }}>{transcriptSideRail}</div> : null}
       <ChatToastStack
+        projectTargetSaveError={targetSaveError}
         reloadNotice={reloadNotice}
         onDismissReloadNotice={dismissReloadNotice}
         showClearToast={showClearToast}
@@ -2282,12 +2279,12 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
         // Its rail clearance is applied only while the transcript is empty.
         style={{
           flexShrink: 0,
-          width: composeFirstRailClearance ? `calc(100% - ${composeFirstRailClearance}px)` : '100%',
+          width: composeFirstRailClearance ? `calc(100% - var(--o8-compose-first-rail-clearance, ${composeFirstRailClearance}px))` : '100%',
           maxWidth: composeFirst ? 900 : undefined,
           // Center inside the available canvas on wide windows. On narrow
           // windows keep the right edge clear of the floating capsule.
           marginRight: composeFirstRailClearance
-            ? `max(${composeFirstRailClearance}px, calc((100cqw - 900px) / 2))`
+            ? `max(var(--o8-compose-first-rail-clearance, ${composeFirstRailClearance}px), calc((100cqw - 900px) / 2))`
             : 'auto',
           marginLeft: 'auto',
           // Keep position in layout so resizing reflows without overlap.

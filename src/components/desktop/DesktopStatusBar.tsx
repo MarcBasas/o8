@@ -10,7 +10,6 @@
 import { memo, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ParkedLane } from './merge-beacon/derive';
-import { Terminal as TablerTerminal } from './tabler-shims';
 import { ViewAsFreeIndicator } from './ViewAsFreeIndicator';
 import { getRegisteredComposerCenter, subscribeToComposerCenter } from './composer-center-registry';
 import { useEntitlement } from '@/lib/entitlement/context';
@@ -123,43 +122,6 @@ function DesktopStatusBarBase({
 }
 
 export const DesktopStatusBar = memo(DesktopStatusBarBase);
-
-/** Open or close the bottom utility panel. Surfaces are added inside the panel. */
-export function StatusBottomPanelControl({ active, onToggle }: { active: boolean; onToggle: () => void }) {
-  const [hovered, setHovered] = useState(false);
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      aria-label={active ? 'Close bottom panel' : 'Open bottom panel'}
-      title={active ? 'Close bottom panel' : 'Open bottom panel'}
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        width: 28,
-        height: 26,
-        borderRadius: 8,
-        borderWidth: 0,
-        background: hovered ? 'var(--t-hover)' : 'transparent',
-        color: active ? 'var(--t-accent)' : 'var(--t-text-secondary)',
-        cursor: 'pointer',
-        padding: 0,
-        transition: 'background 120ms ease, color 120ms ease',
-      }}
-    >
-      <TerminalGlyph size={14} />
-    </button>
-  );
-}
-
-function TerminalGlyph({ size = 14 }: { size?: number }) {
-  // Tabler Terminal2 — operator-locked icon for the bottom-area
-  // terminal affordance. See Hurttlocker.md§"Icon vocabulary".
-  return <TablerTerminal size={size} strokeWidth={2} />;
-}
 
 /** `?` button — opens the keyboard-shortcuts reference. Sits at the
  *  right edge of the status bar where global help affordances belong. */

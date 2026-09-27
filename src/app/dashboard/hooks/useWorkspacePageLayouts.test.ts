@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, createElement, useEffect, useState } from 'react';
+import { act, createElement, useLayoutEffect, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { collectLeafNodes, createDefaultTileLayout, insertBalancedTerminalTile } from '@/lib/tiles/operations';
@@ -20,11 +20,11 @@ describe('workspace page layouts', () => {
     const [tab, updateTab] = useState(initialTab);
     const [layout, updateLayout] = useState(initialLayout);
     const [, updateActiveTile] = useState<string | null>('tile-root');
-    useEffect(() => {
+    useLayoutEffect(() => {
       setTab = updateTab;
       setLayout = updateLayout;
       currentLayout = layout;
-    }, [layout, updateLayout, updateTab]);
+    }, [layout]);
     useWorkspacePageLayouts({
       activeTabId: tab,
       hydrated: true,

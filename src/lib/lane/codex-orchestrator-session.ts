@@ -389,7 +389,7 @@ async function sendToCodexOrchestratorAttempt(
   try {
     // A 'propose' turn gets the operator-stripped (read-only proposer) config —
     // Collide's dispatch lockout.
-    const prepared = prepareCodexHome(session.repoPath, options.toolProfile ?? 'full', model);
+    const prepared = prepareCodexHome(session.repoPath, options.toolProfile ?? 'full', model, session.historyThreadId);
     codexHome = prepared.codexHome;
     model = prepared.model;
     if (prepared.note) {
@@ -681,9 +681,13 @@ async function sendToCodexOrchestratorAttempt(
       const crashStderr = crashRecord && code !== 0
         ? readFileSync(crashRecord.stderrPath, 'utf8')
         : '';
+      const diagnostic = (stderr || crashStderr).trim();
+      // Startup warnings can fill the display limit before the resume failure.
+      // Keep that diagnostic visible to the one-time missing-thread recovery.
+      const resumeDiagnostic = diagnostic.split(/\r?\n/).find(isMissingCodexRolloutResumeError);
       const error = code === 0
         ? undefined
-        : (stderr || crashStderr).trim().slice(0, 500) || `codex exited with code ${code}`;
+        : (resumeDiagnostic || diagnostic).slice(0, 500) || `codex exited with code ${code}`;
       settle(code === 0 ? 'ready' : 'dead', error, true);
     });
 

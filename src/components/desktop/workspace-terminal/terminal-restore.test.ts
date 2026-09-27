@@ -183,6 +183,23 @@ describe('resetControllerRefs', () => {
 });
 
 describe('computeRestoredTabs — optimistic crash recovery', () => {
+  it('restores a live run terminal as read-only', async () => {
+    const result = await computeRestoredTabs({
+      version: 1,
+      activeTabId: 'run-tab',
+      savedAt: new Date().toISOString(),
+      tabs: [{ id: 'run-tab', label: 'Running ship', kind: 'terminal', cliAgent: 'shell', tmuxSession: 'cortex-run-ship', readOnly: true }],
+    }, {
+      preferredRepo: null,
+      defaultTab: 'terminal',
+      createDefaultChatTab: () => tab({ kind: 'llm-chat' }),
+    }, undefined, 'optimistic');
+
+    expect(result?.tabs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tmuxSession: 'cortex-run-ship', readOnly: true }),
+    ]));
+  });
+
   it('returns saved tabs for immediate paint before background validation', async () => {
     const result = await computeRestoredTabs({
       version: 1,

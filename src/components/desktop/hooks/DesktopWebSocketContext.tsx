@@ -60,7 +60,7 @@ function getWsUrl(): string {
 interface SharedWsCommands {
   switchSession: (sessionKey: string) => void;
   sendTerminalCreate: (cols: number, rows: number, requestId?: string, cwd?: string, ownerKey?: string) => void;
-  sendTerminalAttach: (sessionName: string, cols: number, rows: number) => void;
+  sendTerminalAttach: (sessionName: string, cols: number, rows: number, readOnly?: boolean) => void;
   sendTerminalInput: (sessionName: string, data: string) => void;
   sendTerminalResize: (sessionName: string, cols: number, rows: number) => void;
   sendTerminalVisibility: (sessionName: string, visible: boolean, options?: { epoch?: number; needsResync?: boolean; cols?: number; rows?: number }) => void;
@@ -252,8 +252,8 @@ export function DesktopWebSocketProvider({ children }: { children: ReactNode }) 
     wsSend({ type: 'terminal-create', cols, rows, requestId, cwd, ownerKey });
   }, [wsSend]);
 
-  const sendTerminalAttach = useCallback((sessionName: string, cols: number, rows: number) => {
-    wsSend({ type: 'terminal-attach', sessionName, cols, rows });
+  const sendTerminalAttach = useCallback((sessionName: string, cols: number, rows: number, readOnly = false) => {
+    wsSend({ type: 'terminal-attach', sessionName, cols, rows, readOnly });
   }, [wsSend]);
 
   const sendTerminalInput = useCallback((sessionName: string, data: string) => {
@@ -402,7 +402,13 @@ export function DesktopWebSocketProvider({ children }: { children: ReactNode }) 
         case 'terminal':
           if (eventType === 'created' && data) dispatch('onTerminalCreated', data.sessionName as string, data.requestId as string | undefined);
           else if (eventType === 'data' && data) dispatch('onTerminalData', data.sessionName as string, data.data as string);
-          else if (eventType === 'attached' && data) dispatch('onTerminalAttached', data.sessionName as string);
+          else if (eventType === 'attached' && data) {
+            dispatch('onTerminalAttached', data.sessionName as string);
+            if (typeof data.cols === 'number' && typeof data.rows === 'number') {
+              dispatch('onTerminalDimensions', data.sessionName as string, data.cols, data.rows);
+            }
+          }
+          else if (eventType === 'dimensions' && data) dispatch('onTerminalDimensions', data.sessionName as string, data.cols as number, data.rows as number);
           else if (eventType === 'visibility-ready' && data) dispatch('onTerminalVisibilityReady', data.sessionName as string, data.epoch as number);
           else if (eventType === 'resync' && data) dispatch(
             'onTerminalResync',
@@ -552,7 +558,7 @@ interface UseSharedDesktopWsResult {
   isConnected: boolean;
   switchSession: (sessionKey: string) => void;
   sendTerminalCreate: (cols: number, rows: number, requestId?: string, cwd?: string, ownerKey?: string) => void;
-  sendTerminalAttach: (sessionName: string, cols: number, rows: number) => void;
+  sendTerminalAttach: (sessionName: string, cols: number, rows: number, readOnly?: boolean) => void;
   sendTerminalInput: (sessionName: string, data: string) => void;
   sendTerminalResize: (sessionName: string, cols: number, rows: number) => void;
   sendTerminalVisibility: (sessionName: string, visible: boolean, options?: { epoch?: number; needsResync?: boolean; cols?: number; rows?: number }) => void;
@@ -592,6 +598,7 @@ export function useSharedDesktopWs(
     onTerminalCreated: (...args: Parameters<NonNullable<DesktopWsCallbacks['onTerminalCreated']>>) => cbRef.current.onTerminalCreated?.(...args),
     onTerminalData: (...args: Parameters<NonNullable<DesktopWsCallbacks['onTerminalData']>>) => cbRef.current.onTerminalData?.(...args),
     onTerminalAttached: (...args: Parameters<NonNullable<DesktopWsCallbacks['onTerminalAttached']>>) => cbRef.current.onTerminalAttached?.(...args),
+    onTerminalDimensions: (...args: Parameters<NonNullable<DesktopWsCallbacks['onTerminalDimensions']>>) => cbRef.current.onTerminalDimensions?.(...args),
     onTerminalVisibilityReady: (...args: Parameters<NonNullable<DesktopWsCallbacks['onTerminalVisibilityReady']>>) => cbRef.current.onTerminalVisibilityReady?.(...args),
     onTerminalResync: (...args: Parameters<NonNullable<DesktopWsCallbacks['onTerminalResync']>>) => cbRef.current.onTerminalResync?.(...args),
     onTerminalDiagnostic: (...args: Parameters<NonNullable<DesktopWsCallbacks['onTerminalDiagnostic']>>) => cbRef.current.onTerminalDiagnostic?.(...args),

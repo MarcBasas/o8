@@ -449,6 +449,7 @@ export async function computeRestoredTabs(
         label: savedTab.label,
         kind: 'terminal',
         tmuxSession: savedTab.tmuxSession,
+        readOnly: savedTab.readOnly,
         cliAgent: savedTab.cliAgent,
         repo: savedTab.repoPath ? { name: savedTab.repoName ?? 'repo', localPath: savedTab.repoPath } : (currentPreferredRepo ?? undefined),
         createdAt: now,
@@ -718,4 +719,14 @@ export async function loadInitialTabState(
   }
 
   return saved && saved.tabs.length > 0 ? saved : null;
+}
+
+export function attachRestoredTerminalSessions(
+  sessions: string[],
+  tabs: TerminalTab[],
+  attach: (session: string, cols: number, rows: number, readOnly?: boolean) => void,
+): void {
+  for (const session of sessions) {
+    attach(session, 120, 30, tabs.some((tab) => tab.tmuxSession === session && tab.readOnly === true));
+  }
 }

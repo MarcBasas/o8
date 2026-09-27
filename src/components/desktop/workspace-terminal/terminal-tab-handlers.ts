@@ -362,6 +362,7 @@ export function serializeTabsForPersistence(currentTabs: TerminalTab[]) {
       repoName: tab.repo?.name,
       repoPath: tab.repo?.localPath,
       tmuxSession: tab.tmuxSession ?? undefined,
+      readOnly: tab.readOnly,
       chatRuntime: tab.chatRuntime,
       chatSessionKey: tab.chatSessionKey,
       laneId: tab.laneId ?? undefined,
@@ -424,11 +425,11 @@ export interface RunCommandResult {
 }
 
 export function resolveRunCommandTarget(tabs: TerminalTab[]): RunCommandResult {
-  const shellTab = tabs.find((tab) => tab.kind === 'terminal' && tab.tmuxSession);
+  const shellTab = tabs.find((tab) => tab.kind === 'terminal' && tab.tmuxSession && !tab.readOnly);
   if (shellTab?.tmuxSession) {
     return { kind: 'existing-shell', tmuxSession: shellTab.tmuxSession };
   }
-  const pendingShell = tabs.find((tab) => tab.kind === 'terminal' && !tab.tmuxSession);
+  const pendingShell = tabs.find((tab) => tab.kind === 'terminal' && !tab.tmuxSession && !tab.readOnly);
   if (pendingShell) {
     return { kind: 'pending-shell', pendingTabId: pendingShell.id };
   }
