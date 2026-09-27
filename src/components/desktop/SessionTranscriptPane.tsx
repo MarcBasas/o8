@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useOrchestratorData } from './orchestrator-data-context';
 import { AgentTilePane } from './workspace-terminal/AgentTilePane';
 import type { FleetAgent } from './thoughts/types';
+import { DEGRADED_FALLBACK_REFRESH_MS, startDurableRefresh } from '@/lib/panel/durable-refresh';
 
 interface SessionTranscriptPaneProps {
   sessionKey: string;
@@ -38,18 +39,24 @@ export function SessionTranscriptPane({
   useEffect(() => {
     if (agent || !sessionKey.includes('-owned:')) return;
     const controller = new AbortController();
-    void fetch(`/api/runtime/session-summary?sessionKey=${encodeURIComponent(sessionKey)}`, {
-      cache: 'no-store',
-      signal: controller.signal,
-    }).then(async (response) => {
-      if (!response.ok) return;
-      const payload = await response.json() as { session?: FleetAgent };
-      if (payload.session?.sessionKey !== sessionKey) return;
-      setSavedAgent({ sessionKey, agent: payload.session });
-    }).catch(() => {
-      // A missing archived record leaves the existing runtime label in place.
+    const refresh = async () => {
+      try {
+        const response = await fetch(`/api/runtime/session-summary?sessionKey=${encodeURIComponent(sessionKey)}`, {
+          cache: 'no-store', signal: controller.signal,
+        });
+        if (!response.ok || controller.signal.aborted) return;
+        const payload = await response.json() as { session?: FleetAgent };
+        if (controller.signal.aborted || payload.session?.sessionKey !== sessionKey) return;
+        setSavedAgent({ sessionKey, agent: payload.session });
+      } catch { /* Preserve the last runtime evidence during transient outages. */ }
+    };
+    void refresh();
+    const stopRefresh = startDurableRefresh({
+      refresh,
+      intervalMs: DEGRADED_FALLBACK_REFRESH_MS,
+      events: ['o8:lifecycle-reconcile', 'cortex:agent-supervisor-update'],
     });
-    return () => controller.abort();
+    return () => { stopRefresh(); controller.abort(); };
   }, [agent, sessionKey]);
   const packet = useMemo(
     () => data?.missionState?.packets.find((entry) => entry.lane?.sessionKey === sessionKey) ?? null,
