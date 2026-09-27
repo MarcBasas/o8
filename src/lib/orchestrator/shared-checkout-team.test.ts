@@ -87,6 +87,32 @@ describe('shared checkout team', () => {
     expect(inspectSharedCheckoutTeam(input)?.outsideClaims).toEqual(['outside.md']);
   });
 
+  it('rejects dirty and committed renames from outside a worker claim', async () => {
+    const { root, repoPath } = fixture();
+    const input = { repoPath, parentThreadId: 'thoughts-rename', dataDir: join(root, 'state') };
+    const ownedRoot = join(root, 'owned-codex');
+    vi.stubEnv('CORTEX_IDE_OWNED_CODEX_ROOT', ownedRoot);
+    await reserveSharedCheckoutMember({ ...input, runtime: 'codex', taskName: 'Rename', clientMutationId: 'rename', paths: ['inside.txt'] });
+    await recordSharedCheckoutMember({ ...input, surfaceId: 'codex-owned:rename', runtime: 'codex', taskName: 'Rename', clientMutationId: 'rename' });
+    mkdirSync(join(ownedRoot, 'rename'), { recursive: true });
+    writeFileSync(join(ownedRoot, 'rename', 'session.json'), JSON.stringify({
+      surfaceId: 'codex-owned:rename', cwd: realpathSync(repoPath), repoPath: realpathSync(repoPath),
+      launchMutationId: 'rename', recentRuns: [{ outcome: 'finished' }],
+    }));
+    git(repoPath, 'config', 'diff.renames', 'true');
+    git(repoPath, 'mv', 'README.md', 'inside.txt');
+    expect(inspectSharedCheckoutTeam(input)).toMatchObject({
+      newPaths: ['README.md', 'inside.txt'], outsideClaims: ['README.md'], scopeClean: false,
+    });
+    git(repoPath, '-c', 'user.name=o8 test', '-c', 'user.email=test@o8.local', 'commit', '-m', 'Rename into claimed scope');
+    expect(inspectSharedCheckoutTeam(input)).toMatchObject({
+      committedPaths: ['README.md', 'inside.txt'], outsideClaims: ['README.md'], scopeClean: false,
+    });
+    await expect(finishSharedCheckoutTeam({ ...input, reviewSummary: 'Reviewed rename.', verification: 'Fixture inspected.' }))
+      .rejects.toThrow(/outside worker scopes.*README.md/);
+    expect(readSharedCheckoutTeam(input)?.members).toHaveLength(1);
+  });
+
   it('rejects a path scope that resolves outside the checkout', async () => {
     const { root, repoPath } = fixture();
     const input = { repoPath, parentThreadId: 'thoughts-team-a', dataDir: join(root, 'state') };

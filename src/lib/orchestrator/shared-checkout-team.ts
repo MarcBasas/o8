@@ -39,7 +39,7 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 function changedPaths(path: string): string[] {
-  const tracked = git(path, 'diff', '--name-only', '-z', 'HEAD').split('\0').filter(Boolean);
+  const tracked = git(path, 'diff', '--no-renames', '--name-only', '-z', 'HEAD').split('\0').filter(Boolean);
   const untracked = git(path, 'ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean);
   return [...new Set([...tracked, ...untracked])].sort();
 }
@@ -63,7 +63,7 @@ function changedFingerprints(root: string, paths: string[]): Record<string, stri
 }
 
 function committedPaths(path: string, baseHead: string): string[] {
-  return git(path, 'diff', '--name-only', '-z', baseHead, 'HEAD').split('\0').filter(Boolean).sort();
+  return git(path, 'diff', '--no-renames', '--name-only', '-z', baseHead, 'HEAD').split('\0').filter(Boolean).sort();
 }
 
 function teamLocation(input: TeamInput): { id: string; file: string; lock: string; path: string } {
