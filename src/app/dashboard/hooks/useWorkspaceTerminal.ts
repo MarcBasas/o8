@@ -558,6 +558,11 @@ export function useWorkspaceTerminal({
         handle.writeToTerminal(sessionName, data);
       }
     },
+    onTerminalDimensions: (sessionName: string, cols: number, rows: number) => {
+      for (const handle of workspaceTerminalHandlesRef.current.values()) {
+        handle.setTerminalSourceDimensions?.(sessionName, cols, rows);
+      }
+    },
     onTerminalVisibilityReady: (sessionName: string, epoch: number) => {
       for (const handle of workspaceTerminalHandlesRef.current.values()) {
         handle.terminalVisibilityReady?.(sessionName, epoch);

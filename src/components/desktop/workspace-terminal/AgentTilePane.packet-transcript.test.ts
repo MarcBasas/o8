@@ -189,7 +189,8 @@ describe('AgentTilePane structured packet transcript delivery', () => {
         onFocus: () => {},
       }));
     });
-    expect(host.textContent).toContain('OpenCode 2 · gpt-5.6-terra');
+    expect(host.querySelector('[data-worker-model]')?.textContent).toContain('gpt-5.6-terra');
+    expect(host.querySelector('[data-worker-model]')?.getAttribute('title')).toBe('OpenCode 2 · gpt-5.6-terra');
     expect(host.textContent).not.toContain('gpt-6-sol');
   });
 

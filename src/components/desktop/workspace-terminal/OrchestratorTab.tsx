@@ -1128,9 +1128,9 @@ function OrchestratorTabInner({
         </div>
       ) : null}
 
-      {/* Live `o8 run` sessions — click a chip to watch the raw stdout in the
-          bottom panel without leaving the chat. Self-hides when none run. */}
-      <OrchestratorRunStrip active={active} />
+      {/* Live `o8 run` sessions — click a chip to watch stdout in a read-only
+          workspace terminal tab. Self-hides when none run. */}
+      <OrchestratorRunStrip active={active} workspaceId={workspaceId} />
 
       {/* Body: chat (flex) | branch details (self-hides). Threads/Archive
           moved into LeftPanelProjectFocus → Chats + Agents tabs. */}

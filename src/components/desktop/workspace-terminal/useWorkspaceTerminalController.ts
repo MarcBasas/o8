@@ -36,7 +36,7 @@ import { buildTerminalTabHandle } from '@/components/desktop/workspace-terminal/
 import { createTerminalActivityTracker } from '@/components/desktop/workspace-terminal/terminal-activity';
 import { readLastOrchestratorThreadTitle } from '@/components/desktop/workspace-terminal/orchestrator-thread-restore';
 import { scrubOrphanSessionTileKeys } from '@/components/desktop/workspace-terminal/use-session-tiles';
-import { applyCreatedTerminalSession, canPreserveScopedTabs, computeRestoredTabs, loadInitialTabState, mergeUserSpawnedTabs, reconcileValidatedTabs, resetControllerRefs, shouldSkipRestoreKeyChange } from '@/components/desktop/workspace-terminal/terminal-restore';
+import { attachRestoredTerminalSessions, applyCreatedTerminalSession, canPreserveScopedTabs, computeRestoredTabs, loadInitialTabState, mergeUserSpawnedTabs, reconcileValidatedTabs, resetControllerRefs, shouldSkipRestoreKeyChange } from '@/components/desktop/workspace-terminal/terminal-restore';
 import {
   buildChatSessionSnapshots,
   buildCommitCanvasTab,
@@ -723,9 +723,7 @@ export function useWorkspaceTerminalController(
 
     if (termWsConnectedRef.current) {
       initialTerminalBootstrapRef.current = true;
-      for (const sessionName of result.sessionsToAttach) {
-        sendTerminalAttach(sessionName, 120, 30);
-      }
+      attachRestoredTerminalSessions(result.sessionsToAttach, mergedTabs, sendTerminalAttach);
       for (const deadTab of result.deadTerminalTabs) {
         if (cancelled?.()) return false;
         const restoreCommand = deadTab.repo?.localPath ? `cd ${shellQuote(deadTab.repo.localPath)}` : undefined;
@@ -864,7 +862,7 @@ export function useWorkspaceTerminalController(
     for (const tab of tabsRef.current) {
       if (tab.kind !== 'terminal') continue;
       if (tab.tmuxSession) {
-        sendTerminalAttach(tab.tmuxSession, 120, 30);
+        sendTerminalAttach(tab.tmuxSession, 120, 30, tab.readOnly);
         continue;
       }
       const restoreCommand = tab.repo?.localPath ? `cd ${shellQuote(tab.repo.localPath)}` : undefined;
@@ -939,7 +937,7 @@ export function useWorkspaceTerminalController(
     if (!termWsConnected || !wasConnected || !restoredRef.current) return;
     for (const tab of tabsRef.current) {
       if (tab.kind === 'terminal' && tab.tmuxSession) {
-        sendTerminalAttach(tab.tmuxSession, 120, 30);
+        sendTerminalAttach(tab.tmuxSession, 120, 30, tab.readOnly);
       }
     }
   }, [sendTerminalAttach, termWsConnected]);
@@ -1157,7 +1155,7 @@ export function useWorkspaceTerminalController(
       id: createWorkspaceTabId('terminal'),
       label: session.label?.trim() || 'Terminal',
       kind: 'terminal',
-      tmuxSession: session.tmuxSession,
+      tmuxSession: session.tmuxSession, readOnly: session.readOnly,
       repo: repo ?? undefined,
       createdAt: now,
       lastActivity: now,

@@ -16,6 +16,7 @@ import { readAnyXtermSelection } from '@/components/desktop/workspace-terminal/x
 import { ReactiveQueryProvider } from '@/lib/query/provider';
 import { useReactiveQuery } from '@/lib/query/use-reactive-query';
 import { AgentPanel } from '@/components/desktop/AgentPanel';
+import { ChatRailStudy } from '@/components/desktop/dev/ChatRailStudy';
 import { ProjectsPage } from '@/components/desktop/ProjectsPage';
 import { RetainedCustomizeView } from '@/components/desktop/customize/RetainedCustomizeView';
 // AgentPanelChat retired — orchestrator/chat tabs handle chat surfaces now.
@@ -82,6 +83,7 @@ import {
 } from '@/lib/events/o8-panel-focus';
 import { fetchOnce, fetchSWRJson } from '@/lib/panel/fetch-cache';
 import { safeCancelIdleCallback, safeRequestIdleCallback } from '@/lib/util/webview-safe';
+import { prefetchConnectedAutomations } from '@/components/desktop/automations-page/connected-cache';
 import type { RepoRegistryEntry } from '@/lib/repos/types';
 import type { WorktreeInfo } from '@/lib/worktree/types';
 import type { MobileInboxSnapshot, MobileOrchestratorThread } from '@/lib/mobile/types';
@@ -1394,6 +1396,8 @@ function DashboardInner() {
       import('@/components/desktop/Canvas');
       import('@/components/desktop/workspace-terminal/OrchestratorTab');
       import('@/components/desktop/O8Panel');
+      import('@/components/desktop/AutomationsPage');
+      prefetchConnectedAutomations();
     };
     const id = safeRequestIdleCallback(prefetch, { fallbackDelayMs: 100 });
     return () => safeCancelIdleCallback(id);
@@ -1927,7 +1931,6 @@ function DashboardInner() {
   const {
     activeSurfaceRepoPath,
     activeWorkspaceChatTargetKey,
-    bottomPanelVisible,
     canvasStateByTileId,
     closeCanvasTab,
     ensureTileKind,
@@ -2025,10 +2028,14 @@ function DashboardInner() {
   }, [handleOpenInbox]);
 
   const handleOpenHandoffs = useCallback(() => {
+    if (chatVisible && rightPanelKind === 'o8' && o8ActiveTab === 'handoffs') {
+      closeRightPanelFromUser();
+      return;
+    }
     setRightPanelKind('o8');
     openRightPanelFromUser();
     setO8ActiveTab('handoffs');
-  }, [openRightPanelFromUser]);
+  }, [chatVisible, closeRightPanelFromUser, o8ActiveTab, openRightPanelFromUser, rightPanelKind]);
 
   useEffect(() => {
     window.addEventListener('o8:open-handoffs', handleOpenHandoffs);
@@ -3342,37 +3349,6 @@ function DashboardInner() {
     runCommand();
   }, [ensureTileKind, getPreferredContextualPanelHandle]);
 
-  // ── Watch a live o8-owned run session (`o8 run`) in the bottom panel ──
-  const handleOpenAgentTerminal = useCallback((session: string, label?: string) => {
-    if (!session) return;
-    const tileId = ensureTileKind('contextual-panel', {
-      direction: 'horizontal',
-      preferredKinds: ['terminal', 'contextual-panel', 'preview'],
-      ratio: 0.68,
-    });
-    const attach = (attempt = 0) => {
-      const handle = getPreferredContextualPanelHandle(tileId);
-      if (handle) {
-        handle.attachLiveAgentTerminal(session, label);
-        return;
-      }
-      if (attempt < 8) {
-        window.setTimeout(() => attach(attempt + 1), 50);
-      }
-    };
-    attach();
-  }, [ensureTileKind, getPreferredContextualPanelHandle]);
-
-  // Footer agent chip → attach the o8 run's live terminal in the bottom panel.
-  useEffect(() => {
-    const handleOpenAgentTerminalEvent = (event: Event) => {
-      const detail = (event as CustomEvent<{ session?: string; label?: string }>).detail;
-      if (detail?.session) handleOpenAgentTerminal(detail.session, detail.label);
-    };
-    window.addEventListener('o8:open-agent-terminal', handleOpenAgentTerminalEvent);
-    return () => window.removeEventListener('o8:open-agent-terminal', handleOpenAgentTerminalEvent);
-  }, [handleOpenAgentTerminal]);
-
   // ── Alert action: navigate to agent session ──
   const handleAlertAction = useCallback((alert: import('@/lib/alerts/types').Alert) => {
     if (alert.sessionKey) {
@@ -4469,7 +4445,7 @@ function DashboardInner() {
   });
 
   const settingsTakeoverActive = activeNavSection === 'settings';
-  const workspaceSurfaceHidden = settingsTakeoverActive || activeNavSection === 'customize' || activeNavSection === 'projects';
+  const workspaceSurfaceHidden = settingsTakeoverActive || activeNavSection === 'automations' || activeNavSection === 'customize' || activeNavSection === 'projects';
   useEffect(() => {
     if (!settingsTakeoverActive) {
       if (settingsWasOpenRef.current) {
@@ -4702,6 +4678,10 @@ function DashboardInner() {
   }, []);
 
   const showSidebarColumn = sidebarVisible && !compactShell;
+  const showDevChatRailStudy = process.env.NODE_ENV === 'development'
+    && !showSidebarColumn
+    && !compactShell
+    && !settingsTakeoverActive;
   const showRightPanelColumn = chatVisible && !compactShell && !viewportBands?.belowRightCollapse;
   const workspaceInset = compactShell ? 2 : 4;
 
@@ -5105,6 +5085,8 @@ function DashboardInner() {
           DesktopStatusBar at the bottom. The AgentPanel stays docked as the
           left column below. */}
 
+      {showDevChatRailStudy ? <div aria-hidden="true" style={{ width: 68, flexShrink: 0 }} /> : null}
+
       {/* ── Left: Agent Panel ── */}
       {showSidebarColumn && (() => {
         // When a repo is focused, we want the column to behave like the
@@ -5309,13 +5291,11 @@ function DashboardInner() {
           leadingInset={!showSidebarColumn}
           sidebarVisible={sidebarVisible}
           onToggleSidebar={!showSidebarColumn && !compactShell ? toggleSidebarFromChrome : undefined}
-          onSidebarHoverEnter={!showSidebarColumn && !compactShell ? openSidebarPreview : undefined}
-          onSidebarHoverLeave={!showSidebarColumn && !compactShell ? scheduleSidebarPreviewClose : undefined}
+          onSidebarHoverEnter={!showSidebarColumn && !compactShell && !showDevChatRailStudy ? openSidebarPreview : undefined}
+          onSidebarHoverLeave={!showSidebarColumn && !compactShell && !showDevChatRailStudy ? scheduleSidebarPreviewClose : undefined}
           rightPanelOpen={showRightPanelColumn}
           rightPanelDisabled={viewportBands?.belowRightCollapse ?? false}
           onToggleRightPanel={compactShell ? undefined : handleToggleO8Panel}
-          bottomPanelVisible={bottomPanelVisible}
-          onToggleBottomPanel={toggleContextualPanelTile}
           projectContextRailAvailable={workspaceHeaderActive.contextRailAvailable}
           projectContextRailVisible={workspaceHeaderActive.contextRailVisible}
           onToggleProjectContextRail={compactShell ? undefined : () => {
@@ -5634,12 +5614,38 @@ function DashboardInner() {
       {/* ── Alert Toast (desktop only — urgent alerts slide in bottom-left near bell) ── */}
       <AlertToast alerts={activeAlerts} compact={compactShell} onAction={handleAlertAction} />
 
-      {/* ── Sidebar hover-preview trigger + drop overlay (collapsed only) ──
-          When the AgentPanel column is hidden, we keep a thin invisible hot
-          zone along the left edge. Hovering it drops a detail panel from the
-          top of the screen — same content shape as the open sidebar, but
-          condensed and overlaid (not pushing layout). Click on the workspace
-          toggle pill keeps the existing slide-from-left full open. */}
+      {showDevChatRailStudy ? <ChatRailStudy
+        onHoverReveal={openSidebarPreview}
+        onHoverLeave={scheduleSidebarPreviewClose}
+        onPinSidebar={openSidebarFromChrome}
+        onHome={() => {
+          leaveNavTakeover();
+          const repo = leftPanelFocus.view?.selectedRepo
+            ?? activeProjectRepoEntries.find((entry) => entry.localPath === globalRepoEntry?.localPath)
+            ?? activeProjectRepoEntries[0]
+            ?? workspaceTerminalPreferredRepo;
+          if (repo?.readiness?.state === 'missing') {
+            setActiveNavSection('projects');
+            return;
+          }
+          handleCreateWorkspaceOrchestrator(repo ? {
+            name: repo.name,
+            localPath: repo.localPath,
+            remoteUrl: repo.remoteUrl ?? undefined,
+            branch: repo.readiness?.currentBranch ?? repo.defaultBranch ?? null,
+          } : undefined);
+        }}
+        onCreateTerminal={() => { leaveNavTakeover(); handleCreateWorkspaceTerminal(); }}
+        onSearch={() => { leaveNavTakeover(); handlePaletteOpen(); }}
+        onOpenProjects={() => { leftPanelFocus.clearFocus(); setProjectLibraryRequest((request) => ({ projectId: null, revision: request.revision + 1 })); setActiveNavSection('projects'); }}
+        onOpenHistoryChat={(...args) => { leaveNavTakeover(); handleOpenHistoryChatFromPanel(...args); }}
+        repos={activeProjectRepoEntries}
+        activeSessionKey={railActiveSessionKey}
+        previewOpen={sidebarPreviewOpen}
+      /> : null}
+
+      {/* Collapsed rail hover reveals the same AgentPanel used by the open
+          sidebar. It floats over the workspace; a click pins the full column. */}
       {!showSidebarColumn && !compactShell && (
         <>
           <AnimatePresence initial={false}>
@@ -5647,18 +5653,13 @@ function DashboardInner() {
               <motion.div
                 key="sidebar-hover-preview"
                 ref={sidebarPreviewOverlayRef}
-                // Fade in place at top:35 (just below the collapsed-sidebar
-                // toggle) — do NOT slide from off-screen-top. That sweep passed
-                // over the toggle mid-animation, stealing its hover (and the
-                // overlay's own onMouseEnter hit-test is unreliable while it's
-                // transforming), so the close timer fired and the panel
-                // flickered open/closed in a loop (operator 2026-06-15). A pure
-                // opacity fade keeps the overlay anchored below the toggle the
-                // whole time, so the toggle's hover is never interrupted.
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+                // A short horizontal reveal keeps the panel anchored to the
+                // rail. Do not sweep it down over the header toggle: that
+                // previously stole hover and caused an open/close loop.
+                initial={{ opacity: 0, x: -4, scale: 0.997 }}
+                animate={{ opacity: 1, x: 0, scale: 1 }}
+                exit={{ opacity: 0, x: -4, scale: 0.997 }}
+                transition={{ duration: 0.1, ease: [0.22, 1, 0.36, 1] }}
                 onMouseEnter={openSidebarPreview}
                 onMouseLeave={scheduleSidebarPreviewClose}
                 // Clicking ANYWHERE on the overlay pins it → expands the
@@ -5716,6 +5717,7 @@ function DashboardInner() {
                     : '1px solid var(--t-divider-subtle)',
                   zIndex: 200,
                   fontFamily: 'var(--font-sans-system)',
+                  transformOrigin: 'left top',
                   // Ink vars live on the positioned container so they cascade
                   // to the SmoothCorners subtree below.
                   ...(isGlassSurface ? {
@@ -5751,7 +5753,7 @@ function DashboardInner() {
                     display: 'flex',
                     flexDirection: 'column',
                     overflow: 'hidden',
-                    background: isGlassSurface ? 'rgba(20, 24, 32, 0.78)' : 'var(--t-panel-solid)',
+                    background: isGlassSurface ? 'var(--t-bg)' : 'var(--t-panel-solid)',
                     backdropFilter: isGlassSurface ? 'blur(18px) saturate(1.15)' : undefined,
                     WebkitBackdropFilter: isGlassSurface ? 'blur(18px) saturate(1.15)' : undefined,
                   } as React.CSSProperties}

@@ -934,6 +934,8 @@ async function getSessionTranscript(
 // ── Terminal attachment state ──
 
 interface TerminalClientView {
+  /** A viewer may receive output but never write or resize the backing PTY. */
+  readOnly: boolean;
   visible: boolean;
   requestedVisible: boolean;
   hiddenBuffer: TerminalHiddenBuffer;
@@ -954,6 +956,8 @@ interface TerminalAttachment {
   clientIds: Set<string>;
   clientViews: Map<string, TerminalClientView>;
   snapshotSource: 'tmux' | 'scrollback';
+  /** The first attach came from a viewer; its tmux client ignores window size. */
+  observerOwned?: boolean;
   cols: number;
   rows: number;
   batchBuffer: string;
@@ -1555,9 +1559,10 @@ function captureTmuxPaneResult(sessionName: string, includeCursor = false): Term
   try {
     const tmuxBinary = resolveTmuxBinary();
     const tmuxEnv = sanitizePtyEnv() as NodeJS.ProcessEnv;
+    const tmuxArgs = (...args: string[]) => isDashTerminalSession(sessionName) ? dashTmuxArgs(...args) : args;
     const data = execFileSync(
       tmuxBinary,
-      dashTmuxArgs('capture-pane', '-p', '-e', '-S', `-${TERMINAL_SCROLLBACK_LINES}`, '-t', sessionName),
+      tmuxArgs('capture-pane', '-p', '-e', '-S', `-${TERMINAL_SCROLLBACK_LINES}`, '-t', sessionName),
       {
         windowsHide: true,
         timeout: 4000,
@@ -1572,7 +1577,7 @@ function captureTmuxPaneResult(sessionName: string, includeCursor = false): Term
       try {
         const position = execFileSync(
           tmuxBinary,
-          dashTmuxArgs('display-message', '-p', '-t', sessionName, '#{cursor_x} #{cursor_y} #{pane_width} #{pane_height}'),
+          tmuxArgs('display-message', '-p', '-t', sessionName, '#{cursor_x} #{cursor_y} #{pane_width} #{pane_height}'),
           { windowsHide: true, timeout: 4000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], env: tmuxEnv },
         );
         cursor = parseTmuxSnapshotCursor(position);
@@ -1713,6 +1718,7 @@ function ensureTerminalClientView(
   let view = attachment.clientViews.get(clientId);
   if (!view) {
     view = {
+      readOnly: false,
       visible: true,
       requestedVisible: true,
       hiddenBuffer: new TerminalHiddenBuffer(TERMINAL_HIDDEN_BUFFER_MAX_BYTES),
@@ -1735,6 +1741,18 @@ function sendTerminalData(client: ClientState, sessionName: string, bytes: Buffe
     event: 'data',
     data: { sessionName, data: bytes.toString('base64') },
   }));
+}
+
+function sendObserverDimensions(attachment: TerminalAttachment) {
+  for (const clientId of attachment.clientIds) {
+    if (!attachment.clientViews.get(clientId)?.readOnly) continue;
+    const client = clients.get(clientId);
+    if (client) sendTerminal(client, 'dimensions', {
+      sessionName: attachment.sessionName,
+      cols: attachment.cols,
+      rows: attachment.rows,
+    });
+  }
 }
 
 function flushHiddenTerminalView(
@@ -1861,17 +1879,17 @@ function sendTerminalScrollback(client: ClientState, attachment: TerminalAttachm
   ensureTerminalClientView(attachment, client.id).lastGoodOffset = attachment.streamEndOffset;
 }
 
-function registerTerminalAttachment(attachment: TerminalAttachment) {
+function registerTerminalAttachment(attachment: TerminalAttachment, recordClients = true) {
   const { sessionName, ptyProcess } = attachment;
 
   for (const clientId of attachment.clientIds) {
     ensureTerminalClientView(attachment, clientId);
-    terminalWorkloadStats?.recordAttach(sessionName, clientId);
+    if (recordClients) terminalWorkloadStats?.recordAttach(sessionName, clientId);
   }
 
   ptyProcess.onData((data: string) => {
     const att = terminalAttachments.get(sessionName);
-    if (!att) return;
+    if (!att || att.ptyProcess !== ptyProcess) return;
 
     att.lastOutputAt = Date.now();
     terminalWorkloadStats?.recordPty(sessionName, data, att.lastOutputAt);
@@ -1892,7 +1910,7 @@ function registerTerminalAttachment(attachment: TerminalAttachment) {
   ptyProcess.onExit(({ exitCode }: { exitCode: number }) => {
     console.log(`[ws-server] Terminal PTY exited for ${sessionName} (code ${exitCode})`);
     const att = terminalAttachments.get(sessionName);
-    if (!att) return;
+    if (!att || att.ptyProcess !== ptyProcess) return;
 
     if (att.batchTimer) clearTimeout(att.batchTimer);
     if (att.orphanTimer) clearTimeout(att.orphanTimer);
@@ -1931,6 +1949,7 @@ function spawnTmuxAttachPty(
   sessionName: string,
   cols: number,
   rows: number,
+  ignoreSize = false,
 ) {
   if (!terminalHost) {
     throw new Error('node-pty not available');
@@ -1941,8 +1960,8 @@ function spawnTmuxAttachPty(
   const cwd = process.env.HOME ?? homedir() ?? '/tmp';
   const dashboardSession = isDashTerminalSession(sessionName);
   const attachArgs = dashboardSession
-    ? dashTmuxArgs('attach-session', '-t', sessionName)
-    : ['attach-session', '-t', sessionName];
+    ? dashTmuxArgs('attach-session', ...(ignoreSize ? ['-r'] : []), '-t', sessionName)
+    : ['attach-session', ...(ignoreSize ? ['-r'] : []), '-t', sessionName];
   const serverDescription = dashboardSession ? ` -L ${dashTmuxServerName()}` : '';
 
   try {
@@ -1959,8 +1978,8 @@ function spawnTmuxAttachPty(
   } catch (directError) {
     const shell = resolvePreferredShell();
     const shellCmd = dashboardSession
-      ? `exec "${tmuxBin}" -L "${dashTmuxServerName()}" attach-session -t "${sessionName}"`
-      : `exec "${tmuxBin}" attach-session -t "${sessionName}"`;
+      ? `exec "${tmuxBin}" -L "${dashTmuxServerName()}" attach-session${ignoreSize ? ' -r' : ''} -t "${sessionName}"`
+      : `exec "${tmuxBin}" attach-session${ignoreSize ? ' -r' : ''} -t "${sessionName}"`;
     console.warn(`[ws-server] Direct tmux PTY spawn failed, falling back to shell wrapper: ${directError instanceof Error ? directError.message : String(directError)}`);
     console.log(`[ws-server] Spawning terminal via shell: ${shellCmd}`);
     return terminalHost.spawn({
@@ -1973,6 +1992,54 @@ function spawnTmuxAttachPty(
       env,
     });
   }
+}
+
+function replaceTmuxAttachmentPty(
+  attachment: TerminalAttachment,
+  cols: number,
+  rows: number,
+  observerOwned: boolean,
+) {
+  const replacement = spawnTmuxAttachPty(attachment.sessionName, cols, rows, observerOwned);
+  const previous = attachment.ptyProcess;
+  if (attachment.batchTimer) clearTimeout(attachment.batchTimer);
+  if (attachment.batchBuffer) deliverTerminalBatch(attachment, attachment.batchBuffer);
+  attachment.batchTimer = null;
+  attachment.batchBuffer = '';
+  attachment.ptyProcess = replacement;
+  attachment.cols = cols;
+  attachment.rows = rows;
+  attachment.observerOwned = observerOwned;
+  registerTerminalAttachment(attachment, false);
+  sendObserverDimensions(attachment);
+  try { previous.kill(); } catch { /* detached during replacement */ }
+}
+
+function tmuxSessionDimensions(sessionName: string): { cols: number; rows: number } {
+  const tmuxBin = resolveTmuxBinary();
+  const tmuxArgs = (...args: string[]) => isDashTerminalSession(sessionName) ? dashTmuxArgs(...args) : args;
+  const options = {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 2000,
+    env: sanitizePtyEnv() as NodeJS.ProcessEnv,
+  } as const;
+  const output = execFileSync(
+    tmuxBin,
+    tmuxArgs('display-message', '-p', '-t', sessionName, '#{window_width} #{window_height}'),
+    options,
+  ).trim();
+  const match = /^(\d+) (\d+)$/.exec(output);
+  const cols = Number(match?.[1]);
+  const rows = Number(match?.[2]);
+  if (!Number.isSafeInteger(cols) || !Number.isSafeInteger(rows) || cols < 1 || rows < 1) {
+    throw new Error(`Could not read terminal dimensions for ${sessionName}`);
+  }
+  // tmux reserves status rows inside the attach client's tty. Match the
+  // existing pane height so opening an observer cannot shrink its window.
+  const status = execFileSync(tmuxBin, tmuxArgs('show-options', '-v', '-t', sessionName, 'status'), options).trim();
+  const statusRows = status === 'off' ? 0 : /^\d+$/.test(status) ? Number(status) : 1;
+  return { cols, rows: rows + statusRows };
 }
 
 const chatListeners = new Set<(delta: ChatDelta) => void>();
@@ -6804,9 +6871,9 @@ function handleTerminalVisibility(client: ClientState, msg: Record<string, unkno
 
   const cols = typeof msg.cols === 'number' ? msg.cols : null;
   const rows = typeof msg.rows === 'number' ? msg.rows : null;
-  if (cols != null && rows != null) {
+  if (!view.readOnly && cols != null && rows != null) {
     try {
-      resizeTerminalIfChanged(attachment, cols, rows);
+      if (resizeTerminalIfChanged(attachment, cols, rows)) sendObserverDimensions(attachment);
     } catch { /* resize may fail if the PTY exited during reveal */ }
   }
 
@@ -6947,25 +7014,46 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
 
   const cols = typeof msg.cols === 'number' ? msg.cols : 120;
   const rows = typeof msg.rows === 'number' ? msg.rows : 30;
+  const readOnly = msg.readOnly === true;
 
   // Check if we already have a PTY for this tmux session
   let attachment = terminalAttachments.get(sessionName);
 
   if (attachment) {
+    if (attachment.observerOwned && !readOnly) {
+      try {
+        // The first viewer attached with tmux -r (read-only, ignore-size).
+        // Replace that client when a writer arrives so its later resize and
+        // input affect the session, while observers keep their own WS guard.
+        replaceTmuxAttachmentPty(attachment, cols, rows, false);
+      } catch (error) {
+        sendTerminal(client, 'error', {
+          sessionName,
+          error: error instanceof Error ? error.message : 'Failed to attach writable terminal',
+        });
+        return;
+      }
+    }
     // Add this client to existing attachment
     if (attachment.orphanTimer) {
       clearTimeout(attachment.orphanTimer);
       attachment.orphanTimer = null;
     }
     attachment.clientIds.add(client.id);
-    ensureTerminalClientView(attachment, client.id);
+    const view = ensureTerminalClientView(attachment, client.id);
+    view.readOnly ||= readOnly;
     terminalWorkloadStats?.recordAttach(sessionName, client.id);
     client.terminalSessions.add(sessionName);
-    sendTerminal(client, 'attached', { sessionName });
+    sendTerminal(client, 'attached', { sessionName, cols: attachment.cols, rows: attachment.rows });
     if (attachment.kind === 'dash-shell') {
       sendTerminalScrollback(client, attachment);
     }
     console.log(`[ws-server] Client ${client.id} attached to existing terminal ${sessionName}`);
+    return;
+  }
+
+  if (readOnly && pendingDashSessions.has(sessionName)) {
+    sendTerminal(client, 'error', { sessionName, error: 'Cannot observe a terminal that has not started.' });
     return;
   }
 
@@ -6979,7 +7067,8 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
   }
 
   if (attachment) {
-    sendTerminal(client, 'attached', { sessionName });
+    ensureTerminalClientView(attachment, client.id).readOnly ||= readOnly;
+    sendTerminal(client, 'attached', { sessionName, cols: attachment.cols, rows: attachment.rows });
     sendTerminalScrollback(client, attachment);
     console.log(`[ws-server] Client ${client.id} attached to lazily created terminal ${sessionName}`);
     return;
@@ -6996,7 +7085,8 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
     && tmuxSessionExists(sessionName, dashTmuxArgs())
   ) {
     try {
-      const ptyProcess = spawnTmuxAttachPty(sessionName, cols, rows);
+      const dimensions = readOnly ? tmuxSessionDimensions(sessionName) : { cols, rows };
+      const ptyProcess = spawnTmuxAttachPty(sessionName, dimensions.cols, dimensions.rows, readOnly);
       const now = Date.now();
       attachment = {
         id: randomUUID(),
@@ -7006,8 +7096,9 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
         clientIds: new Set([client.id]),
         clientViews: new Map(),
         snapshotSource: 'tmux',
-        cols,
-        rows,
+        observerOwned: readOnly,
+        cols: dimensions.cols,
+        rows: dimensions.rows,
         batchBuffer: '',
         batchTimer: null,
         lastOutputAt: now,
@@ -7022,19 +7113,20 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
       terminalAttachments.set(sessionName, attachment);
       client.terminalSessions.add(sessionName);
       registerTerminalAttachment(attachment);
+      ensureTerminalClientView(attachment, client.id).readOnly = readOnly;
       // Seed the ring with tmux's pane history, minus the trailing visible rows
       // (the `tmux attach` repaints those itself — trimming avoids a duplicated
       // current screen at the seam).
       const history = captureTmuxPane(sessionName);
       if (history) {
         const lines = history.replace(/\n+$/, '').split('\n');
-        const keep = lines.length > rows ? lines.slice(0, lines.length - rows) : [];
+        const keep = lines.length > dimensions.rows ? lines.slice(0, lines.length - dimensions.rows) : [];
         // capture-pane is line-oriented (LF), while xterm's production write
         // path does not enable convertEol. Replay CRLF so each captured row
         // starts at column zero instead of wrapping away every screenful.
         if (keep.length > 0) appendScrollback(attachment, `${keep.join('\r\n')}\r\n`);
       }
-      sendTerminal(client, 'attached', { sessionName });
+      sendTerminal(client, 'attached', { sessionName, cols: attachment.cols, rows: attachment.rows });
       sendTerminalScrollback(client, attachment);
       console.log(`[ws-server] [persistent-terminals] re-attached surviving dash session ${sessionName}`);
       return;
@@ -7051,7 +7143,8 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
 
   // Spawn a new PTY that attaches to the tmux session
   try {
-    const ptyProcess = spawnTmuxAttachPty(sessionName, cols, rows);
+    const dimensions = readOnly ? tmuxSessionDimensions(sessionName) : { cols, rows };
+    const ptyProcess = spawnTmuxAttachPty(sessionName, dimensions.cols, dimensions.rows, readOnly);
 
     const now = Date.now();
     attachment = {
@@ -7062,8 +7155,9 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
       clientIds: new Set([client.id]),
       clientViews: new Map(),
       snapshotSource: 'tmux',
-      cols,
-      rows,
+      observerOwned: readOnly,
+      cols: dimensions.cols,
+      rows: dimensions.rows,
       batchBuffer: '',
       batchTimer: null,
       lastOutputAt: now,
@@ -7079,8 +7173,9 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
     terminalAttachments.set(sessionName, attachment);
     client.terminalSessions.add(sessionName);
     registerTerminalAttachment(attachment);
+    ensureTerminalClientView(attachment, client.id).readOnly = readOnly;
 
-    sendTerminal(client, 'attached', { sessionName });
+    sendTerminal(client, 'attached', { sessionName, cols: attachment.cols, rows: attachment.rows });
     console.log(`[ws-server] Client ${client.id} attached to new terminal ${sessionName}`);
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
@@ -7110,6 +7205,7 @@ function handleTerminalInput(client: ClientState, msg: Record<string, unknown>) 
     }
   }
   if (!attachment || !attachment.clientIds.has(client.id)) return;
+  if (attachment.clientViews.get(client.id)?.readOnly) return;
 
   try {
     attachment.ptyProcess.write(data);
@@ -7136,10 +7232,10 @@ function handleTerminalResize(client: ClientState, msg: Record<string, unknown>)
     return;
   }
 
+  if (!attachment.clientIds.has(client.id) || attachment.clientViews.get(client.id)?.readOnly) return;
+
   try {
-    attachment.ptyProcess.resize(cols, rows);
-    attachment.cols = cols;
-    attachment.rows = rows;
+    if (resizeTerminalIfChanged(attachment, cols, rows)) sendObserverDimensions(attachment);
   } catch { /* resize may fail if PTY exited */ }
 }
 
@@ -7216,6 +7312,17 @@ function removeClientFromTerminal(clientId: string, sessionName: string) {
   terminalWorkloadStats?.recordDetach(sessionName, clientId);
   const c = clients.get(clientId);
   if (c) c.terminalSessions.delete(sessionName);
+
+  if (attachment.clientIds.size > 0 && !attachment.observerOwned
+    && attachment.snapshotSource === 'tmux'
+    && [...attachment.clientViews.values()].every((remaining) => remaining.readOnly)) {
+    try {
+      const dimensions = tmuxSessionDimensions(sessionName);
+      replaceTmuxAttachmentPty(attachment, dimensions.cols, dimensions.rows, true);
+    } catch (error) {
+      console.warn(`[ws-server] Could not restore ignore-size observer for ${sessionName}:`, error);
+    }
+  }
 
   // If no more clients, destroy the PTY handle and clean up the tmux session
   if (attachment.clientIds.size === 0) {

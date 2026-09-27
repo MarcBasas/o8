@@ -30,6 +30,8 @@ The repository-scoped Handoffs pane, split-transcript peer events, visible coden
 
 An opt-in shared-checkout worker mode is in development. The orchestrator owns one checkout and group review while named workers use separate file scopes in that checkout. A local two-worker runtime proof passed; native placement, reload, compact-window layout, and review of a real combined edit are still required before release. [#2772](https://github.com/hurttlocker/o8/issues/2772)
 
+Shared workspace UI and compact worker layouts are being reconciled in one native acceptance candidate. Page controls, automation loading, worker receipts, and read-only terminal observation are tracked in [#2817](https://github.com/hurttlocker/o8/issues/2817). Release acceptance remains open.
+
 An outside agent chat can be readable through discovery without becoming the orchestrator chat in an o8 workspace. A read-only exact-session view comes first; linked worker placement and a writable handoff need parent identity and active-writer proof. [#2775](https://github.com/hurttlocker/o8/issues/2775)
 
 Linux and Windows maintainer-VM validation is paused; the install-to-merge proof remains outstanding. Do not start that work from this queue. [#1672](https://github.com/hurttlocker/o8/issues/1672), [#2204](https://github.com/hurttlocker/o8/issues/2204)

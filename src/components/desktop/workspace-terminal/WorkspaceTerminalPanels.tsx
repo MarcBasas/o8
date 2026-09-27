@@ -9,6 +9,9 @@ import { WorkspaceChatPane } from '@/components/desktop/workspace-terminal/Works
 import type { RegisteredRepo, TerminalTab } from '@/components/desktop/workspace-terminal/types';
 import { repoSlugFromRemote, shortenPath } from '@/components/desktop/workspace-terminal/utils';
 import { XtermPanel, type XtermPanelHandle } from '@/components/desktop/workspace-terminal/XtermPanel';
+import { useTheme } from '@/lib/theme/context';
+import { isWebMachineBrowserSurface } from '@/lib/connect/web-machine-surface';
+import { isNonMacShell } from '@/lib/desktop/host-platform';
 import { WorkspaceBootLoaderClaim } from '@/components/desktop/workspace-terminal/workspace-boot-loader-claim';
 import { updateResidentTabIds } from '@/components/desktop/workspace-terminal/resident-tabs';
 import { retryingLazy } from '@/lib/react/retrying-lazy';
@@ -48,7 +51,7 @@ interface WorkspaceTerminalPanelsProps {
   onSaveCheckpoint: (tabId: string) => void;
   onRestoreLatestCheckpoint: (tabId: string) => void;
   projectContextRailVisible: boolean;
-  sendTerminalAttach: (sessionName: string, cols: number, rows: number) => void;
+  sendTerminalAttach: (sessionName: string, cols: number, rows: number, readOnly?: boolean) => void;
   sendTerminalInput: (sessionName: string, data: string) => void;
   sendTerminalResize: (sessionName: string, cols: number, rows: number) => void;
   sendTerminalVisibility: (sessionName: string, visible: boolean, options?: { epoch?: number; needsResync?: boolean; cols?: number; rows?: number }) => void;
@@ -233,6 +236,7 @@ function WorkspaceTerminalPanelsBase({
             key={tab.tmuxSession}
             tabId={tab.id}
             tmuxSession={tab.tmuxSession}
+            readOnly={tab.readOnly}
             panelRefs={panelRefs}
             sendTerminalAttach={sendTerminalAttach}
             sendTerminalInput={sendTerminalInput}
@@ -504,6 +508,7 @@ const FleetCanvasResidentPanel = memo(function FleetCanvasResidentPanel({ active
 const TerminalResidentPanel = memo(function TerminalResidentPanel({
   tabId,
   tmuxSession,
+  readOnly,
   panelRefs,
   sendTerminalAttach,
   sendTerminalInput,
@@ -515,6 +520,7 @@ const TerminalResidentPanel = memo(function TerminalResidentPanel({
 }: {
   tabId: string;
   tmuxSession: string;
+  readOnly?: boolean;
   panelRefs: MutableRefObject<Map<string, XtermPanelHandle>>;
   sendTerminalAttach: WorkspaceTerminalPanelsProps['sendTerminalAttach'];
   sendTerminalInput: WorkspaceTerminalPanelsProps['sendTerminalInput'];
@@ -524,6 +530,8 @@ const TerminalResidentPanel = memo(function TerminalResidentPanel({
   statusEvidence?: TerminalStatusEvidence;
   active: boolean;
 }) {
+  const { workspaceGlass } = useTheme();
+  const transparentTerminal = workspaceGlass && !isWebMachineBrowserSurface() && !isNonMacShell();
   useEffect(() => {
     if (window.__o8TerminalBenchEnabled !== true) return;
     console.warn('[workspace-terminal:bench]', JSON.stringify({
@@ -557,19 +565,21 @@ const TerminalResidentPanel = memo(function TerminalResidentPanel({
       }}
     >
       {statusEvidence ? <TerminalStatusEvidenceDisclosure evidence={statusEvidence} /> : null}
-      <div style={{ flex: 1, minWidth: 0, minHeight: 0, position: 'relative' }}>
+      <div style={{ flex: 1, minWidth: 0, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column', paddingTop: 12, paddingRight: 12, paddingBottom: 12, paddingLeft: 12 }}>
         <XtermPanel
           ref={(handle) => {
             if (handle) panelRefs.current.set(tmuxSession, handle);
             else panelRefs.current.delete(tmuxSession);
           }}
           tmuxSession={tmuxSession}
+          readOnly={readOnly}
           sendTerminalAttach={sendTerminalAttach}
           sendTerminalInput={sendTerminalInput}
           sendTerminalResize={sendTerminalResize}
           sendTerminalVisibility={sendTerminalVisibility}
           sendTerminalDetach={sendTerminalDetach}
           visible={active}
+          transparent={transparentTerminal}
         />
       </div>
     </div>
