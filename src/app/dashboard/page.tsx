@@ -16,7 +16,7 @@ import { readAnyXtermSelection } from '@/components/desktop/workspace-terminal/x
 import { ReactiveQueryProvider } from '@/lib/query/provider';
 import { useReactiveQuery } from '@/lib/query/use-reactive-query';
 import { AgentPanel } from '@/components/desktop/AgentPanel';
-import { ChatRailStudy } from '@/components/desktop/dev/ChatRailStudy';
+import { CompactNavigationRail } from '@/components/desktop/shell/CompactNavigationRail';
 import { ProjectsPage } from '@/components/desktop/ProjectsPage';
 import { RetainedCustomizeView } from '@/components/desktop/customize/RetainedCustomizeView';
 // AgentPanelChat retired — orchestrator/chat tabs handle chat surfaces now.
@@ -4678,8 +4678,7 @@ function DashboardInner() {
   }, []);
 
   const showSidebarColumn = sidebarVisible && !compactShell;
-  const showDevChatRailStudy = process.env.NODE_ENV === 'development'
-    && !showSidebarColumn
+  const showCompactNavigationRail = !showSidebarColumn
     && !compactShell
     && !settingsTakeoverActive;
   const showRightPanelColumn = chatVisible && !compactShell && !viewportBands?.belowRightCollapse;
@@ -5085,7 +5084,7 @@ function DashboardInner() {
           DesktopStatusBar at the bottom. The AgentPanel stays docked as the
           left column below. */}
 
-      {showDevChatRailStudy ? <div aria-hidden="true" style={{ width: 68, flexShrink: 0 }} /> : null}
+      {showCompactNavigationRail ? <div aria-hidden="true" style={{ width: 68, flexShrink: 0 }} /> : null}
 
       {/* ── Left: Agent Panel ── */}
       {showSidebarColumn && (() => {
@@ -5291,8 +5290,8 @@ function DashboardInner() {
           leadingInset={!showSidebarColumn}
           sidebarVisible={sidebarVisible}
           onToggleSidebar={!showSidebarColumn && !compactShell ? toggleSidebarFromChrome : undefined}
-          onSidebarHoverEnter={!showSidebarColumn && !compactShell && !showDevChatRailStudy ? openSidebarPreview : undefined}
-          onSidebarHoverLeave={!showSidebarColumn && !compactShell && !showDevChatRailStudy ? scheduleSidebarPreviewClose : undefined}
+          onSidebarHoverEnter={!showSidebarColumn && !compactShell && !showCompactNavigationRail ? openSidebarPreview : undefined}
+          onSidebarHoverLeave={!showSidebarColumn && !compactShell && !showCompactNavigationRail ? scheduleSidebarPreviewClose : undefined}
           rightPanelOpen={showRightPanelColumn}
           rightPanelDisabled={viewportBands?.belowRightCollapse ?? false}
           onToggleRightPanel={compactShell ? undefined : handleToggleO8Panel}
@@ -5614,7 +5613,7 @@ function DashboardInner() {
       {/* ── Alert Toast (desktop only — urgent alerts slide in bottom-left near bell) ── */}
       <AlertToast alerts={activeAlerts} compact={compactShell} onAction={handleAlertAction} />
 
-      {showDevChatRailStudy ? <ChatRailStudy
+      {showCompactNavigationRail ? <CompactNavigationRail
         onHoverReveal={openSidebarPreview}
         onHoverLeave={scheduleSidebarPreviewClose}
         onPinSidebar={openSidebarFromChrome}
