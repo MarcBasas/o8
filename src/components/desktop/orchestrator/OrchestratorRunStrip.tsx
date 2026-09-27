@@ -4,8 +4,9 @@
  * OrchestratorRunStrip — a slim "watch live" strip at the top of the
  * orchestrator chat. When agents (or the operator) have live `o8 run`
  * sessions, each surfaces here as a chip; clicking it fires
- * `o8:open-agent-terminal` so the live read-only terminal opens in the bottom
- * panel — the operator watches the raw stdout without leaving the chat.
+ * `o8:open-agent-terminal` so the live read-only terminal opens in a
+ * workspace tab — the operator watches the raw stdout in the same pane system
+ * used for new terminals, without writing to the run's PTY.
  *
  * Hidden (zero chrome) when no run is active. Polls /api/panel/managed-runs
  * (cheap, in-process) and refreshes on agent-lifecycle events.
@@ -26,7 +27,7 @@ interface ManagedRun {
   status: 'running' | 'finished' | 'gone';
 }
 
-export function OrchestratorRunStrip({ active }: { active: boolean }) {
+export function OrchestratorRunStrip({ active, workspaceId }: { active: boolean; workspaceId?: string }) {
   const [runs, setRuns] = useState<ManagedRun[]>([]);
   const wsConnected = useWsConnectionState() === 'connected';
 
@@ -75,7 +76,7 @@ export function OrchestratorRunStrip({ active }: { active: boolean }) {
 
   const watch = (run: ManagedRun) => {
     window.dispatchEvent(new CustomEvent('o8:open-agent-terminal', {
-      detail: { session: run.session, label: deriveManagedRunLabel(run), command: run.command },
+      detail: { session: run.session, label: deriveManagedRunLabel(run), command: run.command, workspaceId },
     }));
   };
 

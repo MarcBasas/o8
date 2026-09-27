@@ -1,12 +1,26 @@
 [package]
 name = "o8"
-version = "0.1.768"
+version = "0.1.772"
 description = "o8 — governance layer for autonomous engineering teams"
 authors = ["hurttlocker"]
 license = "MIT"
 repository = "https://github.com/hurttlocker/o8"
 edition = "2021"
 rust-version = "1.77.2"
+
+# Native context creation compiles capability URL patterns at runtime. Keep the
+# regex engine optimized in debug builds too; application code stays debuggable.
+[profile.dev.package.regex-automata]
+opt-level = 3
+
+[profile.dev.package.regex-syntax]
+opt-level = 3
+
+[profile.dev.package.regex]
+opt-level = 3
+
+[profile.dev.package.urlpattern]
+opt-level = 3
 
 [lib]
 name = "app_lib"
@@ -140,6 +154,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 chrono = "0.4"
 tauri-plugin-clerk = "0.1.1"
 tauri-plugin-http = "2.5.9"
+tauri-plugin-dialog = "2"
 
 # Shutdown safety net (issue #719). Both crates are already in the lock graph
 # transitively; promoting them to direct deps is zero binary cost. Used to

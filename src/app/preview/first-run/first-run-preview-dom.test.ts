@@ -28,6 +28,10 @@ describe('first-run preview route surface', () => {
 
     await act(async () => { root.render(createElement(FirstRunPreview)); });
     await settle();
+    const surface = document.querySelector('[aria-label="First-run surface"]') as HTMLSelectElement;
+    surface.value = 'consent';
+    await act(async () => { surface.dispatchEvent(new Event('change', { bubbles: true })); });
+    await settle();
     expect(document.querySelector('[aria-labelledby="telemetry-consent-title"]')).not.toBeNull();
 
     const statePicker = document.querySelector('[aria-label="Consent state"]') as HTMLSelectElement;
@@ -53,12 +57,12 @@ describe('first-run preview route surface', () => {
     surfacePicker.value = 'onboarding';
     await act(async () => { surfacePicker.dispatchEvent(new Event('change', { bubbles: true })); });
     await settle();
-    expect(document.body.textContent).toContain('Run an AI engineering');
+    expect(document.body.textContent).toContain('Open a project');
 
     const stepPicker = document.querySelector('[aria-label="Onboarding step"]') as HTMLSelectElement;
-    stepPicker.value = 'ready';
+    stepPicker.value = 'dispatch';
     await act(async () => { stepPicker.dispatchEvent(new Event('change', { bubbles: true })); });
     await settle();
-    expect(document.body.textContent).toContain('Ready to go');
+    expect(document.body.textContent).toContain('Your setup');
   });
 });

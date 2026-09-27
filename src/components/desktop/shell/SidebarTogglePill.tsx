@@ -43,7 +43,7 @@ interface SidebarTogglePillProps {
   onHoverLeave?: () => void;
 }
 
-export function SidebarTogglePill({ onClick, yNudge = 3.3, onHoverEnter, onHoverLeave }: SidebarTogglePillProps) {
+export function SidebarTogglePill({ sidebarVisible = false, onClick, yNudge = 3.3, onHoverEnter, onHoverLeave }: SidebarTogglePillProps) {
   return (
     <motion.button
       type="button"
@@ -57,12 +57,12 @@ export function SidebarTogglePill({ onClick, yNudge = 3.3, onHoverEnter, onHover
       animate="rest"
       whileHover="hover"
       // FLAT motion — bg + color crossfade only, no scale, no boxy active
-      // state. The toggle looks identical regardless of sidebar-open vs
-      // sidebar-closed; the sidebar's presence/absence IS the indicator.
+      // state. Orange ink marks the pinned-open sidebar; hover preview alone
+      // does not change the persistent state.
       variants={{
         rest: {
           background: 'var(--t-pill-rest-bg, transparent)',
-          color: 'var(--t-text-secondary)',
+          color: sidebarVisible ? 'var(--t-brand-orange)' : 'var(--t-text-secondary)',
         },
         hover: {
           // Chrome-button hover, NOT --t-hover (Q 2026-07-16, all-glass
@@ -72,7 +72,7 @@ export function SidebarTogglePill({ onClick, yNudge = 3.3, onHoverEnter, onHover
           // chrome-btn tokens are the vocabulary designed for controls on
           // vibrancy — same treatment as the right-rail buttons.
           background: 'var(--t-chrome-btn-hover-bg, var(--t-hover))',
-          color: 'var(--t-text)',
+          color: sidebarVisible ? 'var(--t-brand-orange)' : 'var(--t-text)',
         },
       }}
       transition={{ duration: 0.14, ease: [0.22, 1, 0.36, 1] }}

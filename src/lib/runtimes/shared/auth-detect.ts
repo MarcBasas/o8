@@ -82,6 +82,7 @@ export interface RuntimeAuthSnapshot {
 }
 
 export interface DispatchableRuntimeAvailability {
+  installed?: boolean;
   id: OrchestratorRuntime;
   label: string;
   available: boolean;
@@ -330,7 +331,7 @@ async function detectGemini(): Promise<RuntimeAuthStatus> {
       installed: false,
       authenticated: false,
       detail: 'Gemini CLI is not installed.',
-      fix: 'Install Gemini CLI, then sign in or set GEMINI_API_KEY.',
+      fix: 'Install Gemini CLI for enterprise or paid API access. For free or AI Pro/Ultra, install Antigravity CLI (agy).',
     });
   }
 
@@ -346,7 +347,7 @@ async function detectGemini(): Promise<RuntimeAuthStatus> {
     detail: authenticated
       ? 'Gemini CLI is installed and has local sign-in or API-key evidence.'
       : 'Gemini CLI is installed but no local sign-in or API-key evidence was found.',
-    fix: 'Run `gemini` once to sign in or set GEMINI_API_KEY.',
+    fix: 'Use enterprise sign-in or set a paid GEMINI_API_KEY. For free or AI Pro/Ultra, use Antigravity CLI (agy).',
     binaryPath,
   });
 }
@@ -716,6 +717,7 @@ export async function getDispatchableRuntimeAvailability(
     return {
       id,
       label: ORCHESTRATOR_RUNTIMES[id].label,
+      installed: status?.installed ?? false,
       available,
       unavailableReason: available ? null : status?.unavailableReason ?? 'adapter_unavailable',
       detail: status?.detail ?? `${ORCHESTRATOR_RUNTIMES[id].label} readiness could not be determined.`,

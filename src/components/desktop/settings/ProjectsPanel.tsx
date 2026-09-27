@@ -42,8 +42,9 @@ import { ProjectCard } from './projects/ProjectCard';
 import { ProjectForm, emptyFormState, formStateFromProject } from './projects/ProjectForm';
 import { UnassignedReposGroup } from './projects/ProjectRepoRows';
 import { useProjectsData } from './projects/useProjectsData';
+import { WorkspacePageHeader } from '../WorkspacePageHeader';
 
-export function ProjectsPanel({ library = false, opening = false, initialProjectId = null, onOpenWorkspace }: { library?: boolean; initialProjectId?: string | null; opening?: boolean; onOpenWorkspace?: (projectId: string, repoId: string, repoPath: string) => Promise<void> }) {
+export function ProjectsPanel({ library = false, opening = false, initialProjectId = null, onOpenWorkspace, onBackToWorkspace }: { library?: boolean; initialProjectId?: string | null; opening?: boolean; onOpenWorkspace?: (projectId: string, repoId: string, repoPath: string) => Promise<void>; onBackToWorkspace?: () => void }) {
   const data = useProjectsData();
   const {
     projects,
@@ -86,14 +87,28 @@ export function ProjectsPanel({ library = false, opening = false, initialProject
 
   return (
     <div style={{
-      paddingTop: 8,
-      paddingLeft: 8,
-      paddingRight: 8,
+      paddingTop: library ? 0 : 8,
+      paddingLeft: library ? 0 : 8,
+      paddingRight: library ? 0 : 8,
       paddingBottom: 40,
       maxWidth: library ? undefined : SETTINGS_CONTENT_MAX_WIDTH,
       fontFamily: APP_FONT_STACK,
     }}>
-      <div style={{
+      {library ? <WorkspacePageHeader
+        title="Projects"
+        subtitle="Group repositories and shared instructions so agents have the right context for your project."
+        onClose={onBackToWorkspace}
+      >
+        {!isAnythingOpen ? <RamsButton
+          onClick={() => {
+            setEditingProjectId(null);
+            setCreating(true);
+          }}
+          icon={<PlusGlyph size={11} />}
+        >
+          New project
+        </RamsButton> : null}
+      </WorkspacePageHeader> : <div style={{
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'space-between',
@@ -119,7 +134,7 @@ export function ProjectsPanel({ library = false, opening = false, initialProject
             New project
           </RamsButton>
         ) : null}
-      </div>
+      </div>}
 
       {!library ? <section>
         <SettingsGroup header="Overview" maxWidth={SETTINGS_CONTENT_MAX_WIDTH}>

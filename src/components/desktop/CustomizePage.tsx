@@ -17,6 +17,7 @@ import { PromptLibraryTab } from './customize/PromptLibraryTab';
 import { AddSkillForm } from './customize/AddSkillForm';
 import { SkillsInventoryTab } from './customize/SkillsInventoryTab';
 import { DetailLine, EmptyState, OpenFileLink, Row, SectionHeader, TruncatedRows } from './customize/shared';
+import { WORKSPACE_PAGE_MAX_WIDTH, WORKSPACE_PAGE_TOP_PADDING } from './WorkspacePageHeader';
 
 const UI_FONT = 'var(--font-sans-system)';
 const MONO_FONT = 'var(--font-mono, "SF Mono", Menlo, monospace)';
@@ -142,13 +143,13 @@ export function CustomizePage({ onClose, project = null, registeredRepos = [] }:
     }} className="cortex-themed-scroll">
       <div style={{
         width: '100%',
-        maxWidth: 1100,
+        maxWidth: WORKSPACE_PAGE_MAX_WIDTH,
         marginLeft: 'auto',
         marginRight: 'auto',
-        paddingTop: 36,
+        paddingTop: WORKSPACE_PAGE_TOP_PADDING,
         paddingBottom: 64,
-        paddingLeft: 24,
-        paddingRight: 24,
+        paddingLeft: 28,
+        paddingRight: 28,
         display: 'flex',
         flexDirection: 'column',
         gap: 28,

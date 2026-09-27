@@ -10,6 +10,7 @@ vi.mock('@/lib/entitlement/context', () => ({ useEntitlement: () => ({ isFounder
 import { ModelsTab } from './ModelsTab';
 import { OperatorDefaultsTab } from './OperatorDefaultsTab';
 import { LocalModelsTab } from './LocalModelsTab';
+import { GeneralTab } from './GeneralTab';
 import { SETTINGS_SEARCH_REGISTRY, searchSettings } from './settings-search';
 
 const defaults = {
@@ -30,6 +31,10 @@ describe('model setup navigation', () => {
     defaultsFetch.mockReset();
     defaultsFetch.mockImplementation(async () => Response.json(defaults));
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).startsWith('/api/panel/operator-defaults')) return Response.json({ dispatchableRuntimes: [
+        { id: 'gemini', label: 'Gemini', available: false, unavailableReason: 'needs_auth', detail: '', fix: 'Sign in' },
+        { id: 'antigravity', label: 'Antigravity', available: true, unavailableReason: null, detail: '', fix: '' },
+      ] });
       if (String(input) === '/api/setup/detect') return Response.json({ tools: [
         { id: 'gemini', detected: true, ready: false },
         { id: 'antigravity', detected: true, ready: true },
@@ -56,8 +61,9 @@ describe('model setup navigation', () => {
     expect(container.querySelector('[data-settings-section="Advanced orchestrator options"]')?.closest('details')?.open).toBe(false);
     expect(tools?.open).toBe(false);
     expect(tools?.querySelector('summary')?.textContent).toContain('Ready: Antigravity');
-    expect(tools?.textContent).toContain('Standalone Gemini CLI; separate from Antigravity');
-    expect(tools?.textContent).toContain('GitHub Copilot CLI');
+    expect(tools?.textContent).toContain('Legacy Gemini CLI (gemini) for enterprise or paid API access');
+    expect(tools?.textContent).toContain('Google Antigravity CLI (agy) for free and AI Pro/Ultra accounts');
+    expect(tools?.textContent).not.toContain('GitHub Copilot CLI');
     expect(tools?.textContent).toContain('Not checked');
     const review = [...container.querySelectorAll('span')].find(element => element.textContent === 'Code review provider');
     expect(review).toBeDefined();
@@ -94,5 +100,22 @@ describe('model setup navigation', () => {
     const preset = [...container.querySelectorAll('button')].find(button => button.textContent === 'Ollama')!;
     await act(async () => preset.click());
     expect(defaultsFetch).toHaveBeenCalledWith(expect.objectContaining({ method: 'POST', body: JSON.stringify({ defaultDispatchModel: 'ollama:qwen2.5-coder:32b' }) }));
+  });
+
+  it('shows the title inference control on the free plan and saves an off choice', async () => {
+    defaultsFetch.mockResolvedValue(Response.json({
+      ...defaults,
+      values: { ...defaults.values, autoTitleInferenceEnabled: true },
+    }));
+    await act(async () => root.render(createElement(GeneralTab)));
+    const conversations = container.querySelector('[data-settings-section="Conversations"]')?.parentElement;
+    expect(conversations?.textContent).toContain('Model-generated titles');
+    expect(conversations?.textContent).toContain('On by default');
+    const control = conversations?.querySelector<HTMLButtonElement>('[role="switch"]');
+    expect(control?.getAttribute('aria-checked')).toBe('true');
+    await act(async () => control?.click());
+    expect(defaultsFetch).toHaveBeenCalledWith(expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ autoTitleInferenceEnabled: false }),
+    }));
   });
 });

@@ -280,7 +280,7 @@ describe('Codex orchestrator process lifecycle', () => {
     expect(session.status).toBe('ready');
   });
 
-  it('retries the app-server no-rollout resume response as a fresh thread', async () => {
+  it('retries a no-rollout resume response after long startup warnings as a fresh thread', async () => {
     const historyThreadId = `thoughts-no-rollout-resume-${Date.now()}`;
     writeOrchestratorBackendSessionId(historyThreadId, 'codex', '019ffcb1-3d86-7ba3-af64-0ca2a66660e9');
     const session = ensureCodexOrchestratorSession(process.cwd(), historyThreadId);
@@ -294,7 +294,8 @@ describe('Codex orchestrator process lifecycle', () => {
     const turn = sendToCodexOrchestrator(session, 'recover the production error', (event) => events.push(event));
     await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
     staleProc.stderr.emit('data', Buffer.from(
-      'Error thread/resume: thread/resume failed: no rollout found for thread id 019ffcb1-3d86-7ba3-af64-0ca2a66660e9 (code -32600)',
+      'WARN catalog request timed out\n'.repeat(30)
+      + 'Error thread/resume: thread/resume failed: no rollout found for thread id 019ffcb1-3d86-7ba3-af64-0ca2a66660e9 (code -32600)',
     ));
     staleProc.exitCode = 1;
     staleProc.emit('close', 1);

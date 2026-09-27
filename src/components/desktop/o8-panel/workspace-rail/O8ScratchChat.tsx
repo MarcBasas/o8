@@ -13,7 +13,7 @@ import {
   X,
 } from '@phosphor-icons/react';
 import { CircleSpark } from 'iconoir-react';
-import { MarkdownRender } from '../markdown-render';
+import { MarkdownRender, proseWithoutBrainCitationMarkers } from '../markdown-render';
 import { useOrchestratorData } from '../../orchestrator-data-context';
 import { track } from '@/lib/analytics/track';
 
@@ -837,7 +837,7 @@ export function O8ScratchChat({
                     {message.role === 'assistant' ? (
                       message.content ? (
                         <>
-                          <MarkdownRender content={message.content} />
+                          <MarkdownRender content={proseWithoutBrainCitationMarkers(message.content)} />
                           {message.citations && message.citations.length > 0 ? (
                             <>
                               {message.sources ? (

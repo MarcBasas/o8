@@ -57,6 +57,9 @@ export interface ImperativeHandleDeps {
 
 export function buildTerminalTabHandle(deps: ImperativeHandleDeps): TerminalTabHandle {
   return {
+    setTerminalSourceDimensions: (sessionName, cols, rows) => {
+      deps.panelRefs.current.get(sessionName)?.setSourceDimensions?.(cols, rows);
+    },
     writeToTerminal: (sessionName, data) => {
       deps.panelRefs.current.get(sessionName)?.writeData(data);
       const now = Date.now();
@@ -184,6 +187,7 @@ export function buildTerminalTabHandle(deps: ImperativeHandleDeps): TerminalTabH
               orchestratorTurnInjection: {
                 id: `orchestrator-turn-${Date.now()}`,
                 text: nextText,
+                autoSend: options?.autoSend,
                 previewImageDataUri: options?.previewImageDataUri,
               },
             }

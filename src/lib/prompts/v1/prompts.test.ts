@@ -167,8 +167,10 @@ describe('programmatic prompt catalog v1', () => {
       '.claude/agents/reviewer.md',
     ];
 
+    const read = (file: string) => readFileSync(new URL(`../../../../${file}`, import.meta.url), 'utf8');
     for (const surface of surfaces) {
-      const text = readFileSync(new URL(`../../../../${surface}`, import.meta.url), 'utf8');
+      // Claude Code expands `@AGENTS.md` imports, so an importing surface carries AGENTS.md.
+      const text = read(surface).replace(/^@AGENTS\.md$/m, () => read('AGENTS.md'));
       expect(text, surface).toMatch(/outcome ownership/i);
       expect(text, surface).toContain('Outcome, Evidence, Residual, and Decision');
     }

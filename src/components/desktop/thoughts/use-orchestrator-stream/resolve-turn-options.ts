@@ -7,6 +7,12 @@ export async function resolveOrchestratorTurnOptions(
   signal: AbortSignal,
 ): Promise<OrchestratorSendOptions | null | undefined> {
   try {
+    if (options?.beforeSend && !await options.beforeSend(signal)) return null;
+  } catch {
+    return null;
+  }
+  if (signal.aborted) return null;
+  try {
     const liveOptions = await options?.resolveTurnOptions?.(signal);
     return liveOptions ? { ...options, ...liveOptions } : options;
   } catch {
