@@ -1765,16 +1765,18 @@ button.workflow-file-item.workflow-file-item-active {
   display: none;
 }
 
-/* Compact worker meshes scroll without drawing a competing rail. */
+/* Worker and terminal panes scroll without drawing a competing rail. */
 [data-session-worker-scroll],
 [data-session-tile-surface],
-[data-session-tile-surface] * {
+[data-session-tile-surface] *,
+[data-o8-term-panel] * {
   scrollbar-width: none;
 }
 
 [data-session-worker-scroll]::-webkit-scrollbar,
 [data-session-tile-surface]::-webkit-scrollbar,
-[data-session-tile-surface] *::-webkit-scrollbar {
+[data-session-tile-surface] *::-webkit-scrollbar,
+[data-o8-term-panel] *::-webkit-scrollbar {
   display: none;
 }
 
