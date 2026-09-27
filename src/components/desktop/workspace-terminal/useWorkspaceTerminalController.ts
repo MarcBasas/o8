@@ -1,5 +1,7 @@
 'use client';
 
+import { retargetWorkspaceTab } from './retarget-workspace-tab';
+
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ForwardedRef, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   buildRepoStateScope,
@@ -36,7 +38,7 @@ import { buildTerminalTabHandle } from '@/components/desktop/workspace-terminal/
 import { createTerminalActivityTracker } from '@/components/desktop/workspace-terminal/terminal-activity';
 import { readLastOrchestratorThreadTitle } from '@/components/desktop/workspace-terminal/orchestrator-thread-restore';
 import { scrubOrphanSessionTileKeys } from '@/components/desktop/workspace-terminal/use-session-tiles';
-import { applyCreatedTerminalSession, canPreserveScopedTabs, computeRestoredTabs, loadInitialTabState, mergeUserSpawnedTabs, reconcileValidatedTabs, resetControllerRefs, shouldSkipRestoreKeyChange } from '@/components/desktop/workspace-terminal/terminal-restore';
+import { attachRestoredTerminalSessions, applyCreatedTerminalSession, canPreserveScopedTabs, computeRestoredTabs, loadInitialTabState, mergeUserSpawnedTabs, reconcileValidatedTabs, resetControllerRefs, shouldSkipRestoreKeyChange } from '@/components/desktop/workspace-terminal/terminal-restore';
 import {
   buildChatSessionSnapshots,
   buildCommitCanvasTab,
@@ -474,41 +476,24 @@ export function useWorkspaceTerminalController(
     return () => window.removeEventListener(WORKSPACE_THREAD_ID_EVENT, handler as EventListener);
   }, []);
 
-  // Dashboard repo picker → re-bind the active orchestrator tab's repo (#1265).
-  // OrchestratorTab's empty-state Project chip broadcasts
-  // 'o8:select-workspace-scope' when the user picks a repo, but nothing on the
-  // dashboard consumed it — so the choice never reached tab.repo and the
-  // orchestrator stayed stuck on whatever repo it spawned with (e.g. o8-mobile).
-  // Stamp the chosen repo onto the active orchestrator tab (the only tab whose
-  // empty-state picker is reachable) so repoPath re-binds immediately. The
-  // event carries name + localPath, which is all RegisteredRepo requires.
-  // Mirrors the 'o8:workspace-thread-id' listener above.
+  // Both Project pickers re-bind their owning tab, including a background tab
+  // in another workspace tile. The tab's repo is the split-worker claim and
+  // persisted restore scope, so never infer ownership from global focus.
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ repoPath?: string; repoName?: string }>).detail;
+      const detail = (event as CustomEvent<{ tabId?: string; repoPath?: string; repoName?: string | null }>).detail;
+      const tabId = detail?.tabId;
       const repoPath = detail?.repoPath;
-      if (!repoPath) return;
+      if (!tabId || !repoPath) return;
       setTabs((previous) => {
-        const idx = previous.findIndex(
-          (t) => t.id === effectiveActiveTabId && t.kind === 'orchestrator',
-        );
-        if (idx < 0) return previous;
-        if (previous[idx]!.repo?.localPath === repoPath) return previous;
-        const next = [...previous];
-        next[idx] = {
-          ...next[idx]!,
-          repo: {
-            name: detail?.repoName ?? repoPath.split('/').pop() ?? repoPath,
-            localPath: repoPath,
-          },
-        };
+        const next = retargetWorkspaceTab(previous, tabId, repoPath, detail?.repoName);
         tabsRef.current = next;
         return next;
       });
     };
     window.addEventListener('o8:select-workspace-scope', handler as EventListener);
     return () => window.removeEventListener('o8:select-workspace-scope', handler as EventListener);
-  }, [effectiveActiveTabId]);
+  }, []);
 
   // One-time scrub of orphaned `…:session-tiles:tab:*` localStorage keys left
   // behind by closed tabs (they were never cleaned on close pre-fix). Runs once
@@ -567,9 +552,6 @@ export function useWorkspaceTerminalController(
     };
   }, []);
 
-  // Fresh workspace = Orchestrator first, Chat ready but not focused. The
-  // orchestrator stays the command center while the left rail's Chat row has
-  // a real tab to focus on first load.
   const createDefaultChatTabSet = useCallback((): TerminalTab[] => {
     // Alpha: don't spawn the casual llm-chat tab by default — orchestrator only,
     // unless experimentalChat is on. (visibleTabs also hides any pre-existing
@@ -577,6 +559,9 @@ export function useWorkspaceTerminalController(
     if (!experimentalChat) return [createDefaultOrchestratorTab()];
     return [createDefaultOrchestratorTab(), createDefaultChatTab()];
   }, [createDefaultChatTab, createDefaultOrchestratorTab, experimentalChat]);
+  const createInitialChatTabs = useCallback((): TerminalTab[] => splitCreated
+    ? [experimentalChat ? createDefaultChatTab() : createDefaultOrchestratorTab({ fresh: true })]
+    : createDefaultChatTabSet(), [createDefaultChatTab, createDefaultChatTabSet, createDefaultOrchestratorTab, experimentalChat, splitCreated]);
 
   const spawnSingleRuntimeTab = useCallback((runtime: OrchestratorRuntime): string => {
     const newTab: TerminalTab = {
@@ -723,9 +708,7 @@ export function useWorkspaceTerminalController(
 
     if (termWsConnectedRef.current) {
       initialTerminalBootstrapRef.current = true;
-      for (const sessionName of result.sessionsToAttach) {
-        sendTerminalAttach(sessionName, 120, 30);
-      }
+      attachRestoredTerminalSessions(result.sessionsToAttach, mergedTabs, sendTerminalAttach);
       for (const deadTab of result.deadTerminalTabs) {
         if (cancelled?.()) return false;
         const restoreCommand = deadTab.repo?.localPath ? `cd ${shellQuote(deadTab.repo.localPath)}` : undefined;
@@ -805,10 +788,10 @@ export function useWorkspaceTerminalController(
           if (cancelled) return;
         } else if (autoCreateDefaultTab) {
           if (defaultTab === 'llm-chat') {
-            const defaultTabs = createDefaultChatTabSet();
+            const defaultTabs = createInitialChatTabs();
             tabsRef.current = defaultTabs;
             setTabs(defaultTabs);
-            // Activate the Orchestrator tab first — it's index 0 in the set.
+            // Focus the new pane's requested conversation.
             setActiveTabId(defaultTabs[0].id);
           } else {
             const defaultShell = createDefaultShellTab();
@@ -856,7 +839,7 @@ export function useWorkspaceTerminalController(
     // cannot itself restore — without this dep, a non-preserve key change
     // cleared the tabs and left restoredRef=false with nothing to re-trigger
     // the restore (the second half of #1234).
-  }, [applyPersistedState, autoCreateDefaultTab, createDefaultChatTab, createDefaultChatTabSet, createDefaultShellTab, defaultTab, requestTerminalForTab, restoreKey, splitCreated, stateScope]);
+  }, [applyPersistedState, autoCreateDefaultTab, createDefaultChatTab, createInitialChatTabs, createDefaultShellTab, defaultTab, requestTerminalForTab, restoreKey, splitCreated, stateScope]);
 
   useEffect(() => {
     if (!termWsConnected || !restoreSettledRef.current || initialTerminalBootstrapRef.current) return;
@@ -864,7 +847,7 @@ export function useWorkspaceTerminalController(
     for (const tab of tabsRef.current) {
       if (tab.kind !== 'terminal') continue;
       if (tab.tmuxSession) {
-        sendTerminalAttach(tab.tmuxSession, 120, 30);
+        sendTerminalAttach(tab.tmuxSession, 120, 30, tab.readOnly);
         continue;
       }
       const restoreCommand = tab.repo?.localPath ? `cd ${shellQuote(tab.repo.localPath)}` : undefined;
@@ -903,7 +886,7 @@ export function useWorkspaceTerminalController(
           return;
         }
         if (defaultTab === 'llm-chat') {
-          const defaultTabs = createDefaultChatTabSet();
+          const defaultTabs = createInitialChatTabs();
           tabsRef.current = defaultTabs;
           setTabs(defaultTabs);
           setActiveTabIdFromRestore(defaultTabs[0].id, capturedNavVersion);
@@ -919,19 +902,19 @@ export function useWorkspaceTerminalController(
       })();
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [applyPersistedState, autoCreateDefaultTab, createDefaultChatTab, createDefaultChatTabSet, createDefaultShellTab, defaultTab, preferredRepo?.localPath, primaryRestoreSettled, requestTerminalForTab, setActiveTabIdFromRestore, splitCreated, stableRepoScope, tabs.length, termWsConnected]);
+  }, [applyPersistedState, autoCreateDefaultTab, createDefaultChatTab, createInitialChatTabs, createDefaultShellTab, defaultTab, preferredRepo?.localPath, primaryRestoreSettled, requestTerminalForTab, setActiveTabIdFromRestore, splitCreated, stableRepoScope, tabs.length, termWsConnected]);
 
   useEffect(() => {
     if (tabs.length > 0 || defaultTab !== 'llm-chat') return;
     const timer = window.setTimeout(() => {
       if (tabsRef.current.length > 0) return;
-      const fallbacks = createDefaultChatTabSet();
+      const fallbacks = createInitialChatTabs();
       tabsRef.current = fallbacks;
       setTabs(fallbacks);
       setActiveTabId(fallbacks[0].id);
     }, 2000);
     return () => window.clearTimeout(timer);
-  }, [createDefaultChatTabSet, defaultTab, tabs.length]);
+  }, [createInitialChatTabs, defaultTab, tabs.length]);
 
   useEffect(() => {
     const wasConnected = previousWsConnectedRef.current;
@@ -939,7 +922,7 @@ export function useWorkspaceTerminalController(
     if (!termWsConnected || !wasConnected || !restoredRef.current) return;
     for (const tab of tabsRef.current) {
       if (tab.kind === 'terminal' && tab.tmuxSession) {
-        sendTerminalAttach(tab.tmuxSession, 120, 30);
+        sendTerminalAttach(tab.tmuxSession, 120, 30, tab.readOnly);
       }
     }
   }, [sendTerminalAttach, termWsConnected]);
@@ -958,7 +941,7 @@ export function useWorkspaceTerminalController(
   // batched / out-of-order state writes that could otherwise stack two
   // injectors onto the same base.
   useEffect(() => {
-    if (defaultTab !== 'llm-chat') return;
+    if (defaultTab !== 'llm-chat' || splitCreated) return;
     if (tabs.length === 0) return;
     if (tabs.some((tab) => tab.kind === 'orchestrator')) return;
     if (tabsRef.current.some((tab) => tab.kind === 'orchestrator')) return;
@@ -970,7 +953,7 @@ export function useWorkspaceTerminalController(
       return nextTabs;
     });
     // Don't steal focus from whatever the user was on — just inject the tab.
-  }, [createDefaultOrchestratorTab, defaultTab, tabs]);
+  }, [createDefaultOrchestratorTab, defaultTab, splitCreated, tabs]);
 
   const handleSessionCreated = useCallback((sessionName: string, requestId?: string) => {
     const ownerTabId = ownerTabIdFromRequest(requestId);
@@ -1157,7 +1140,7 @@ export function useWorkspaceTerminalController(
       id: createWorkspaceTabId('terminal'),
       label: session.label?.trim() || 'Terminal',
       kind: 'terminal',
-      tmuxSession: session.tmuxSession,
+      tmuxSession: session.tmuxSession, readOnly: session.readOnly,
       repo: repo ?? undefined,
       createdAt: now,
       lastActivity: now,

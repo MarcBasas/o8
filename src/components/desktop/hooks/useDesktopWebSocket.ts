@@ -30,6 +30,7 @@ export interface DesktopWsCallbacks {
   onTerminalCreated?: (sessionName: string, requestId?: string) => void;
   onTerminalData?: (sessionName: string, data: string) => void;
   onTerminalAttached?: (sessionName: string) => void;
+  onTerminalDimensions?: (sessionName: string, cols: number, rows: number) => void;
   onTerminalVisibilityReady?: (sessionName: string, epoch: number) => void;
   onTerminalResync?: (sessionName: string, data: string, epoch: number, historyTruncated: boolean, source: 'tmux' | 'scrollback') => void;
   onTerminalDiagnostic?: (diagnostic: Record<string, unknown>) => void;
@@ -46,7 +47,7 @@ interface UseDesktopWebSocketResult {
   isConnected: boolean;
   switchSession: (sessionKey: string) => void;
   sendTerminalCreate: (cols: number, rows: number, requestId?: string, cwd?: string, ownerKey?: string) => void;
-  sendTerminalAttach: (sessionName: string, cols: number, rows: number) => void;
+  sendTerminalAttach: (sessionName: string, cols: number, rows: number, readOnly?: boolean) => void;
   sendTerminalInput: (sessionName: string, data: string) => void;
   sendTerminalResize: (sessionName: string, cols: number, rows: number) => void;
   sendTerminalVisibility: (sessionName: string, visible: boolean, options?: { epoch?: number; needsResync?: boolean; cols?: number; rows?: number }) => void;
@@ -136,9 +137,9 @@ export function useDesktopWebSocket(
     }
   }, []);
 
-  const sendTerminalAttach = useCallback((sessionName: string, cols: number, rows: number) => {
+  const sendTerminalAttach = useCallback((sessionName: string, cols: number, rows: number, readOnly = false) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'terminal-attach', sessionName, cols, rows }));
+      wsRef.current.send(JSON.stringify({ type: 'terminal-attach', sessionName, cols, rows, readOnly }));
     }
   }, []);
 
@@ -240,6 +241,11 @@ export function useDesktopWebSocket(
             cbRef.current.onTerminalData?.(data.sessionName as string, data.data as string);
           } else if (eventType === 'attached' && data) {
             cbRef.current.onTerminalAttached?.(data.sessionName as string);
+            if (typeof data.cols === 'number' && typeof data.rows === 'number') {
+              cbRef.current.onTerminalDimensions?.(data.sessionName as string, data.cols, data.rows);
+            }
+          } else if (eventType === 'dimensions' && data) {
+            cbRef.current.onTerminalDimensions?.(data.sessionName as string, data.cols as number, data.rows as number);
           } else if (eventType === 'visibility-ready' && data) {
             cbRef.current.onTerminalVisibilityReady?.(data.sessionName as string, data.epoch as number);
           } else if (eventType === 'resync' && data) {

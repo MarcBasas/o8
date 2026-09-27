@@ -1,6 +1,5 @@
 export type TriggerKind = 'manual' | 'cron' | 'watch';
 export type RunStatus = 'idle' | 'running' | 'ok' | 'error';
-export type AutomationScope = 'mine' | 'team';
 export type CatchUpPolicy = 'latest' | 'all' | 'skip';
 export type AutomationFireStatus = 'pending' | 'leased' | 'retrying' | 'recovered' | 'succeeded' | 'skipped_precheck' | 'precheck_error' | 'parked' | 'cancelled';
 

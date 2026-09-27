@@ -30,6 +30,20 @@
       ]
     },
     {
+      "path": "src/app/api/orchestrator/delegate/route.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli"
+      ]
+    },
+    {
+      "path": "src/app/api/orchestrator/shared-team/active/route.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli"
+      ]
+    },
+    {
       "path": "src/app/api/panel/prs/route.test.ts",
       "reasons": [
         "child-process",
@@ -122,6 +136,12 @@
       "path": "src/components/desktop/agent-panel/worktree-enrichment-scope.test.ts",
       "reasons": [
         "worktree"
+      ]
+    },
+    {
+      "path": "src/components/desktop/onboarding/onboarding-projects.test.ts",
+      "reasons": [
+        "native-build"
       ]
     },
     {
@@ -248,7 +268,10 @@
     {
       "path": "src/lib/lane/codex-orchestrator-config.test.ts",
       "reasons": [
-        "executable-fixture"
+        "child-process",
+        "executable-fixture",
+        "git-cli",
+        "process-signal"
       ]
     },
     {
@@ -395,6 +418,13 @@
       ]
     },
     {
+      "path": "src/lib/mcp/tool-spine/build-mcp-resolution.test.ts",
+      "reasons": [
+        "child-process",
+        "process-signal"
+      ]
+    },
+    {
       "path": "src/lib/mobile/inbox.test.ts",
       "reasons": [
         "worktree-api"
@@ -500,6 +530,20 @@
     },
     {
       "path": "src/lib/orchestrator/scheduling.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli"
+      ]
+    },
+    {
+      "path": "src/lib/orchestrator/shared-checkout-launch.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli"
+      ]
+    },
+    {
+      "path": "src/lib/orchestrator/shared-checkout-team.test.ts",
       "reasons": [
         "child-process",
         "git-cli"
@@ -991,6 +1035,12 @@
       ]
     },
     {
+      "path": "src/lib/ws-server/terminal-resync-snapshot.test.ts",
+      "reasons": [
+        "terminal-tool"
+      ]
+    },
+    {
       "path": "tests/acp-orchestrator-turn-real-path.test.ts",
       "reasons": [
         "real-path"
@@ -1020,6 +1070,15 @@
     {
       "path": "tests/agent-message-bus-real-path.test.ts",
       "reasons": [
+        "real-path"
+      ]
+    },
+    {
+      "path": "tests/agent-setup-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "network-listener",
         "real-path"
       ]
     },
@@ -2584,6 +2643,13 @@
         "git-cli",
         "network-listener",
         "real-path"
+      ]
+    },
+    {
+      "path": "tests/panel-repos-add-response.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli"
       ]
     },
     {

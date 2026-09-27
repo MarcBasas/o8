@@ -6,7 +6,9 @@ import {
   joinAgentPresence,
   readAllAgentPresence,
   readAgentPresence,
+  readStoredAgentPresence,
 } from '@/lib/agents/service';
+import { isPresenceLive } from '@/lib/agents/store';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -22,10 +24,14 @@ function agentError(error: AgentBusError): Response {
 export async function GET(request: NextRequest): Promise<Response> {
   try {
     const principal = resolveRequestPrincipalContext(request);
-    const agents = request.nextUrl.searchParams.get('scope') === 'all'
-      ? await readAllAgentPresence(principal)
-      : await readAgentPresence(request.nextUrl.searchParams.get('repo'), principal);
-    return Response.json({ schema: 'o8/agents.presence/v1', agents }, {
+    const includeStale = request.nextUrl.searchParams.get('includeStale') === 'true';
+    const scope = request.nextUrl.searchParams.get('scope');
+    const agents = scope === 'stored'
+      ? readStoredAgentPresence(principal)
+      : scope === 'all'
+        ? await readAllAgentPresence(principal)
+        : await readAgentPresence(request.nextUrl.searchParams.get('repo'), principal, includeStale);
+    return Response.json({ schema: 'o8/agents.presence/v1', agents: agents.map((agent) => ({ ...agent, live: isPresenceLive(agent) })) }, {
       headers: { 'Cache-Control': 'no-store, max-age=0' },
     });
   } catch (error) {

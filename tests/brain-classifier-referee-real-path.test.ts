@@ -13,12 +13,15 @@ import { chmodSync, writeFileSync } from 'node:fs';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { RetrieverResult, TypedRow } from '@/lib/cortex/qa/types';
 import { startJudgmentEndpointFixture, type JudgmentEndpointFixture } from './fixtures/judgment-endpoint';
 
 const h = vi.hoisted(() => ({
   order: [] as string[],
   openRouterClass: 'B' as 'A' | 'B',
   composed: [] as Array<'A' | 'B'>,
+  embedding: null as number[] | null,
+  retrieval: null as RetrieverResult[] | null,
 }));
 
 vi.mock('@/lib/cortex/qa/llm/openrouter-adapter', () => ({
@@ -40,15 +43,18 @@ vi.mock('@/lib/cortex/qa/llm/codex-adapter', () => ({
   callCodex: vi.fn(async () => { throw new Error('codex stubbed'); }),
 }));
 vi.mock('@/lib/cortex/qa/llm/gemini-embed', () => ({
-  embedQuestion: vi.fn(async () => null),
+  embedQuestion: vi.fn(async () => h.embedding),
+  dot: (left: number[], right: number[]) => left.reduce((sum, value, index) => sum + value * (right[index] ?? 0), 0),
 }));
 vi.mock('@/lib/cortex/qa/composer', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/cortex/qa/composer')>();
   return {
     ...actual,
-    composeClassA: vi.fn(async (_q: string, _r: string | undefined, _rows: unknown, emit: (name: string, payload: unknown) => void) => {
+    composeClassA: vi.fn(async (_q: string, _r: string | undefined, rows: unknown, emit: (name: string, payload: unknown) => void) => {
       h.composed.push('A');
       emit('token', { text: 'class A answer' });
+      const row = Array.isArray(rows) ? rows[0] as TypedRow | undefined : undefined;
+      if (row) emit('citation', row.citation);
       emit('done', {});
     }),
     composeClassB: vi.fn(async (_q: string, _r: string | undefined, _rows: unknown, emit: (name: string, payload: unknown) => void) => {
@@ -64,6 +70,7 @@ vi.mock('@/lib/cortex/qa/retrieve', async (importOriginal) => {
     ...actual,
     retrieveAll: vi.fn((input: Parameters<typeof actual.retrieveAll>[0]) => {
       h.order.push('retrieve:start');
+      if (h.retrieval) return Promise.resolve(h.retrieval);
       return actual.retrieveAll(input);
     }),
   };
@@ -73,7 +80,7 @@ const { updateOperatorDefaults } = await import('@/lib/operator/defaults');
 const { judgmentKeyPath } = await import('@/lib/judgment/key');
 const { BRAIN_CLASS_QUESTIONS } = await import('@/lib/judgment/questions');
 const { listJudgmentReceipts } = await import('@/lib/judgment/receipts');
-const { askCortex, runAskPipeline } = await import('@/lib/cortex/qa/ask');
+const { askCortex, invalidateAnswerCache, runAskPipeline } = await import('@/lib/cortex/qa/ask');
 const { resetClassifierCache } = await import('@/lib/cortex/qa/classifier');
 const { BRAIN_CLASS_CONFIDENCE_MIN, setBrainRefereeTransportForTests } = await import('@/lib/cortex/qa/referee');
 
@@ -116,10 +123,36 @@ beforeEach(async () => {
   h.order.length = 0;
   h.composed.length = 0;
   h.openRouterClass = 'B';
+  h.embedding = null;
+  h.retrieval = null;
+  invalidateAnswerCache();
   await updateOperatorDefaults({ judgmentProvider: 'typesafe' });
 });
 
 const receiptById = (id: string | null | undefined) => listJudgmentReceipts({ limit: 500 }).find((receipt) => receipt.id === id);
+
+const cacheProvenanceRow: TypedRow = {
+  citation: {
+    kind: 'directive',
+    rowId: 'cache-provenance-rule',
+    table: 'directives',
+    title: 'Cache provenance rule',
+    excerpt: 'Replay the original retrieval provenance with cached answers.',
+  },
+  fields: {
+    title: 'Cache provenance rule',
+    body: 'Replay the original retrieval provenance with cached answers.',
+  },
+  score: 1,
+};
+
+const cacheProvenanceRetrieval: RetrieverResult[] = [
+  { retriever: 'sql', rows: [cacheProvenanceRow], durationMs: 1 },
+  { retriever: 'fts', rows: [], durationMs: 0 },
+  { retriever: 'graph', rows: [], durationMs: 0 },
+  { retriever: 'facts', rows: [], durationMs: 0 },
+  { retriever: 'corrections', rows: [], durationMs: 0 },
+];
 
 describe('Brain classifier referee tier through the ask pipeline', () => {
   it('classifies a Class A question by the referee and records a receipt naming the surface', async () => {
@@ -164,6 +197,61 @@ describe('Brain classifier referee tier through the ask pipeline', () => {
     const receipt = receiptById(sources.classificationReceiptId as string);
     expect(receipt).toMatchObject({ ok: true, surface: 'brain-classifier' });
     expect(receipt!.answers).toMatchObject({ questionClass: { choice: 'classB' } });
+  });
+
+  it('replays the original sources provenance before tokens on an exact cache hit', async () => {
+    const question = 'Which evidence established the cache provenance rule?';
+    const first: Array<{ name: string; payload: Record<string, unknown> }> = [];
+    const second: Array<{ name: string; payload: Record<string, unknown> }> = [];
+    h.retrieval = cacheProvenanceRetrieval;
+    fixture.replies.push(refereeReply('classA', 0.93));
+
+    await runAskPipeline(question, undefined, (name, payload) => {
+      first.push({ name, payload: payload as Record<string, unknown> });
+    });
+    await runAskPipeline(question, undefined, (name, payload) => {
+      second.push({ name, payload: payload as Record<string, unknown> });
+    });
+
+    const firstSources = first.find((frame) => frame.name === 'sources')!;
+    const secondSources = second.find((frame) => frame.name === 'sources')!;
+    expect(secondSources.payload).toEqual(firstSources.payload);
+    expect(firstSources.payload.count).toBe(1);
+    expect(secondSources.payload.count).toBe(1);
+    expect(second.map((frame) => frame.name)).toEqual(['sources', 'token', 'citation', 'done']);
+    expect(secondSources.payload.classifier).toBe('referee');
+    expect(secondSources.payload.classificationReceiptId).toBe(firstSources.payload.classificationReceiptId);
+    expect(second.find((frame) => frame.name === 'citation')!.payload).toEqual(cacheProvenanceRow.citation);
+    expect(fixture.seen).toHaveLength(1);
+    expect(h.composed).toEqual(['A']);
+  });
+
+  it('replays the original sources provenance before tokens on a semantic cache hit', async () => {
+    const first: Array<{ name: string; payload: Record<string, unknown> }> = [];
+    const second: Array<{ name: string; payload: Record<string, unknown> }> = [];
+    h.embedding = [1, 0];
+    h.retrieval = cacheProvenanceRetrieval;
+    fixture.replies.push(refereeReply('classA', 0.93));
+
+    await runAskPipeline('What establishes the provenance rule?', undefined, (name, payload) => {
+      first.push({ name, payload: payload as Record<string, unknown> });
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await runAskPipeline('How is provenance established?', undefined, (name, payload) => {
+      second.push({ name, payload: payload as Record<string, unknown> });
+    });
+
+    const firstSources = first.find((frame) => frame.name === 'sources')!;
+    const secondSources = second.find((frame) => frame.name === 'sources')!;
+    expect(secondSources.payload).toEqual(firstSources.payload);
+    expect(firstSources.payload.count).toBe(1);
+    expect(secondSources.payload.count).toBe(1);
+    expect(second.map((frame) => frame.name)).toEqual(['sources', 'token', 'citation', 'done']);
+    expect(secondSources.payload.classifier).toBe('referee');
+    expect(secondSources.payload.classificationReceiptId).toBe(firstSources.payload.classificationReceiptId);
+    expect(second.find((frame) => frame.name === 'citation')!.payload).toEqual(cacheProvenanceRow.citation);
+    expect(fixture.seen).toHaveLength(1);
+    expect(h.composed).toEqual(['A']);
   });
 
   it('runs the referee under the managed provider value (#2484)', async () => {

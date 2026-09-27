@@ -2,27 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { formatRelative } from './AutomationRow';
-
-interface ConnectedJob {
-  id: string;
-  name: string;
-  agentId: string;
-  enabled: boolean;
-  schedule: { kind: 'cron' | 'every' | 'at' | 'unknown'; expr: string | null; tz: string | null; everyMs: number | null; at: string | null };
-  nextRunAt: number | null;
-  lastRunAt: number | null;
-  lastRunStatus: string | null;
-  lastDeliveryStatus: string | null;
-}
-
-interface ConnectedResponse {
-  ok: boolean;
-  available?: boolean;
-  installed?: boolean;
-  jobs?: ConnectedJob[];
-  job?: ConnectedJob;
-  error?: string;
-}
+import { invalidateConnectedAutomations, loadConnectedAutomations, readConnectedAutomationsSnapshot, type ConnectedJob, type ConnectedResponse } from './connected-cache';
 
 function scheduleLabel(job: ConnectedJob): string {
   const schedule = job.schedule;
@@ -43,39 +23,48 @@ function scheduleLabel(job: ConnectedJob): string {
   return 'Schedule unavailable';
 }
 
-export function ConnectedAgentAutomations({ onActiveCountChange }: { onActiveCountChange: (count: number) => void }) {
-  const [jobs, setJobs] = useState<ConnectedJob[]>([]);
-  const [available, setAvailable] = useState<boolean | null>(null);
+export function ConnectedAgentAutomations({ onActiveCountChange, onTotalCountChange }: { onActiveCountChange: (count: number) => void; onTotalCountChange?: (count: number | null) => void }) {
+  const [jobs, setJobs] = useState<ConnectedJob[]>(() => readConnectedAutomationsSnapshot()?.jobs ?? []);
+  const [available, setAvailable] = useState<boolean | null>(() => {
+    const cached = readConnectedAutomationsSnapshot();
+    return cached ? cached.installed === false ? null : true : null;
+  });
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = false) => {
     try {
-      const response = await fetch('/api/automations/connected', { cache: 'no-store' });
-      const result = await response.json() as ConnectedResponse;
-      if (!response.ok || !result.ok) throw new Error(result.error ?? 'Connected agent scheduler unavailable.');
+      const result = await loadConnectedAutomations(force);
       if (result.installed === false) {
         setJobs([]);
         setAvailable(null);
         onActiveCountChange(0);
+        onTotalCountChange?.(0);
         return;
       }
       const next = result.jobs ?? [];
       setJobs(next);
       setAvailable(true);
       onActiveCountChange(next.filter((job) => job.enabled).length);
+      onTotalCountChange?.(next.length);
       setError(null);
     } catch (failure) {
+      // Keep a recent, truthful snapshot visible if a background refresh fails.
+      if (readConnectedAutomationsSnapshot()) {
+        setError(failure instanceof Error ? failure.message : 'Connected agent scheduler unavailable.');
+        return;
+      }
       setJobs([]);
       setAvailable(false);
       onActiveCountChange(0);
+      onTotalCountChange?.(null);
       setError(failure instanceof Error ? failure.message : 'Connected agent scheduler unavailable.');
     }
-  }, [onActiveCountChange]);
+  }, [onActiveCountChange, onTotalCountChange]);
 
   useEffect(() => {
     void refresh();
-    const intervalId = window.setInterval(() => { void refresh(); }, 15_000);
+    const intervalId = window.setInterval(() => { void refresh(true); }, 15_000);
     return () => window.clearInterval(intervalId);
   }, [refresh]);
 
@@ -90,10 +79,12 @@ export function ConnectedAgentAutomations({ onActiveCountChange }: { onActiveCou
       });
       const result = await response.json() as ConnectedResponse;
       if (!response.ok || !result.ok || !result.job) throw new Error(result.error ?? 'Could not update the connected job.');
-      await refresh();
+      invalidateConnectedAutomations();
+      await refresh(true);
     } catch (failure) {
       const message = failure instanceof Error ? failure.message : 'Could not update the connected job.';
-      await refresh();
+      invalidateConnectedAutomations();
+      await refresh(true);
       setError(message);
     } finally {
       setBusyId(null);

@@ -56,6 +56,7 @@ describe('CustomizePage skills', () => {
     const skillsTab = [...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.startsWith('Skills'));
     act(() => skillsTab?.click());
+    expect(host.querySelector('h1')?.textContent).toBe('Customize');
     expect(host.textContent).toContain('Discovered skills');
     expect(host.textContent).toContain('review');
     expect(host.textContent).toContain('visual-check');

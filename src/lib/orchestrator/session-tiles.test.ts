@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   addSessionToLayout,
+  collectAllLeaves,
   collectSessionKeys,
   collectSessionKeysByArrival,
   collectSessionLeaves,
@@ -18,6 +19,7 @@ import {
   type SessionTileNode,
   type SessionTileSplit,
 } from './session-tiles';
+import { compactWorkerScrollRows, projectResponsiveAutomaticSessionTiles, sessionTileViewportBand } from './session-tile-responsive';
 import { collectSessionTileMeshGroups } from './session-tile-mesh';
 
 function addSessions(keys: string[]): SessionTileLayout {
@@ -52,6 +54,68 @@ function ratiosById(node: SessionTileNode, ratios = new Map<string, number>()): 
 }
 
 describe('addSessionToLayout', () => {
+  it('keeps four worker panes readable as the native workspace narrows', () => {
+    const layout = addSessions(['s:1', 's:2', 's:3', 's:4']);
+    const original = serializeSessionTileLayout(layout);
+    expect(sessionTileViewportBand(1900)).toBe('wide');
+    expect(sessionTileViewportBand(1030)).toBe('balanced');
+    expect(sessionTileViewportBand(800)).toBe('stacked');
+    expect(projectResponsiveAutomaticSessionTiles(layout, 'wide')).toBe(layout);
+
+    const balanced = projectResponsiveAutomaticSessionTiles(layout, 'balanced');
+    const balancedRects = computeSessionTileLayout(balanced.root).leafRects;
+    const chat = collectAllLeaves(layout.root).find((leaf) => leaf.kind === 'chat')!;
+    expect(balancedRects.get(chat.id)).toMatchObject({ width: 0.32, height: 1 });
+    for (const worker of collectSessionLeaves(layout.root)) {
+      expect((balancedRects.get(worker.id)?.width ?? 0) * 1030).toBeGreaterThan(340);
+    }
+
+    const stacked = projectResponsiveAutomaticSessionTiles(layout, 'stacked');
+    const stackedRects = computeSessionTileLayout(stacked.root).leafRects;
+    expect(stackedRects.get(chat.id)).toMatchObject({ width: 0.42, height: 1 });
+    for (const worker of collectSessionLeaves(layout.root)) {
+      expect(stackedRects.get(worker.id)?.width).toBeCloseTo(0.58);
+      expect(stackedRects.get(worker.id)?.height).toBeCloseTo(0.25);
+    }
+    expect(serializeSessionTileLayout(layout)).toBe(original);
+  });
+
+  it('keeps ten compact workers in scrollable rows beside full-height chat', () => {
+    const layout = addSessions(Array.from({ length: 10 }, (_, index) => `s:${index + 1}`));
+    const original = serializeSessionTileLayout(layout);
+    const chat = collectAllLeaves(layout.root).find((leaf) => leaf.kind === 'chat')!;
+    const workers = collectSessionLeaves(layout.root);
+
+    expect(projectResponsiveAutomaticSessionTiles(layout, 'wide')).toBe(layout);
+    expect(compactWorkerScrollRows(layout, 'balanced')).toBe(5);
+    const balanced = projectResponsiveAutomaticSessionTiles(layout, 'balanced');
+    const balancedRects = computeSessionTileLayout(balanced.root).leafRects;
+    expect(balancedRects.get(chat.id)).toMatchObject({ width: 0.32, height: 1 });
+    expect(new Set(workers.map((worker) => balancedRects.get(worker.id)?.top)).size).toBe(5);
+    for (const worker of workers) {
+      expect((balancedRects.get(worker.id)?.width ?? 0) * 1030).toBeGreaterThan(340);
+      expect(balancedRects.get(worker.id)?.height).toBeCloseTo(0.2);
+    }
+
+    expect(compactWorkerScrollRows(layout, 'stacked')).toBe(10);
+    const stacked = projectResponsiveAutomaticSessionTiles(layout, 'stacked');
+    const stackedRects = computeSessionTileLayout(stacked.root).leafRects;
+    expect(stackedRects.get(chat.id)).toMatchObject({ width: 0.42, height: 1 });
+    for (const worker of workers) {
+      expect(stackedRects.get(worker.id)?.width).toBeCloseTo(0.58);
+      expect(stackedRects.get(worker.id)?.height).toBeCloseTo(0.1);
+    }
+    expect(serializeSessionTileLayout(layout)).toBe(original);
+  });
+
+  it('does not replace an operator-resized worker split at compact widths', () => {
+    let layout = addSessions(['s:1', 's:2', 's:3', 's:4']);
+    if (layout.root.type !== 'split') return;
+    layout = resizeSessionSplit(layout, layout.root.id, 0.45);
+    expect(projectResponsiveAutomaticSessionTiles(layout, 'balanced')).toBe(layout);
+    expect(projectResponsiveAutomaticSessionTiles(layout, 'stacked')).toBe(layout);
+  });
+
   it('opens the first worker to the right of chat in every viewport shape', () => {
     const layout = addSessionToLayout(
       createDefaultSessionTileLayout(),
@@ -84,7 +148,7 @@ describe('addSessionToLayout', () => {
     );
   });
 
-  it('balances four workers across equal-area leaves', () => {
+  it('keeps chat full-height and balances four workers in the remaining width', () => {
     const layout = addSessions(['s:1', 's:2', 's:3', 's:4']);
     const { leafRects } = computeSessionTileLayout(layout.root);
     const areas = collectSessionLeaves(layout.root).map((leaf) => {
@@ -93,8 +157,33 @@ describe('addSessionToLayout', () => {
     });
 
     expect(areas).toHaveLength(4);
-    for (const area of areas) expect(area).toBeCloseTo(0.125);
+    for (const area of areas) expect(area).toBeCloseTo((1 - 0.38) / 4);
+    const chat = collectAllLeaves(layout.root).find((leaf) => leaf.kind === 'chat')!;
+    expect(leafRects.get(chat.id)).toMatchObject({ left: 0, top: 0, width: 0.38, height: 1 });
     expect(countChatLeaves(layout.root)).toBe(1);
+  });
+
+  it('gives ten workers balanced rows beside a thinner full-height chat', () => {
+    const layout = addSessions(Array.from({ length: 10 }, (_, index) => `s:${index + 1}`));
+    const { leafRects } = computeSessionTileLayout(layout.root);
+    const chat = collectAllLeaves(layout.root).find((leaf) => leaf.kind === 'chat')!;
+    const workerRects = collectSessionLeaves(layout.root).map((leaf) => leafRects.get(leaf.id)!);
+
+    expect(leafRects.get(chat.id)).toMatchObject({ left: 0, top: 0, width: 0.24, height: 1 });
+    expect(workerRects).toHaveLength(10);
+    expect(Math.min(...workerRects.map((rect) => rect.width))).toBeGreaterThanOrEqual(0.19);
+    for (const rect of workerRects) expect(rect.height).toBeCloseTo(1 / 3);
+  });
+
+  it('keeps an operator-resized chat width when an eleventh worker arrives', () => {
+    let layout = addSessions(Array.from({ length: 10 }, (_, index) => `s:${index + 1}`));
+    expect(layout.root.type).toBe('split');
+    if (layout.root.type !== 'split') return;
+    layout = resizeSessionSplit(layout, layout.root.id, 0.35);
+    layout = addSessionToLayout(layout, 's:11');
+
+    expect(layout.root).toMatchObject({ type: 'split', ratio: 0.35, manualOverride: true });
+    expect(collectSessionLeaves(layout.root)).toHaveLength(11);
   });
 
   it('keeps one through four workers as full transcript splits', () => {
