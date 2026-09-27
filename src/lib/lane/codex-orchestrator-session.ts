@@ -681,9 +681,13 @@ async function sendToCodexOrchestratorAttempt(
       const crashStderr = crashRecord && code !== 0
         ? readFileSync(crashRecord.stderrPath, 'utf8')
         : '';
+      const diagnostic = (stderr || crashStderr).trim();
+      // Startup warnings can fill the display limit before the resume failure.
+      // Keep that diagnostic visible to the one-time missing-thread recovery.
+      const resumeDiagnostic = diagnostic.split(/\r?\n/).find(isMissingCodexRolloutResumeError);
       const error = code === 0
         ? undefined
-        : (stderr || crashStderr).trim().slice(0, 500) || `codex exited with code ${code}`;
+        : (resumeDiagnostic || diagnostic).slice(0, 500) || `codex exited with code ${code}`;
       settle(code === 0 ? 'ready' : 'dead', error, true);
     });
 
