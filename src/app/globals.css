@@ -1760,6 +1760,14 @@ button.workflow-file-item.workflow-file-item-active {
   }
 }
 
+/* Compact navigation keeps wheel/keyboard scrolling without native bars. */
+[data-mcp-scope="compact-navigation-rail"] *::-webkit-scrollbar,
+[data-mcp-scope="rail-usage-preview"] *::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 /* Hide scrollbar — AgentPanel */
 .hide-scrollbar::-webkit-scrollbar {
   display: none;
