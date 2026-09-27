@@ -11,6 +11,7 @@
  * or `cancelSymonWatch`, which keeps one source for what a watch IS.
  */
 import type { SymonWatchRecord } from '@/lib/automations/symon-watch';
+import confirmToolPhrases from '@/lib/symon/confirm-tool-phrases.json';
 
 export type MobileSymonWatchState = 'active' | 'parked' | 'fired' | 'expired' | 'cancelled';
 
@@ -34,10 +35,16 @@ export interface MobileSymonWatch {
 
 const SUMMARY_LIMIT = 240;
 
+function confirmToolPhrase(tool: string): string {
+  return Object.hasOwn(confirmToolPhrases, tool)
+    ? confirmToolPhrases[tool as keyof typeof confirmToolPhrases]
+    : tool.replaceAll('_', ' ');
+}
+
 function spokenSummary(record: SymonWatchRecord): string {
   const say = (record.say ?? '').trim();
   const body = record.then === 'plan' && record.steps.length > 0
-    ? `${say} Then: ${record.steps.join(', ')}.`.trim()
+    ? `${say} Then: ${record.steps.map(confirmToolPhrase).join(', ')}.`.trim()
     : say;
   const characters = [...body];
   if (characters.length <= SUMMARY_LIMIT) return body;

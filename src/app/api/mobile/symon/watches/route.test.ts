@@ -153,7 +153,7 @@ describe('GET /api/mobile/symon/watches', () => {
     // A plan body is summarized by what it will do, not by its raw arguments.
     const planWatch = watches.find((watch) => watch.id === plan.id);
     expect(planWatch?.then).toBe('plan');
-    expect(planWatch?.summary).toBe('That pull request merged. Then: o8_status, o8_recap.');
+    expect(planWatch?.summary).toBe('That pull request merged. Then: o8 status, o8 recap.');
   });
 
   it('answers the operator bearer as well as a paired device token', async () => {
