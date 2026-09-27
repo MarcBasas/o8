@@ -4,13 +4,29 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    OnceLock,
+};
 
 use super::{plan::PlanSurface, safety, tools};
 
 const MIN_PLAN_STEPS: usize = 2;
 const MAX_PLAN_STEPS: usize = 5;
 static PLAN_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CONFIRM_TOOL_PHRASES: OnceLock<HashMap<String, String>> = OnceLock::new();
+
+fn confirm_tool_phrase(tool: &str) -> Option<String> {
+    CONFIRM_TOOL_PHRASES
+        .get_or_init(|| {
+            serde_json::from_str(include_str!(
+                "../../../src/lib/symon/confirm-tool-phrases.json"
+            ))
+            .expect("the bundled confirm tool phrase map must be valid JSON")
+        })
+        .get(tool)
+        .cloned()
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -236,6 +252,9 @@ fn safe_arg(args: &Value, key: &str) -> Option<String> {
 }
 
 fn redacted_step_summary(tool: &str, args: &Value, schema: &Value) -> String {
+    if let Some(phrase) = confirm_tool_phrase(tool) {
+        return phrase;
+    }
     let quoted = |key: &str| safe_arg(args, key).map(|value| format!(" “{value}”"));
     match tool {
         "open_app" => format!(
@@ -495,5 +514,18 @@ mod tests {
         assert!(readback.contains("Draft email “Hello”"));
         assert!(readback.contains("Comment on GitHub issue #52 in “o8”"));
         assert!(readback.contains("Send a message to “+12155550100”"));
+    }
+
+    #[test]
+    fn shared_confirm_tool_phrases_drive_static_plan_steps() {
+        let schema = json!({ "name": "o8_approve_item" });
+        assert_eq!(
+            redacted_step_summary("o8_approve_item", &json!({}), &schema),
+            "approve the item"
+        );
+        assert_eq!(
+            redacted_step_summary("o8_dispatch", &json!({}), &json!({ "name": "o8_dispatch" })),
+            "dispatch a worker"
+        );
     }
 }
