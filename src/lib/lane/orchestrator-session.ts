@@ -21,7 +21,7 @@ import {
   processStreamEvent,
   type OrchestratorEvent, type OrchestratorTurnUsage,
 } from '@/lib/lane/orchestrator-stream-events';
-import type { ThinkingEffort } from '@/lib/orchestrator/thinking-effort';
+import { claudeEffortFlagValue, type ThinkingEffort } from '@/lib/orchestrator/thinking-effort';
 import { getRuntime, type RuntimeSession } from '@/lib/runtimes';
 import { buildToolRegistry } from '@/lib/mcp/tool-spine/build';
 import { toClaudeJson } from '@/lib/mcp/tool-spine/emit-claude';
@@ -380,10 +380,10 @@ export async function rehydrateOrchestratorSessions(options: OrchestratorRehydra
  * so a concurrent full turn for the same repo can't clobber its surface either. */
 type ClaudeMcpConfig = ReturnType<typeof toClaudeJson>;
 
-function ensureMcpConfig(repoPath: string, profile: ToolProfile, config: ClaudeMcpConfig): string {
+function ensureMcpConfig(repoPath: string, profile: ToolProfile, config: ClaudeMcpConfig, threadId?: string | null): string {
   if (!existsSync(MCP_CONFIG_DIR)) mkdirSync(MCP_CONFIG_DIR, { recursive: true });
 
-  const suffix = profile === 'full' ? '' : `-${profile}`;
+  const suffix = `${profile === 'full' ? '' : `-${profile}`}${threadId ? `-${repoHash(threadId)}` : ''}`;
   const configPath = join(MCP_CONFIG_DIR, `orchestrator-${repoHash(repoPath)}${suffix}.json`);
   // The caller fingerprints this exact object. Keeping construction out of the
   // writer prevents transient resolver state from making the stored hash differ
@@ -948,7 +948,7 @@ export async function sendToOrchestrator(
   options: SendToOrchestratorOptions = {},
 ): Promise<void> {
   const permissionMode: OrchestratorPermissionMode = options.permissionMode ?? 'full';
-  const thinkingEffort: ThinkingEffort = options.thinkingEffort ?? 'adaptive';
+  const thinkingEffort = claudeEffortFlagValue(options.thinkingEffort ?? 'adaptive') as ThinkingEffort;
   const requestedModel = resolveClaudeOrchestratorModel(options.model);
   const toolProfile: ToolProfile = options.toolProfile ?? 'full';
   const w = getWarmState(session.sessionName);
@@ -1008,9 +1008,9 @@ export async function sendToOrchestrator(
   // Write the MCP config (idempotent) + compute the desired resident-proc config.
   // A 'propose' turn gets the operator-stripped read-only surface — Collide's
   // lockout. The config baked into the resident proc is compared each turn.
-  const mcpConfig = toClaudeJson(buildToolRegistry(session.repoPath, { profile: toolProfile }));
+  const mcpConfig = toClaudeJson(buildToolRegistry(session.repoPath, { profile: toolProfile, threadId: session.threadId }));
   const mcpFingerprint = fingerprintMcpConfig(mcpConfig);
-  const mcpConfigPath = ensureMcpConfig(session.repoPath, toolProfile, mcpConfig);
+  const mcpConfigPath = ensureMcpConfig(session.repoPath, toolProfile, mcpConfig, session.threadId);
   const desiredConfig: OrchestratorProcConfig = {
     cwd: session.repoPath,
     model,
@@ -1044,7 +1044,7 @@ export async function sendToOrchestrator(
       throw e;
     }
   }
-
+  onEvent({ type: 'turn_receipt', leadModel: model, effort: thinkingEffort });
   // Attachments → image blocks. Same CLI contract as interactive-session.ts;
   // the message is written to the RESIDENT proc's still-open stdin (no
   // stdin.end() — the proc lives on for the next turn).

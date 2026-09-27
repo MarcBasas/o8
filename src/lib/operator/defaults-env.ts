@@ -34,6 +34,17 @@ export function isClassAComposer(value: unknown): value is ClassAComposer {
   return value === 'auto' || value === 'haiku-cli' || value === 'sonnet-cli' || value === 'fastest';
 }
 
+/**
+ * Brain answer payer selection. `auto` uses managed inference for an entitled
+ * plan and keeps the established free-user cascade. `subscription` is the
+ * deliberate opt-in that permits connected subscription CLIs for Brain asks.
+ */
+export type BrainRoutingMode = 'auto' | 'subscription';
+
+export function isBrainRoutingMode(value: unknown): value is BrainRoutingMode {
+  return value === 'auto' || value === 'subscription';
+}
+
 
 /**
  * "Workers use the Brain" (2026-06-11). Whether dispatched worker agents get
@@ -250,6 +261,11 @@ export function envClassAComposer(): ClassAComposer | null {
   return null;
 }
 
+export function envBrainRoutingMode(): BrainRoutingMode | null {
+  const raw = process.env.O8_BRAIN_ROUTING_MODE?.trim();
+  return raw && isBrainRoutingMode(raw) ? raw : null;
+}
+
 export function envInAppOrchestratorEnabled(): boolean | null {
   const raw = process.env.O8_IN_APP_ORCHESTRATOR_ENABLED;
   if (raw === '1') return true;
@@ -259,6 +275,13 @@ export function envInAppOrchestratorEnabled(): boolean | null {
 
 export function envBrainUseClaudeCli(): boolean | null {
   const raw = process.env.O8_BRAIN_USE_CLAUDE_CLI;
+  if (raw === '1') return true;
+  if (raw === '0') return false;
+  return null;
+}
+
+export function envBrainWarmupEnabled(): boolean | null {
+  const raw = process.env.O8_BRAIN_WARMUP;
   if (raw === '1') return true;
   if (raw === '0') return false;
   return null;

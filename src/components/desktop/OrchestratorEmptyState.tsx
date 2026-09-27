@@ -4,88 +4,35 @@
  * OrchestratorEmptyState — the compose-first landing for any chat-shaped
  * workspace tab that hasn't received its first message yet.
  *
- * Codex / Antigravity / Cortex pattern: instead of a generic "Good
- * morning" greeting, show the operator a dynamic question title
- * ("What should we build in o8?") + the contextual chip row
- * (Project · Worktree · Branch · Kind) above the existing composer.
- * The chips are editable until the first message lands; after that the
- * tab "promotes" and the regular transcript view takes over.
- *
- * Quick-action prompts moved BELOW the chips as inline links (no card
- * border, no bubble) so the surface reads as compose-first, not menu-
- * first.
+ * Shows a dynamic question title above the ready composer. First-message
+ * context is selected in the composer row below the input.
  */
 
-import { memo, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
+import { memo, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import {
   Computer as IconoirComputer,
-  Folder as IconoirFolder,
   FolderPlus as IconoirFolderPlus,
   GitBranch as IconoirGitBranch,
-  InputSearch as IconoirInputSearch,
-  Plus as IconoirPlus,
 } from 'iconoir-react';
 import type { OrchestratorWorkspaceTarget } from '@/lib/orchestrator/types';
 import { OrchestratorProjectPicker } from './orchestrator/OrchestratorProjectPicker';
-
-interface QuickAction {
-  id: string;
-  label: string;
-  prompt: string;
-}
-
-// Three prescriptive starting points (operator 2026-07-12): fewer, bigger, clickable pills that teach the tool's core
-// verbs — plan, review, triage — instead of six whisper-weight text links
-// the eye skated past. Each pill sends a real prompt on click.
-const QUICK_ACTIONS: QuickAction[] = [
-  {
-    id: 'plan',
-    label: 'Start with a plan',
-    prompt: 'Help me scope what to build next. Ask me what I want, then draft a tight plan we can dispatch as task packets.',
-  },
-  {
-    id: 'review-pending',
-    label: 'Review pending changes',
-    prompt: 'Walk me through every pending diff waiting for approval. For each one: what repo, what the agent changed, and whether it looks safe to merge.',
-  },
-  {
-    id: 'attention',
-    label: 'What needs my attention?',
-    prompt: 'Surface what needs my attention right now across agents, repos, CI, issues, and stale work. Prioritize blockers first and keep the summary tight.',
-  },
-];
+import { ComposerPopover } from './thoughts/chat-panel/ComposerPopover';
 
 export type WorktreeMode = 'local' | 'new-worktree';
 export type OrchestratorEmptyKind = 'orchestrator' | 'chat';
 
 interface OrchestratorEmptyStateProps {
-  greeting: string;
-  runtimeLabel: string;
-  onActionClick: (prompt: string) => void;
-  // Project picker
   repoPath: string | null;
   repoLabel: string | null;
   workspaceTargets: OrchestratorWorkspaceTarget[];
   onSelectProject?: (target: OrchestratorWorkspaceTarget) => void;
   onAddProject?: (mode?: 'scratch' | 'existing') => void;
   onWorkWithoutProject?: () => void;
-  // Worktree picker
-  worktreeMode: WorktreeMode;
-  onWorktreeModeChange: (mode: WorktreeMode) => void;
-  // Branch picker (stub — main-only for v1)
-  branch: string;
-  onBranchChange?: (branch: string) => void;
-  // Kind picker (orchestrator vs chat). When `kindLocked` is true, the
-  // chip renders read-only — e.g. llm-chat tabs that can't pivot to
-  // orchestrator without spawning a new tab.
   kind: OrchestratorEmptyKind;
-  kindLocked?: boolean;
-  onKindChange?: (kind: OrchestratorEmptyKind) => void;
 }
 
 function OrchestratorEmptyStateBase(props: OrchestratorEmptyStateProps) {
-  const { onActionClick, repoLabel, repoPath, workspaceTargets, onAddProject, kind } = props;
+  const { repoLabel, repoPath, workspaceTargets, onAddProject, kind } = props;
 
   // No active workspace → the orchestrator has nothing to act on, and sends are
   // silently dropped (useOrchestratorStream bails when repoPath is null). A new
@@ -113,19 +60,18 @@ function OrchestratorEmptyStateBase(props: OrchestratorEmptyStateProps) {
     <div
       style={{
         display: 'flex',
-        flex: 1,
+        flex: 'none',
         minHeight: 0,
-        // Center the title + quick-actions in the list area on BOTH axes with
-        // plain flexbox. The composer rests at the bottom of the column (no
-        // translate lift), so the empty state reads: centered prompt +
-        // suggestions, composer below. Pure flex centering reflows correctly at
-        // any workspace size — this replaces the old `28cqh` paddingTop +
-        // composer `translateY` dance that overlapped whenever the panel resized.
+        minWidth: 0,
+        width: '100%',
+        boxSizing: 'border-box',
+        // The transcript and composer now form one centered empty-state stack.
+        // Natural height keeps the prompt just above the ready composer.
         alignItems: 'center',
         justifyContent: 'center',
         paddingTop: 24,
         paddingRight: 24,
-        paddingBottom: 24,
+        paddingBottom: 12,
         paddingLeft: 24,
       }}
     >
@@ -134,9 +80,9 @@ function OrchestratorEmptyStateBase(props: OrchestratorEmptyStateProps) {
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
-          gap: 14,
           width: '100%',
           maxWidth: 640,
+          minWidth: 0,
         }}
       >
         <h1
@@ -160,91 +106,17 @@ function OrchestratorEmptyStateBase(props: OrchestratorEmptyStateProps) {
         >
           {title}
         </h1>
-
-        {/* Quick action pills sit RIGHT under the title, ABOVE the
-            composer (per operator pass 2026-05-27). The composer
-            lifts up via -32cqh and lands just below this block, so
-            the visual stack reads: title → suggestions → composer. */}
-        <QuickActionPills onActionClick={onActionClick} />
-
-        {/* Run-context chips (project · worktree · branch) moved UP here
-            from below the composer (operator, 2026-07-06) — down there
-            they collided with the bottom status bar. The stack reads:
-            title → suggestions → context chips → composer. */}
-        <div style={{ marginTop: 10 }}>
-          <OrchestratorComposerBelow
-            worktreeMode={props.worktreeMode}
-            onWorktreeModeChange={props.onWorktreeModeChange}
-            branch={props.branch}
-            repoPath={repoPath}
-            onBranchChange={props.onBranchChange}
-            onActionClick={onActionClick}
-            repoLabel={repoLabel}
-            workspaceTargets={workspaceTargets}
-            onSelectProject={props.onSelectProject}
-            onAddProject={onAddProject}
-            onWorkWithoutProject={props.onWorkWithoutProject}
-          />
-        </div>
+        {kind === 'orchestrator' && !homeMode ? <div title={repoPath ?? undefined} style={{ marginTop: 10, fontSize: 11, fontWeight: 300, lineHeight: 1.5, color: 'var(--t-text-muted)', textAlign: 'center', overflowWrap: 'anywhere' }}>Working in {repoPath?.split(/[\\/]/).filter(Boolean).slice(-2).join('/')}. Your first message starts the work.</div> : null}
+        {kind === 'orchestrator' ? <details style={{ marginTop: 16, width: '100%', maxWidth: 420, fontSize: 12, lineHeight: 1.6, color: 'var(--t-text-secondary)' }}>
+          <summary style={{ minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--t-text-muted)' }}>How work happens</summary>
+          <div style={{ paddingTop: 8, paddingRight: 16, paddingBottom: 12, paddingLeft: 16, border: '1px solid var(--t-divider)', borderRadius: 10 }}>
+            <p><strong style={{ fontWeight: 400 }}>Start with your goal.</strong> Describe what you want in the message box below. Add details or files when they help.</p>
+            <p><strong style={{ fontWeight: 400 }}>Follow the work.</strong> Your lead can work directly or delegate tasks to workers. Their progress appears in the conversation.</p>
+            <p style={{ marginBottom: 0 }}><strong style={{ fontWeight: 400 }}>Review the result.</strong> Check the changed files and verification before accepting the work. You can ask the lead for changes.</p>
+          </div>
+        </details> : null}
       </div>
     </div>
-  );
-}
-
-function QuickActionPills({ onActionClick }: { onActionClick: (prompt: string) => void }) {
-  return (
-    <div
-      style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        justifyContent: 'center',
-        gap: 8,
-        maxWidth: 640,
-        marginTop: 6,
-      }}
-    >
-      {QUICK_ACTIONS.map((action) => (
-        <QuickActionPill key={action.id} label={action.label} onClick={() => onActionClick(action.prompt)} />
-      ))}
-    </div>
-  );
-}
-
-// Pill-shaped suggestion button — same chip vocabulary as ChipShell below
-// (hairline border, full radius, hover fill) but a step larger so it reads
-// as an action, not run-context.
-function QuickActionPill({ label, onClick }: { label: string; onClick: () => void }) {
-  const [hovered, setHovered] = useState(false);
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        paddingTop: 7,
-        paddingBottom: 7,
-        paddingLeft: 14,
-        paddingRight: 14,
-        borderWidth: 1,
-        borderStyle: 'solid',
-        borderColor: 'var(--t-divider-subtle)',
-        borderRadius: 999,
-        background: hovered ? 'var(--t-hover)' : 'transparent',
-        color: hovered ? 'var(--t-text)' : 'var(--t-text-secondary)',
-        cursor: 'pointer',
-        fontFamily: 'var(--font-sans-system)',
-        fontSize: 12,
-        fontWeight: 400,
-        letterSpacing: '-0.005em',
-        whiteSpace: 'nowrap',
-        transition: 'background 120ms ease, color 120ms ease',
-      }}
-    >
-      {label}
-    </button>
   );
 }
 
@@ -395,109 +267,52 @@ function NoReposCallout({ onAddProject }: { onAddProject?: (mode?: 'scratch' | '
 export const OrchestratorEmptyState = memo(OrchestratorEmptyStateBase);
 
 /**
- * OrchestratorComposerBelow — the Worktree / Branch / Kind chip row
- * that renders BELOW the composer input on the compose-first empty
- * state (Antigravity / Cortex pattern). The Project chip stays above
- * the composer; these three sit under it, so the operator's eye flows
- * title → project → composer → run-context.
+ * First-message location controls live beside repository and permissions
+ * beneath the composer, instead of floating above an empty workspace.
  */
-interface OrchestratorComposerBelowProps {
+interface OrchestratorStartLocationControlsProps {
   worktreeMode: WorktreeMode;
   onWorktreeModeChange: (mode: WorktreeMode) => void;
   branch: string;
   repoPath: string | null;
   onBranchChange?: (branch: string) => void;
-  onActionClick: (prompt: string) => void;
-  // Project chip (moved here from the heading row per operator
-  // request 2026-05-27 — sits to the right of Worktree).
-  repoLabel?: string | null;
-  workspaceTargets?: OrchestratorWorkspaceTarget[];
-  onSelectProject?: (target: OrchestratorWorkspaceTarget) => void;
-  onAddProject?: (mode?: 'scratch' | 'existing') => void;
-  onWorkWithoutProject?: () => void;
 }
 
-// Below this available width the chip row collapses every chip to an
-// icon-only trigger (Codex/Cursor adaptive behavior). Measured, not a
-// viewport media query, so it tracks the real panel size.
-const COMPACT_CHIP_ROW_WIDTH = 440;
+const COMPACT_CONTEXT_ROW_WIDTH = 440;
 
-function OrchestratorComposerBelowBase(props: OrchestratorComposerBelowProps) {
-  // Adaptive chip row (operator pass 2026-06-14): a ResizeObserver on the
-  // row's available width drops every chip's label when the workspace
-  // narrows, so the chips become icons that adapt to split panes / window
-  // resize instead of wrapping. Measurement keeps us on the inline-styles
-  // path (no container-query CSS / classes).
+function OrchestratorStartLocationControlsBase(props: OrchestratorStartLocationControlsProps) {
   const rowRef = useRef<HTMLDivElement | null>(null);
   const [compact, setCompact] = useState(false);
   useEffect(() => {
-    const el = rowRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect.width ?? 0;
-      if (w > 0) setCompact(w < COMPACT_CHIP_ROW_WIDTH);
+    const contextRow = rowRef.current?.closest<HTMLElement>('[data-o8-composer-context-row]');
+    if (!contextRow || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      if (width > 0) setCompact(width < COMPACT_CONTEXT_ROW_WIDTH);
     });
-    ro.observe(el);
-    return () => ro.disconnect();
+    observer.observe(contextRow);
+    return () => observer.disconnect();
   }, []);
   return (
     <div
       ref={rowRef}
       style={{
-        display: 'flex',
-        flexDirection: 'column',
+        display: 'inline-flex',
         alignItems: 'center',
-        width: '100%',
-        gap: 14,
-        paddingTop: 8,
-        paddingBottom: 4,
+        flexWrap: 'wrap',
+        gap: 6,
         fontFamily: 'var(--font-sans-system)',
       }}
     >
-      <div
-        style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          justifyContent: 'center',
-          gap: 8,
-        }}
-      >
-        {props.workspaceTargets ? (
-          <ProjectChip
-            label={props.repoPath === '~' ? '~' : (props.repoLabel ?? 'No project')}
-            workspaceTargets={props.workspaceTargets}
-            selectedRepoPath={props.repoPath}
-            onSelectProject={props.onSelectProject}
-            onAddProject={props.onAddProject}
-            onWorkWithoutProject={props.onWorkWithoutProject}
-            compact={compact}
-          />
-        ) : null}
-        <WorktreeChip mode={props.worktreeMode} onChange={props.onWorktreeModeChange} compact={compact} />
-        {/* Branch chip is adaptive: only shown when starting in a NEW
-            worktree (where the branch is the base for the new tree).
-            Working locally inherits the current checkout, which the footer
-            status bar already shows — so we drop the redundant second
-            branch pill (the "two mains" the operator flagged). */}
-        {props.worktreeMode === 'new-worktree' ? (
-          <BranchChip branch={props.branch} repoPath={props.repoPath} onChange={props.onBranchChange} compact={compact} />
-        ) : null}
-      </div>
-      {/* QUICK_ACTIONS pills moved into OrchestratorEmptyState (above the
-          composer) per operator pass 2026-05-27. Composer chip row only
-          carries run-context selectors now. */}
+      <WorktreeChip mode={props.worktreeMode} onChange={props.onWorktreeModeChange} compact={compact} />
+      {props.worktreeMode === 'new-worktree' ? (
+        <BranchChip branch={props.branch} repoPath={props.repoPath} onChange={props.onBranchChange} compact={compact} />
+      ) : null}
     </div>
   );
 }
 
-export const OrchestratorComposerBelow = memo(OrchestratorComposerBelowBase);
-
-export function timeOfDayGreeting(): string {
-  const hour = new Date().getHours();
-  if (hour < 12) return 'Good morning.';
-  if (hour < 17) return 'Good afternoon.';
-  return 'Good evening.';
-}
+export const OrchestratorStartLocationControls = memo(OrchestratorStartLocationControlsBase);
 
 /* ──────────────────────────────────────────────────────────────────────
  * Chip primitives
@@ -510,6 +325,8 @@ export function ChipShell({
   open,
   ariaLabel,
   compact,
+  contextRow,
+  anchorRef,
 }: {
   icon: ReactNode;
   label: string;
@@ -517,11 +334,14 @@ export function ChipShell({
   open?: boolean;
   ariaLabel?: string;
   compact?: boolean;
+  contextRow?: boolean;
+  anchorRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const [hovered, setHovered] = useState(false);
   const isInteractive = Boolean(onClick);
   return (
     <button
+      ref={anchorRef}
       type="button"
       onClick={onClick}
       disabled={!isInteractive}
@@ -534,26 +354,27 @@ export function ChipShell({
       style={{
         display: 'inline-flex',
         alignItems: 'center',
-        gap: compact ? 4 : 7,
-        paddingTop: 6,
-        paddingBottom: 6,
-        paddingLeft: compact ? 8 : 10,
-        paddingRight: compact ? 8 : 10,
-        borderWidth: 1,
+        gap: compact ? 4 : contextRow ? 5 : 7,
+        height: contextRow ? 24 : undefined,
+        paddingTop: contextRow ? 0 : 6,
+        paddingBottom: contextRow ? 0 : 6,
+        paddingLeft: contextRow ? 6 : compact ? 8 : 10,
+        paddingRight: contextRow ? 6 : compact ? 8 : 10,
+        borderWidth: contextRow ? 0 : 1,
         borderStyle: 'solid',
-        borderColor: 'var(--t-divider-subtle)',
-        borderRadius: 999,
+        borderColor: contextRow ? 'transparent' : 'var(--t-divider-subtle)',
+        borderRadius: contextRow ? 7 : 999,
         background: open || hovered ? 'var(--t-hover)' : 'transparent',
-        color: 'var(--t-text-secondary)',
+        color: contextRow ? 'var(--t-text-muted)' : 'var(--t-text-secondary)',
         cursor: isInteractive ? 'pointer' : 'default',
         fontFamily: 'var(--font-sans-system)',
-        fontSize: 12,
-        fontWeight: 360,
+        fontSize: contextRow ? 10.5 : 12,
+        fontWeight: contextRow ? 300 : 360,
         letterSpacing: '-0.005em',
         transition: 'background 120ms ease, color 120ms ease',
       }}
     >
-      <span style={{ display: 'inline-flex', flexShrink: 0, color: 'var(--t-text-faint)' }}>
+      <span style={{ display: 'inline-flex', flexShrink: 0, color: contextRow ? 'inherit' : 'var(--t-text-faint)' }}>
         {icon}
       </span>
       {compact ? null : <span style={{ whiteSpace: 'nowrap' }}>{label}</span>}
@@ -570,15 +391,7 @@ function Caret() {
   );
 }
 
-/**
- * Popover anchored to the chip below, click-outside dismiss.
- *
- * Rendered through a portal to document.body — the empty-state column
- * inside ThoughtsChatPanel has overflow:hidden, which used to clip the
- * popover to just the first row. With a portal + fixed positioning,
- * the menu always appears at full height regardless of which surface
- * is hosting the chip.
- */
+/** Share the composer's zoom-aware portal and viewport placement. */
 function ChipPopover({
   open,
   onClose,
@@ -587,74 +400,16 @@ function ChipPopover({
 }: {
   open: boolean;
   onClose: () => void;
-  anchorRef: React.RefObject<HTMLDivElement | null>;
+  anchorRef: React.RefObject<HTMLButtonElement | null>;
   children: ReactNode;
 }) {
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
-
-  // Recompute the menu's screen position whenever it opens (or the
-  // viewport changes underneath it). Place 6 px below the anchor; if
-  // there's not enough room, flip above. The menu's own width is
-  // measured after first paint and used for right-edge clamping.
-  useEffect(() => {
-    if (!open || !anchorRef.current) return;
-    const compute = () => {
-      const rect = anchorRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const menuHeightEstimate = menuRef.current?.offsetHeight ?? 240;
-      const menuWidthEstimate = menuRef.current?.offsetWidth ?? 232;
-      const spaceBelow = window.innerHeight - rect.bottom;
-      const flipUp = spaceBelow < menuHeightEstimate + 12 && rect.top > menuHeightEstimate + 12;
-      const top = flipUp ? rect.top - menuHeightEstimate - 6 : rect.bottom + 6;
-      const leftMax = window.innerWidth - menuWidthEstimate - 8;
-      const left = Math.min(Math.max(8, rect.left), Math.max(8, leftMax));
-      setCoords({ top, left });
-    };
-    compute();
-    window.addEventListener('resize', compute);
-    window.addEventListener('scroll', compute, true);
-    return () => {
-      window.removeEventListener('resize', compute);
-      window.removeEventListener('scroll', compute, true);
-    };
-  }, [open, anchorRef]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDocDown = (event: MouseEvent) => {
-      if (menuRef.current?.contains(event.target as Node)) return;
-      if (anchorRef.current?.contains(event.target as Node)) return;
-      onClose();
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('mousedown', onDocDown);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('mousedown', onDocDown);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [open, onClose, anchorRef]);
-
-  if (!open || typeof document === 'undefined') return null;
-
-  return createPortal(
+  return (
+    <ComposerPopover anchorRef={anchorRef} open={open} onClose={onClose} align="start">
     <div
-      ref={menuRef}
       role="menu"
       style={{
-        position: 'fixed',
-        top: coords?.top ?? 0,
-        left: coords?.left ?? 0,
-        opacity: coords ? 1 : 0,
-        // Slide-down entrance — the menu reads as a layer
-        // dropping out from under its chip. Opacity stays gated on `coords`
-        // so the pre-measured frame never flashes at the wrong spot.
-        animation: 'o8ChipPopIn 130ms cubic-bezier(0.22, 1, 0.36, 1)',
         minWidth: 232,
-        background: 'var(--t-panel-solid, var(--t-panel))',
+        background: 'var(--t-popover-surface)',
         borderWidth: 1,
         borderStyle: 'solid',
         borderColor: 'var(--t-divider, var(--t-divider-subtle))',
@@ -662,14 +417,12 @@ function ChipPopover({
         boxShadow: '0 12px 32px rgba(15, 23, 42, 0.22)',
         paddingTop: 4,
         paddingBottom: 4,
-        zIndex: 1200,
         fontFamily: 'var(--font-sans-system)',
       }}
     >
-      <style>{`@keyframes o8ChipPopIn { from { transform: translateY(-6px); } to { transform: translateY(0); } }`}</style>
       {children}
-    </div>,
-    document.body,
+    </div>
+    </ComposerPopover>
   );
 }
 
@@ -734,192 +487,6 @@ function PopoverItem({
   );
 }
 
-function PopoverDivider() {
-  return (
-    <div
-      aria-hidden
-      style={{
-        height: 1,
-        background: 'var(--t-divider-subtle)',
-        marginTop: 4,
-        marginBottom: 4,
-        marginLeft: 8,
-        marginRight: 8,
-      }}
-    />
-  );
-}
-
-/* ──────────────────────────────────────────────────────────────────────
- * Project chip + popover
- * ────────────────────────────────────────────────────────────────────── */
-
-function ProjectChip({
-  label,
-  workspaceTargets,
-  selectedRepoPath,
-  onSelectProject,
-  onAddProject,
-  onWorkWithoutProject,
-  compact,
-}: {
-  label: string;
-  workspaceTargets: OrchestratorWorkspaceTarget[];
-  selectedRepoPath: string | null;
-  onSelectProject?: (target: OrchestratorWorkspaceTarget) => void;
-  onAddProject?: (mode?: 'scratch' | 'existing') => void;
-  onWorkWithoutProject?: () => void;
-  compact?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const [addOpen, setAddOpen] = useState(false);
-  const [query, setQuery] = useState('');
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const searchId = useId();
-
-  const close = () => { setOpen(false); setQuery(''); };
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return workspaceTargets;
-    return workspaceTargets.filter((target) => (
-      target.repoName.toLowerCase().includes(q) || target.localPath.toLowerCase().includes(q)
-    ));
-  }, [query, workspaceTargets]);
-
-  return (
-    <div ref={wrapperRef} style={{ position: 'relative', display: 'inline-flex' }}>
-      <ChipShell
-        icon={<IconoirFolder width={13} height={13} color="currentColor" strokeWidth={1.6} />}
-        label={label}
-        onClick={() => { if (open) close(); else setOpen(true); }}
-        open={open}
-        ariaLabel="Pick project"
-        compact={compact}
-      />
-      <ChipPopover open={open} onClose={close} anchorRef={wrapperRef}>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            paddingTop: 8,
-            paddingBottom: 4,
-            paddingLeft: 12,
-            paddingRight: 12,
-          }}
-        >
-          <IconoirInputSearch width={12} height={12} color="var(--t-text-faint)" strokeWidth={1.6} />
-          <input
-            id={searchId}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search projects"
-            autoFocus
-            style={{
-              flex: 1,
-              minWidth: 0,
-              background: 'transparent',
-              borderWidth: 0,
-              outline: 'none',
-              color: 'var(--t-text)',
-              fontFamily: 'inherit',
-              fontSize: 12.5,
-              padding: 0,
-            }}
-          />
-        </div>
-        <div style={{ maxHeight: 240, overflowY: 'auto' }}>
-          {filtered.map((target) => (
-            <PopoverItem
-              key={target.id}
-              icon={<IconoirFolder width={13} height={13} color="currentColor" strokeWidth={1.6} />}
-              label={target.repoName}
-              selected={target.localPath === selectedRepoPath}
-              onClick={() => {
-                onSelectProject?.(target);
-                close();
-              }}
-            />
-          ))}
-          {filtered.length === 0 ? (
-            <div style={{ padding: 12, color: 'var(--t-text-faint)', fontSize: 12 }}>
-              No projects match.
-            </div>
-          ) : null}
-        </div>
-        <PopoverDivider />
-        <div
-          style={{ position: 'relative' }}
-          onMouseEnter={() => setAddOpen(true)}
-          onMouseLeave={() => setAddOpen(false)}
-        >
-          <PopoverItem
-            icon={<IconoirFolderPlus width={13} height={13} color="currentColor" strokeWidth={1.6} />}
-            label="Add new project"
-            onClick={() => setAddOpen((v) => !v)}
-            trailing={(
-              <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ color: 'var(--t-text-faint)' }}>
-                <path d="M9 6l6 6-6 6" />
-              </svg>
-            )}
-          />
-          {addOpen ? (
-            <div
-              role="menu"
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: '100%',
-                marginLeft: 4,
-                minWidth: 200,
-                background: 'var(--t-panel)',
-                borderWidth: 1,
-                borderStyle: 'solid',
-                borderColor: 'var(--t-divider)',
-                borderRadius: 10,
-                boxShadow: '0 12px 32px rgba(0, 0, 0, 0.22)',
-                paddingTop: 4,
-                paddingBottom: 4,
-                zIndex: 70,
-                fontFamily: 'var(--font-sans-system)',
-              }}
-            >
-              <PopoverItem
-                icon={<IconoirPlus width={13} height={13} color="currentColor" strokeWidth={1.6} />}
-                label="Start from scratch"
-                onClick={() => {
-                  onAddProject?.('scratch');
-                  setAddOpen(false);
-                  close();
-                }}
-              />
-              <PopoverItem
-                icon={<IconoirFolder width={13} height={13} color="currentColor" strokeWidth={1.6} />}
-                label="Use an existing folder"
-                onClick={() => {
-                  onAddProject?.('existing');
-                  setAddOpen(false);
-                  close();
-                }}
-              />
-            </div>
-          ) : null}
-        </div>
-        <PopoverItem
-          icon={<IconoirFolder width={13} height={13} color="currentColor" strokeWidth={1.6} />}
-          label="Don't work in a project"
-          destructive
-          onClick={() => {
-            onWorkWithoutProject?.();
-            close();
-          }}
-        />
-      </ChipPopover>
-    </div>
-  );
-}
-
 /* ──────────────────────────────────────────────────────────────────────
  * Worktree chip
  * ────────────────────────────────────────────────────────────────────── */
@@ -934,22 +501,27 @@ function WorktreeChip({
   compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const anchorRef = useRef<HTMLDivElement | null>(null);
-  const label = mode === 'local' ? 'Work locally' : 'New worktree';
+  const anchorRef = useRef<HTMLButtonElement | null>(null);
+  const label = mode === 'local' ? 'Local' : 'Worktree';
+  const accessibleLabel = `Start location: ${label}`;
   return (
-    <div ref={anchorRef} style={{ position: 'relative', display: 'inline-flex' }}>
+    <div style={{ display: 'inline-flex' }}>
       <ChipShell
+        anchorRef={anchorRef}
         icon={mode === 'local'
           ? <IconoirComputer width={13} height={13} color="currentColor" strokeWidth={1.6} />
           : <IconoirGitBranch width={13} height={13} color="currentColor" strokeWidth={1.6} />}
         label={label}
         onClick={() => setOpen((v) => !v)}
         open={open}
-        ariaLabel="Start in"
+        ariaLabel={accessibleLabel}
         compact={compact}
+        contextRow
       />
       <ChipPopover open={open} onClose={() => setOpen(false)} anchorRef={anchorRef}>
         <div
+          role="menu"
+          aria-label="Start location"
           style={{
             paddingTop: 6,
             paddingBottom: 4,
@@ -962,11 +534,11 @@ function WorktreeChip({
             color: 'var(--t-text-faint)',
           }}
         >
-          Start in
+          Start location
         </div>
         <PopoverItem
           icon={<IconoirComputer width={13} height={13} color="currentColor" strokeWidth={1.6} />}
-          label="Work locally"
+          label="Local checkout"
           selected={mode === 'local'}
           onClick={() => {
             onChange('local');
@@ -1027,17 +599,19 @@ function BranchChip({
   }, [open, repoPath]);
 
   const interactive = Boolean(repoPath && onChange);
-  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const anchorRef = useRef<HTMLButtonElement | null>(null);
 
   return (
-    <div ref={anchorRef} style={{ position: 'relative', display: 'inline-flex' }}>
+    <div style={{ display: 'inline-flex' }}>
       <ChipShell
+        anchorRef={anchorRef}
         icon={<IconoirGitBranch width={13} height={13} color="currentColor" strokeWidth={1.6} />}
         label={branch}
         onClick={interactive ? () => setOpen((v) => !v) : undefined}
         open={open}
         ariaLabel="Pick branch"
         compact={compact}
+        contextRow
       />
       <ChipPopover open={open} onClose={() => setOpen(false)} anchorRef={anchorRef}>
         {loading ? (

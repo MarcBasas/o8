@@ -22,7 +22,7 @@ import {
   subscribeOrchestratorRuntimePreference,
 } from '@/lib/orchestrator/preferences';
 import { loadOrchestratorMissionState } from '@/lib/orchestrator/store';
-import { stableOrchestratorThreadTitleForId } from '@/lib/orchestrator/thread-title';
+import { orchestratorDisplayTitle, stableOrchestratorThreadTitleForId } from '@/lib/orchestrator/thread-title';
 import { outsideWorkerSessionKeysForSettledPackets } from '@/lib/orchestrator/outside-worker-split';
 import type { OrchestrationMode, OrchestratorRuntime } from '@/lib/orchestrator/types';
 import type { ChatModelId } from '@/components/desktop/orchestrator/chat-models';
@@ -34,7 +34,7 @@ import {
 } from '@/components/desktop/workspace-terminal/orchestrator-thread-restore';
 import {
   OrchestratorEmptyState,
-  timeOfDayGreeting,
+  OrchestratorStartLocationControls,
   type WorktreeMode,
   type OrchestratorEmptyKind,
 } from '@/components/desktop/OrchestratorEmptyState';
@@ -51,8 +51,9 @@ import { ORCHESTRATOR_TOKEN_EVENT, type OrchestratorTokenUsageDetail } from '@/c
 import { ORCHESTRATOR_HOME_REPO_SENTINEL, resolveOrchestratorClientRepoPath } from '@/components/desktop/thoughts/orchestrator-home-mode';
 import { buildAgentTargets } from '@/components/desktop/thoughts/utils';
 import { SessionPillContextMenu } from '@/components/desktop/SessionPillContextMenu';
-import { SessionTileSurface, projectLiveSessionMeshParticipants } from './SessionTileSurface';
-import { ThreadDropLayer, type ThreadDropAction } from './ThreadDropLayer';
+import { projectLiveSessionMeshParticipants } from './SessionTileSurface';
+import { ResponsiveSessionSurface } from './ResponsiveSessionSurface';
+import type { ThreadDropAction } from './ThreadDropLayer';
 import { useSessionTiles, buildPillContextMenuItems } from './use-session-tiles';
 import { HISTORY_NAVIGATION_SUPERSEDED_EVENT, publishWorkspaceThreadBinding, WORKSPACE_THREAD_ID_EVENT } from './utils';
 import type { OrchestratorTurnInjection } from './types';
@@ -98,10 +99,6 @@ interface OrchestratorTabProps {
   persistLastThread?: boolean; suppressRuntimePrewarm?: boolean;
   turnInjection?: OrchestratorTurnInjection;
 }
-function swarmStorageKey(tabId: string): string {
-  return `cortex-ide:orchestrator-swarm:tab:${tabId}`;
-}
-
 // One-shot claim on the global "last-active orchestrator thread" pointer.
 //
 // Plain orchestrator tabs carry an `orchestrator-…` id (no explicit
@@ -126,24 +123,6 @@ const tabIdsMountedThisLoad = new Set<string>();
 // Persistence helpers for the cross-reload thread restore live in a
 // shared module so the workspace controller can read the same values
 // at tab-creation time (pre-set tab.label) without re-implementing.
-
-function readStoredSwarm(tabId: string): boolean {
-  if (typeof window === 'undefined') return false;
-  try {
-    return window.localStorage.getItem(swarmStorageKey(tabId)) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function persistSwarm(tabId: string, enabled: boolean): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(swarmStorageKey(tabId), enabled ? '1' : '0');
-  } catch {
-    // ignore
-  }
-}
 
 function collideStorageKey(tabId: string): string {
   return `cortex-ide:orchestrator-collide:tab:${tabId}`;
@@ -227,14 +206,8 @@ function OrchestratorTabInner({
       return next;
     });
   }, []);
-  // Fusion / swarm tier (per-tab). Picking "Fusion" in the composer's
-  // thinking dropdown flips this on; the orchestrator then fans work out to a
-  // parallel crew — native Claude sub-agents + Codex workers via o8.
-  const [swarmEnabled, setSwarmEnabled] = useState<boolean>(
-    () => readStoredSwarm(tabId),
-  );
-  // Collide (MoA) tier (per-tab). Claude + Codex propose independently, Claude
-  // synthesizes + does the work. Mutually exclusive with swarm.
+  // Collide (MoA) tier (per-tab). The composer mode remains the source of
+  // truth; this flag selects the matching comparison backend.
   const [collideEnabled, setCollideEnabled] = useState<boolean>(
     () => readStoredCollide(tabId),
   );
@@ -357,7 +330,7 @@ function OrchestratorTabInner({
         // while the operator is inside it.
         const explicitTitle = typeof data?.title === 'string' && data.title.trim() ? data.title.trim() : null;
         const fallbackTitle = lockedMode === 'chat' ? null : stableOrchestratorThreadTitleForId(threadId, data?.savedAt);
-        const title = explicitTitle ?? fallbackTitle;
+        const title = fallbackTitle ? orchestratorDisplayTitle(explicitTitle, fallbackTitle) : explicitTitle;
         if (cancelled) return;
         if (title) {
           // Persist the title alongside the threadId so the next reload
@@ -667,23 +640,9 @@ function OrchestratorTabInner({
     tabId,
   ]);
 
-  const handleSetSwarm = useCallback((enabled: boolean) => {
-    setSwarmEnabled(enabled);
-    persistSwarm(tabId, enabled);
-    // Swarm and Collide are alternative fusion modes — arming one disarms the other.
-    if (enabled) {
-      setCollideEnabled(false);
-      persistCollide(tabId, false);
-    }
-  }, [tabId]);
-
   const handleSetCollide = useCallback((enabled: boolean) => {
     setCollideEnabled(enabled);
     persistCollide(tabId, enabled);
-    if (enabled) {
-      setSwarmEnabled(false);
-      persistSwarm(tabId, false);
-    }
   }, [tabId]);
 
   useEffect(() => {
@@ -754,10 +713,6 @@ function OrchestratorTabInner({
     return () => window.removeEventListener('o8:load-history-thread', handleLoadHistoryThread);
   }, [acceptHistoryThreadLoads, active, tabId, publishWorkspaceThread]);
 
-  const handleQuickAction = useCallback((prompt: string) => {
-    chatPanelRef.current?.sendNow(prompt);
-  }, []);
-
   const handlePaletteDraft = useCallback((text: string, sourceId: string) => {
     setPaletteDraft({ id: `${sourceId}-${Date.now()}`, text });
     setTimeout(() => chatPanelRef.current?.focusInput(), 40);
@@ -803,11 +758,6 @@ function OrchestratorTabInner({
     }
   }, []);
 
-  const greeting = useMemo(() => timeOfDayGreeting(), []);
-  const runtimeLabel = lockedMode === 'single'
-    ? orchestratorRuntimeTone(initialSingleRuntime ?? 'codex').label
-    : 'O8 Operator';
-
   // Worktree mode for the compose-first empty state. Defaults to 'local'
   // (operator pass 2026-06-14 — "we only work local really"): the
   // orchestrator drives on the current checkout and the Branch chip stays
@@ -829,29 +779,9 @@ function OrchestratorTabInner({
   // moment the operator picks another project.
   const [scopeCleared, setScopeCleared] = useState(false);
 
-  // Kind toggle on the empty state. lockedMode='chat' = llm-chat tab,
-  // can't pivot. Otherwise: 'chat' if the tab's current mode is chat,
-  // else 'orchestrator'. Flipping kind calls the existing mode
-  // persistence path so the tab state actually moves.
   const emptyKind: OrchestratorEmptyKind = lockedMode === 'chat' || initialMode === 'chat'
     ? 'chat'
     : 'orchestrator';
-  const emptyKindLocked = lockedMode === 'chat';
-  const handleEmptyKindChange = useCallback((next: OrchestratorEmptyKind) => {
-    if (!spawnHandlers || emptyKindLocked) return;
-    const mode: 'fleet' | 'chat' = next === 'chat' ? 'chat' : 'fleet';
-    // Persist on the tab (so restore picks it up) AND dispatch the
-    // event the active ThoughtsChatPanel listens for so its internal
-    // orchestrationMode state flips immediately — otherwise the
-    // composer's model label sticks on the Orchestrator's model
-    // (e.g. "Opus 4.7") after toggling to Chat.
-    spawnHandlers.updateTabMode(tabId, { mode });
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('o8:set-orchestration-mode', {
-        detail: { mode },
-      }));
-    }
-  }, [emptyKindLocked, spawnHandlers, tabId]);
 
   // Resolve the active workspace target for the Project chip label.
   const activeWorkspaceTarget = useMemo(() => (
@@ -948,9 +878,9 @@ function OrchestratorTabInner({
     setScopeCleared(false);
     if (typeof window === 'undefined') return;
     window.dispatchEvent(new CustomEvent('o8:select-workspace-scope', {
-      detail: { repoPath: target.localPath, repoName: target.repoName },
+      detail: { tabId, repoPath: target.localPath, repoName: target.repoName },
     }));
-  }, []);
+  }, [tabId]);
   const handleEmptyAddProject = useCallback((mode?: 'scratch' | 'existing') => {
     if (typeof window === 'undefined') return;
     window.dispatchEvent(new CustomEvent('o8:open-add-repo-flow', { detail: { mode } }));
@@ -961,46 +891,30 @@ function OrchestratorTabInner({
     setScopeCleared(true);
     if (typeof window === 'undefined') return;
     window.dispatchEvent(new CustomEvent('o8:select-workspace-scope', {
-      detail: { repoPath: ORCHESTRATOR_HOME_REPO_SENTINEL, repoName: null },
+      detail: { tabId, repoPath: ORCHESTRATOR_HOME_REPO_SENTINEL, repoName: null },
     }));
-  }, []);
+  }, [tabId]);
 
   const emptyStateNode = useMemo(
     () => (
       <OrchestratorEmptyState
-        greeting={greeting}
-        runtimeLabel={runtimeLabel}
-        onActionClick={handleQuickAction}
         repoPath={effectiveRepoPath}
         repoLabel={projectLabel}
         workspaceTargets={data?.workspaceTargets ?? []}
         onSelectProject={handleEmptySelectProject}
         onAddProject={handleEmptyAddProject}
         onWorkWithoutProject={handleEmptyWorkWithoutProject}
-        worktreeMode={worktreeMode}
-        onWorktreeModeChange={setWorktreeMode}
-        branch={branchLabel}
-        onBranchChange={setPickedBranch}
         kind={emptyKind}
-        kindLocked={emptyKindLocked}
-        onKindChange={handleEmptyKindChange}
       />
     ),
     [
-      greeting,
-      runtimeLabel,
-      handleQuickAction,
       effectiveRepoPath,
       projectLabel,
       data?.workspaceTargets,
       handleEmptySelectProject,
       handleEmptyAddProject,
       handleEmptyWorkWithoutProject,
-      worktreeMode,
-      branchLabel,
       emptyKind,
-      emptyKindLocked,
-      handleEmptyKindChange,
     ],
   );
 
@@ -1103,7 +1017,7 @@ function OrchestratorTabInner({
   const thoughtsChatPanel = (
     <ThoughtsChatPanel
       ref={chatPanelRef}
-      transcriptSideRail={branchRail}
+      transcriptSideRail={projectContextRailVisible ? branchRail : null}
       open={active}
       // The panel's #1459 crash-recovery auto-restore (adopt the latest thread
       // when it was modified <60s ago) belongs ONLY to the boot-restore tab.
@@ -1125,18 +1039,28 @@ function OrchestratorTabInner({
       sessionTargets={sessionTargets}
       workspaceTargets={data.workspaceTargets ?? []}
       repoPath={effectiveRepoPath}
+      scopeTabId={tabId}
+      ownerTabId={publishWorkspaceThread ? tabId : undefined}
       projectId={data.activeProjectId ?? null}
       thoughtsBodyBackground={thoughtsBodyBackground}
       thoughtsElevatedSurface={thoughtsElevatedSurface}
       thoughtsElevatedBorder={thoughtsElevatedBorder}
       thoughtsElevatedShadow={thoughtsElevatedShadow}
       thoughtsMutedGlass={thoughtsMutedGlass}
-      swarmEnabled={swarmEnabled}
-      onSetSwarm={handleSetSwarm}
       collideEnabled={collideEnabled}
       onSetCollide={handleSetCollide}
+      composerModeStorageId={tabId}
       repoLabel={repoLabel}
       emptyStateOverride={emptyOrShimmerNode}
+      composerBelowSlot={(
+        <OrchestratorStartLocationControls
+          worktreeMode={worktreeMode}
+          onWorktreeModeChange={setWorktreeMode}
+          branch={branchLabel}
+          repoPath={effectiveRepoPath}
+          onBranchChange={setPickedBranch}
+        />
+      )}
       showInlineExport={false}
       lockedMode={lockedMode}
       initialMode={initialMode}
@@ -1206,9 +1130,9 @@ function OrchestratorTabInner({
         </div>
       ) : null}
 
-      {/* Live `o8 run` sessions — click a chip to watch the raw stdout in the
-          bottom panel without leaving the chat. Self-hides when none run. */}
-      <OrchestratorRunStrip active={active} />
+      {/* Live `o8 run` sessions — click a chip to watch stdout in a read-only
+          workspace terminal tab. Self-hides when none run. */}
+      <OrchestratorRunStrip active={active} workspaceId={workspaceId} />
 
       {/* Body: chat (flex) | branch details (self-hides). Threads/Archive
           moved into LeftPanelProjectFocus → Chats + Agents tabs. */}
@@ -1221,39 +1145,24 @@ function OrchestratorTabInner({
         }}
       >
         {/* Chat body */}
-        <div
-          style={{
-            flex: 1,
-            minWidth: 0,
-            display: 'flex',
-            flexDirection: 'column',
-            position: 'relative',
-          }}
-        >
-          {/* ALWAYS render through the tile surface — even a lone chat leaf.
+        {/* ALWAYS render through the tile surface — even a lone chat leaf.
               The old `isTiled ? surface : panel` ternary moved the chat
               panel between tree positions on every tile/untile flip, which
               REMOUNTED ThoughtsChatPanel: transcript flash + a fresh
               auto-restore pass that could adopt whatever thread was touched
               seconds ago (hit live 2026-07-15 when closing a dragged-in
               thread pane). A single-leaf surface renders the same visual. */}
-          <SessionTileSurface
-            layout={sessionTiles.layout}
-            focusedSessionKey={sessionTiles.focusedSessionKey}
-            chatSlot={thoughtsChatPanel}
-            repoPath={repoPath ?? null}
-            onResizeSplit={sessionTiles.resizeSplit}
-            onCloseLeaf={sessionTiles.closeSessionLeafById}
-            onFocusSession={sessionTiles.setFocusedSessionKey}
-          />
-          {/* Drag-to-split drop targets — only paints while a thread drag
-              from the left rail is in flight (split-screen parity). */}
-          <ThreadDropLayer
-            active={active}
-            layout={sessionTiles.layout}
-            onDrop={handleThreadDrop}
-          />
-        </div>
+        <ResponsiveSessionSurface
+          active={active}
+          onThreadDrop={handleThreadDrop}
+          layout={sessionTiles.layout}
+          focusedSessionKey={sessionTiles.focusedSessionKey}
+          chatSlot={thoughtsChatPanel}
+          repoPath={repoPath ?? null}
+          onResizeSplit={sessionTiles.resizeSplit}
+          onCloseLeaf={sessionTiles.closeSessionLeafById}
+          onFocusSession={sessionTiles.setFocusedSessionKey}
+        />
         {/* Branch-details rail moved INSIDE the panel (transcriptSideRail) so
             it sits beside the transcript, not the composer — see branchRail. */}
       </div>

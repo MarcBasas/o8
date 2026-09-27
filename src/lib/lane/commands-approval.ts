@@ -1,5 +1,6 @@
 import type { ApprovalRisk } from '@/lib/approvals/types';
 import { buildPolicyContext } from '@/lib/approvals/policies';
+import { startApprovalReferee } from '@/lib/approvals/referee';
 import { createApproval, recordApprovalAudit } from '@/lib/approvals/store';
 import { resolveRequireApprovalSync } from '@/lib/operator/defaults';
 import { buildConflictZonesFromDiffFiles, extractReviewFindings, extractReviewPatterns } from '@/lib/orchestrator/review-lessons';
@@ -10,6 +11,7 @@ import type { Lane, LaneCommandResult, LaneEventActor } from '@/lib/lane/types';
 import { resolvePacketDispatcher } from '@/lib/orchestrator/dispatcher-attribution';
 import { assessDurableApprovedReview } from './durable-review-approval';
 import { preserveAndRecordLaneRecovery } from './merge-recovery';
+import { riskForChangedPaths } from './changed-path-risk';
 
 const RECOVERABLE_MERGE_FAILURE_POLICIES = new Set([
   'merge-gate-violation',
@@ -17,7 +19,7 @@ const RECOVERABLE_MERGE_FAILURE_POLICIES = new Set([
   'fast_forward_failure_escalation',
 ]);
 
-async function getDiffForLane(lane: Pick<Lane, 'baseBranch' | 'worktreePath' | 'repoPath'>) {
+export async function getDiffForLane(lane: Pick<Lane, 'baseBranch' | 'worktreePath' | 'repoPath'>) {
   const cwd = lane.worktreePath || lane.repoPath;
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
@@ -114,6 +116,8 @@ export async function createLaneActionApproval(
     description: string;
     summary: string;
     risk: ApprovalRisk;
+    /** Merge-mechanics failures: rate risk from the changed paths, with `risk` as the fallback. */
+    riskFromChangedPaths?: boolean;
     policyRuleId: string;
     metadata?: Record<string, string>;
     note: string;
@@ -161,7 +165,7 @@ export async function createLaneActionApproval(
     },
     gateResult: input.gateResult,
     conflictReport: input.conflictReport,
-    risk: input.risk,
+    risk: input.riskFromChangedPaths ? riskForChangedPaths(files, input.risk) : input.risk,
     policyRuleId: input.policyRuleId,
     args: surfaceRoute || recovery ? {
       ...(surfaceRoute ? {
@@ -203,6 +207,15 @@ export async function createLaneActionApproval(
       expectedHeadSha: input.expectedHeadSha,
       strategy: input.strategy,
     },
+  });
+  // Advisory referee read of the diff (#2435): detached, never awaited here,
+  // and a no-op when judgment.provider is off.
+  startApprovalReferee({
+    approvalId: approval.id,
+    packetId: lane.packetId ?? null,
+    laneId: lane.id,
+    files: files.map((file) => ({ path: file.path })),
+    diffText: rawDiff,
   });
   await recordReviewLessonsForApproval(approval.id, lane, input.reviewSummary, files);
   setLaneStatus(

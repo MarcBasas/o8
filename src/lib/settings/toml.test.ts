@@ -67,6 +67,31 @@ backend = "codex"
     expect((await getOperatorDefaults()).values.orchestratorBackend).toBe('codex');
   });
 
+  it('persists the enabled-by-default background title inference control', async () => {
+    expect((await getOperatorDefaults()).values.autoTitleInferenceEnabled).toBe(true);
+    const result = await POST(postDefaults({ autoTitleInferenceEnabled: false }));
+    expect(result.status).toBe(200);
+    expect((await getOperatorDefaults()).values.autoTitleInferenceEnabled).toBe(false);
+    expect(parseOperatorDefaultsToml(readFileSync(tomlPath, 'utf8')).autoTitleInferenceEnabled).toBe(false);
+    const read = await GET(new Request('http://127.0.0.1/api/panel/operator-defaults'));
+    expect((await read.json()).values.autoTitleInferenceEnabled).toBe(false);
+  });
+
+  it('persists the subscription-only Symon voice setting at its documented path', async () => {
+    const response = await POST(postDefaults({
+      settingsToml: `
+[symon.voice]
+subscriptionOnly = true
+`,
+      settingsTomlRevision: await currentRevision(),
+    }));
+
+    expect(response.status).toBe(200);
+    expect((await getOperatorDefaults()).values.symonVoiceSubscriptionOnly).toBe(true);
+    expect(parseOperatorDefaultsToml(readFileSync(tomlPath, 'utf8')).symonVoiceSubscriptionOnly)
+      .toBe(true);
+  });
+
   it('persists the Astra orchestrator model through settings.toml and the route consumer', async () => {
     const response = await POST(postDefaults({
       settingsToml: `
@@ -80,6 +105,17 @@ orchestrator_model = "gpt-6-astra"
     expect(parseOperatorDefaultsToml(readFileSync(tomlPath, 'utf8')).orchestratorModel)
       .toBe('gpt-6-astra');
     expect((await getOperatorDefaults()).values.orchestratorModel).toBe('gpt-6-astra');
+  });
+
+  it('defaults Fleet to five and Strict while preserving explicit Advisory choices', async () => {
+    const initial = await GET(new Request('http://127.0.0.1/api/panel/operator-defaults'));
+    expect((await initial.json()).values).toMatchObject({ parallelCap: 5, overlapGate: 'strict' });
+
+    const saved = await POST(postDefaults({ overlapGate: 'advisory' }));
+    expect(saved.status).toBe(200);
+    const readback = await GET(new Request('http://127.0.0.1/api/panel/operator-defaults'));
+    expect((await readback.json()).values.overlapGate).toBe('advisory');
+    expect(parseOperatorDefaultsToml(readFileSync(tomlPath, 'utf8')).overlapGate).toBe('advisory');
   });
 
   it('persists APFS dependency images through the real route and store', async () => {

@@ -1,4 +1,5 @@
 import type { EventSeverity } from '@/lib/fleet/types';
+import type { NoulAnswer, ScoreAnswer } from '@/lib/judgment/types';
 import type { PacketDiffBaseResolution } from '@/lib/diff/base-resolution';
 import type { MobileTranscriptSource, MobileTranscriptToolCall } from '@/lib/mobile/types';
 import type { OrchestratorRuntime } from '@/lib/orchestrator/types';
@@ -70,6 +71,31 @@ export interface OrchestratorReviewFinding {
   fixSuggestion?: string;
 }
 
+/**
+ * Referee answers about an approval's diff (#2435). ADVISORY ONLY: nothing in
+ * the decision path reads this. Stored inside `metadata_json` under the
+ * `referee` key; record-only answers stay on the receipt.
+ */
+export interface ApprovalReferee {
+  receiptId: string | null;
+  model: string;
+  answers: {
+    docsOnly: NoulAnswer;
+    addsTests: NoulAnswer;
+    touchesMiddlewareOrAuth: NoulAnswer;
+    containsPlaceholderOrMockData: NoulAnswer;
+    risk: ScoreAnswer;
+  };
+  truncated: boolean;
+  hiddenText: boolean;
+  filesAddedFromDiff: number;
+  /** o8's own path check, shown beside the referee's `touchesMiddlewareOrAuth`. */
+  pathTouchesMiddlewareOrAuth: boolean;
+  /** sha256 of the diff text and sorted file paths the referee read; a write is skipped when the row's diff no longer matches. */
+  diffFingerprint: string;
+  askedAt: number;
+}
+
 export interface ApprovalAuditEvent {
   type: 'created' | 'updated' | 'approved' | 'rejected' | 'resumed' | 'resume_failed'
     | 'orchestrator_review' | 'continuation_completed' | 'continuation_failed' | 'continuation_outcome_unknown';
@@ -85,6 +111,8 @@ export interface ApprovalAuditEvent {
   rawText?: string;
   patterns?: string[];
   conflictZones?: string[];
+  /** Approved from a phone inbox card with referee chips shown (#2439); the chip kinds that were shown. */
+  approvedFromCard?: { via: 'chip'; chipsShown: string[] };
 }
 
 export interface LlmApprovalContinuation {
@@ -176,6 +204,8 @@ export interface ApprovalRecord {
   conflictReport?: ApprovalConflictReport;
   risk: ApprovalRisk;
   metadata?: Record<string, string>;
+  /** Advisory referee read of the diff (#2435); absent when the setting is off or the call failed. */
+  referee?: ApprovalReferee;
   /** Policy rule that triggered this approval */
   policyRuleId?: string;
   status: ApprovalStatus;

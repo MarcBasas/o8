@@ -25,6 +25,10 @@ import { ensureV58SpectatorRepoGrantsSchema } from '@/lib/db/v58-spectator-repo-
 import { ensureV59TaskArtifactsSchema } from '@/lib/db/v59-task-artifacts-migration';
 import { ensureV60SymonMcpInjectionSchema } from '@/lib/db/v60-symon-mcp-injection-migration';
 import { ensureV61PrMergeEvidenceSchema } from '@/lib/db/v61-pr-merge-evidence-migration';
+import { ensureV62SymonWatchSchema } from '@/lib/db/v62-symon-watch-migration';
+import { ensureV63JudgmentReceiptsSchema } from '@/lib/db/v63-judgment-receipts-migration';
+import { ensureV64SymonFuzzyWatchSchema } from '@/lib/db/v64-symon-fuzzy-watch-migration';
+import { ensureV65OrchestratorLeadSchema } from '@/lib/db/v65-orchestrator-lead-migration';
 
 /**
  * Keep the current additive migrations behind one boot hook. `db/index.ts` is
@@ -61,4 +65,8 @@ export function ensurePostAutomationSchemas(sqlite: Database.Database): void {
   ensureV59TaskArtifactsSchema(sqlite);
   ensureV60SymonMcpInjectionSchema(sqlite);
   ensureV61PrMergeEvidenceSchema(sqlite);
+  ensureV62SymonWatchSchema(sqlite);
+  ensureV63JudgmentReceiptsSchema(sqlite);
+  ensureV64SymonFuzzyWatchSchema(sqlite);
+  ensureV65OrchestratorLeadSchema(sqlite);
 }

@@ -92,7 +92,7 @@ function parseTimelineAgent(raw: string | undefined | null): ParsedTimelineAgent
     return { runtimeKind: 'claude', runtimeLabel: 'Claude Code', displayName: value.slice(3) || 'Claude Code' };
   }
   if (value === 'codex') return { runtimeKind: 'codex', runtimeLabel: 'Codex', displayName: 'Codex' };
-  if (value === 'gemini') return { runtimeKind: 'gemini', runtimeLabel: 'Gemini', displayName: 'Gemini' };
+  if (value === 'gemini') return { runtimeKind: 'gemini', runtimeLabel: 'Gemini CLI', displayName: 'Gemini CLI' };
   return { runtimeKind: null, runtimeLabel: null, displayName: value };
 }
 
@@ -566,7 +566,7 @@ function TimelineHoverCard({ info, card }: { info: TrackerHoverInfo; card: Hover
         paddingLeft: 16,
         borderRadius: 12,
         border: '1px solid var(--t-panel-border)',
-        background: 'var(--t-panel-solid)',
+        background: 'var(--t-popover-surface)',
         boxShadow: 'var(--t-panel-shadow)',
         color: 'var(--t-text)',
         pointerEvents: 'none',

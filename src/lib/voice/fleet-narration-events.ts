@@ -297,6 +297,15 @@ function classifyLaneEvent(event: LaneEvent, lane?: NarrationLane | null): Class
   if (event.verb === 'typecheck_auto_retry') {
     return { kind: 'retry', summary: label, transitionState: 'typecheck-retry' };
   }
+  if (event.verb === 'gate_failure_warning') {
+    return { kind: 'other', summary: 'Gate-failure warning recorded', transitionState: 'gate-failure-warning' };
+  }
+  if (event.verb === 'claim_unbacked') {
+    return { kind: 'other', summary: 'Report claim not backed by evidence', transitionState: 'claim-unbacked' };
+  }
+  if (event.verb === 'wake_triage') {
+    return { kind: 'other', summary: 'Wake triage recorded', transitionState: 'wake-triage' };
+  }
   if (event.verb === 'typecheck_escalation') {
     return { kind: 'escalation', summary: label, transitionState: 'typecheck-escalation' };
   }

@@ -18,6 +18,7 @@ import { findLatestLaneByPacket } from '@/lib/lane/registry';
 import type { Lane } from '@/lib/lane/types';
 import { readOrchestratorControlPlaneState } from '@/lib/orchestrator/control-plane';
 import type { PacketDiffBaseResolution } from '@/lib/diff/base-resolution';
+import type { DirectiveCitationsPreview } from '@/lib/judgment/directive-citations-format';
 import { runMergeGate, type MergeGateResult, type MergeViolation } from './merge-gate';
 import { runLaneRebaseLint, type LaneRebaseLintResult } from './rebase-lint';
 import { immutableSnapshotDiffBase, resolveLaneReviewSource } from './review-source';
@@ -32,7 +33,8 @@ export type MergeCheckName =
   | 'untracked-imports'
   | 'self-review-integrity'
   | 'typecheck'
-  | 'lint';
+  | 'lint'
+  | 'contract-review';
 
 export type MergeCheckVerdict = 'pass' | 'fail' | 'skipped';
 
@@ -57,10 +59,16 @@ export interface MergePreviewResult {
   mergeUnavailableReason?: string;
   /** Populated when no lane is bound so the gate could not run. */
   unwired?: boolean;
+  /** Advisory rule citations (#2446). Absent when judgment is off; the gate never reads it. */
+  directiveCitations?: DirectiveCitationsPreview;
+  /** Contract state that approval and merge still need, separate from mechanical checks. */
+  reviewPrerequisite?: string;
 }
 
 interface MergePreviewOptions {
   orchestratorApproved?: boolean;
+  /** Compute the advisory rule citations (#2446). Only surfaces that show them ask; default off, no git, no import. */
+  directiveCitations?: boolean;
 }
 
 // ── Check-name mapping ──
@@ -214,11 +222,12 @@ export async function buildPreviewForLane(
     : { ...lane, worktreePath: reviewSource.cwd };
   const orchestratorApproved = options.orchestratorApproved ?? hasApprovedOrchestratorReview(packetId);
   const gateResult = await runMergeGate(resolvedLane, undefined, orchestratorApproved);
+  const baseRef = gateResult.diffBase?.mergeBase
+    ?? gateResult.diffBase?.comparisonRef
+    ?? lane.baseBranch;
   const lint = await runLaneRebaseLint({
     cwd: reviewSource.cwd,
-    baseRef: gateResult.diffBase?.mergeBase
-      ?? gateResult.diffBase?.comparisonRef
-      ?? lane.baseBranch,
+    baseRef,
     actualBranch: lane.branch ?? 'packet branch',
     logPrefix: 'merge-preview',
   });
@@ -232,6 +241,44 @@ export async function buildPreviewForLane(
   ];
   const checks = buildCheckList(gateResult, verificationChecks);
   const blockers = buildBlockerList(gateResult, verificationChecks);
+  let packet = readOrchestratorControlPlaneState().packets.find((candidate) => candidate.id === packetId);
+  if (!packet) {
+    const { findMissionRegistryEntryByPacketId } = await import('@/lib/orchestrator/mission-registry');
+    packet = findMissionRegistryEntryByPacketId(packetId, { includeArchived: true })
+      ?.mission.packets.find((candidate) => candidate.id === packetId);
+  }
+  let reviewPrerequisite: string | undefined;
+  let contractReviewReady = true;
+  if (packet?.taskContractRequired && packet.taskContract) {
+    const { assessDurableApprovedReview } = await import('./durable-review-approval');
+    const assessment = await assessDurableApprovedReview(resolvedLane);
+    contractReviewReady = assessment.approved;
+    reviewPrerequisite = assessment.approved
+      ? 'The current HEAD has an approved review with task-contract evidence.'
+      : `An approved review at the current HEAD still needs file-backed coverage and any process-constraint evidence. ${assessment.reason}`;
+    checks.push({
+      name: 'contract-review',
+      verdict: contractReviewReady ? 'pass' : 'fail',
+      detail: reviewPrerequisite,
+    });
+    if (!contractReviewReady) blockers.push('contract-review');
+  } else if (packet?.taskContractRequired && !packet.taskContract) {
+    if (packet.taskContractSource === 'default') {
+      const { assessDurableApprovedReview } = await import('./durable-review-approval');
+      const assessment = await assessDurableApprovedReview(resolvedLane);
+      contractReviewReady = assessment.approved && assessment.contractCoverage?.status === 'waived';
+      reviewPrerequisite = contractReviewReady
+        ? assessment.contractCoverage?.reason ?? 'The operator waived missing-contract coverage for this reviewed HEAD.'
+        : `The runtime-default task contract was not captured. Requirement coverage is unproven; an explicit operator waiver at the current HEAD is required. ${assessment.reason}`;
+      checks.push({ name: 'contract-review', verdict: contractReviewReady ? 'pass' : 'fail', detail: reviewPrerequisite });
+      if (!contractReviewReady) blockers.push('contract-review');
+    } else {
+      contractReviewReady = false;
+      reviewPrerequisite = 'The explicitly required task contract is missing; restore or capture it before approval.';
+      checks.push({ name: 'contract-review', verdict: 'fail', detail: reviewPrerequisite });
+      blockers.push('contract-review');
+    }
+  }
   const dirtyDetail = readDirtyWorktreeDetail(reviewSource.cwd);
   if (dirtyDetail) {
     const cleanCheck = checks.find((check) => check.name === 'clean-worktree');
@@ -241,14 +288,19 @@ export async function buildPreviewForLane(
     }
     if (!blockers.includes('clean-worktree')) blockers.unshift('clean-worktree');
   }
+  const directiveCitations = options.directiveCitations
+    ? await (await import('@/lib/judgment/directive-citations')).directiveCitationsForPreview(lane, packetId, reviewSource.cwd, baseRef)
+    : undefined;
   return {
     packetId,
-    wouldMerge: gateResult.passed && lint.ok && !dirtyDetail,
+    wouldMerge: gateResult.passed && lint.ok && !dirtyDetail && contractReviewReady,
     checks,
     blockers,
     branch: lane.branch ?? null,
     diffBase: gateResult.diffBase,
     reviewSource: reviewSource.kind,
+    ...(reviewPrerequisite ? { reviewPrerequisite } : {}),
+    ...(directiveCitations ? { directiveCitations } : {}),
   };
 }
 
@@ -269,5 +321,5 @@ export async function previewPacketMerge(packetId: string): Promise<MergePreview
       unwired: true,
     };
   }
-  return buildPreviewForLane(lane, packetId);
+  return buildPreviewForLane(lane, packetId, { directiveCitations: true });
 }

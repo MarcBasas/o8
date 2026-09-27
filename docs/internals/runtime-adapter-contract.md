@@ -157,12 +157,15 @@ the service cached in memory.
 
 ## Current runtime set
 
-The catalog contains seventeen runtimes. Sixteen are dispatchable; `antigravity`
-remains discovery-only.
+The runtime catalog is authoritative for dispatch availability. The Google account
+CLI uses the [documented headless protocol](https://antigravity.google/docs/cli/headless/) with `init`, `step_update`, and `result` event protocol with
+explicit conversation IDs for resume. Its existing permissions and credit settings
+remain in force; headless tools requiring approval may be denied. A result with
+denied actions is reported as failed even when the CLI exits successfully. Token
+telemetry does not establish a monetary charge or remaining account quota.
 
 - Specialized: `codex`, `claude-code`, `gemini`, `opencode`, `pi`, `cursor`, `grok`, `prime-agent`, and `deepseek-harness`.
-- Declarative: `openhands`, `goose`, `qwen`, `qoder`, `kimi`, `aider`, and `3code`.
-- Discovery-only: `antigravity`.
+- Declarative: `openhands`, `goose`, `qwen`, `qoder`, `kimi`, `aider`, `3code`, `copilot-cli`, `crush`, and `antigravity`.
 
 ## Contract locations
 
@@ -179,6 +182,10 @@ remains discovery-only.
 `GET /api/runtime/evidence` is the normalized caller surface for runtime evidence. It combines the canonical runtime entry, supported operating-system and architecture carriers, the current local carrier observation, registered `AgentRuntime` capability flags, owned-session archive registration, local readiness and version probes, and timestamped upstream sources. `fresh=1` also drives the production OpenCode ACP target probe and the native Grok model probe. The OpenCode response returns only the named target checks and catalog count rather than credentials or the full private provider inventory.
 
 Runtime, provider, model, and billing mode are separate fields. A runtime can expose several providers, one model can be reached through several runtimes, and subscription capacity is never converted into an API-token price. Unknown and stale evidence remain visible. Every catalog entry must retain at least one source, observation date, and freshness bound; `runtime-evidence.test.ts` rejects omissions before they can become silent guesses.
+
+### Codex reasoning-effort evidence
+
+The shared Codex effort contract lives in `src/lib/codex/reasoning-effort.ts`. Its high-end catalog records exact verified model/effort pairs from `~/.codex/models_cache.json`, client version 0.154.0, fetched 2026-09-20T02:59:18Z. That catalog receipt is distinct from the installed CLI binary receipt, 0.153.4 observed on 2026-09-19. Both the mission route and client picker consume the serializable contract. It is not a provider-name rule or a live capability query: unknown models, inherited object keys, and unlisted pairs remain unverified, so `max` and `ultra` are rejected at mission admission rather than silently changed at launch. Refresh the catalog only with a new model-catalog receipt and add fresh-launch plus persisted-resume argv proof for each pair.
 
 ## Design rules
 

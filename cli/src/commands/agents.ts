@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
+import path, { parse } from 'node:path';
 
 import { apiFetch, CliError, EXIT } from '../api.js';
 import { resolveConfig } from '../config.js';
@@ -24,6 +26,18 @@ interface AgentMessage {
   delivery: string;
   deliveryNote: string | null;
   timestamp: string;
+  conversation?: {
+    id: string;
+    replyToId: string | null;
+    turnIndex: number;
+    turnLimit: number;
+    remainingTurns: number;
+    status: 'open' | 'closed';
+  } | null;
+}
+
+function shellQuotedArg(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
 function flag(rest: string[], name: string): string | null {
@@ -36,7 +50,7 @@ function flag(rest: string[], name: string): string | null {
   return value;
 }
 
-function positionals(rest: string[], valueFlags: ReadonlySet<string>): string[] {
+function positionals(rest: string[], valueFlags: ReadonlySet<string>, switches: ReadonlySet<string> = new Set()): string[] {
   const values: string[] = [];
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index];
@@ -44,6 +58,7 @@ function positionals(rest: string[], valueFlags: ReadonlySet<string>): string[] 
       index += 1;
       continue;
     }
+    if (switches.has(value)) continue;
     if (!value.startsWith('--')) values.push(value);
   }
   return values;
@@ -94,12 +109,22 @@ function gitOutput(args: string[]): string {
   }
 }
 
+function normalizeRepoPath(value: string): string {
+  const absolute = path.resolve(value);
+  try {
+    const canonical = realpathSync.native(absolute);
+    return canonical === parse(canonical).root ? canonical : canonical.replace(/[\\/]+$/, '');
+  } catch {
+    return absolute === parse(absolute).root ? absolute : absolute.replace(/[\\/]+$/, '');
+  }
+}
+
 function repoContext(explicitRepo: string | null): { repo: string; worktreePath: string } {
-  const worktreePath = explicitRepo ? path.resolve(explicitRepo) : gitOutput(['rev-parse', '--show-toplevel']);
+  const worktreePath = normalizeRepoPath(explicitRepo ?? gitOutput(['rev-parse', '--show-toplevel']));
   if (explicitRepo) return { repo: worktreePath, worktreePath };
   const commonDir = gitOutput(['rev-parse', '--path-format=absolute', '--git-common-dir']);
   return {
-    repo: path.basename(commonDir) === '.git' ? path.dirname(commonDir) : worktreePath,
+    repo: normalizeRepoPath(path.basename(commonDir) === '.git' ? path.dirname(commonDir) : worktreePath),
     worktreePath,
   };
 }
@@ -138,8 +163,8 @@ export async function runPresence(
       throw new CliError('invalid_args', 'Presence list accepts flags only.', EXIT.INVALID_ARGS);
     }
     const context = repoContext(flag(rest, '--repo'));
-    await joinCurrentSession(context);
     const cfg = resolveConfig();
+    if (cfg.source.token !== 'worker') await joinCurrentSession(context);
     const response = await apiFetch<{ agents: PresenceAgent[] }>(cfg, '/api/agents/presence', {
       query: { repo: context.repo },
     });
@@ -206,10 +231,11 @@ export async function runMsg(
 ): Promise<number> {
   const cfg = resolveConfig();
   if (action === 'send') {
-    const allowed = new Set(['--to', '--repo', '--from']);
-    rejectUnknownFlags(rest, allowed);
+    const valueFlags = new Set(['--to', '--repo', '--from', '--reply-to', '--request-id']);
+    const switches = new Set(['--close']);
+    rejectUnknownFlags(rest, new Set([...valueFlags, ...switches]));
     const to = flag(rest, '--to');
-    const textArgs = positionals(rest, allowed);
+    const textArgs = positionals(rest, valueFlags, switches);
     if (!to || textArgs.length !== 1) {
       throw new CliError(
         'invalid_args',
@@ -218,7 +244,7 @@ export async function runMsg(
       );
     }
     const context = repoContext(flag(rest, '--repo'));
-    await joinCurrentSession(context);
+    if (cfg.source.token !== 'worker') await joinCurrentSession(context);
     const response = await apiFetch<{ ok: true; message: AgentMessage }>(cfg, '/api/agents/message', {
       method: 'POST',
       body: {
@@ -227,6 +253,9 @@ export async function runMsg(
         to,
         repo: context.repo,
         text: textArgs[0],
+        replyToId: flag(rest, '--reply-to') ?? undefined,
+        requestId: flag(rest, '--request-id') ?? randomUUID(),
+        close: rest.includes('--close'),
       },
     });
     if (!response.data) throw new CliError('invalid_response', 'Message send returned no data.', EXIT.INVALID_ARGS);
@@ -237,6 +266,9 @@ export async function runMsg(
         ['id', output.message.id],
         ['to', output.message.to],
         ['delivery', output.message.delivery],
+        ['conversation', output.message.conversation?.id ?? '(legacy)'],
+        ['turn', output.message.conversation ? `${output.message.conversation.turnIndex}/${output.message.conversation.turnLimit}` : '(none)'],
+        ['remaining', String(output.message.conversation?.remainingTurns ?? 0)],
       ]);
     } else {
       printJson(output);
@@ -250,7 +282,7 @@ export async function runMsg(
       throw new CliError('invalid_args', 'Message inbox accepts flags only.', EXIT.INVALID_ARGS);
     }
     const namedAgent = flag(rest, '--agent');
-    if (!namedAgent) await joinCurrentSession(repoContext(flag(rest, '--repo')));
+    if (!namedAgent && cfg.source.token !== 'worker') await joinCurrentSession(repoContext(flag(rest, '--repo')));
     const response = await apiFetch<{
       agent: PresenceAgent;
       messages: AgentMessage[];
@@ -271,6 +303,14 @@ export async function runMsg(
       if (output.messages.length === 0) process.stdout.write('No messages.\n');
       for (const message of output.messages) {
         process.stdout.write(`${message.timestamp}  ${message.from}: ${message.text}\n`);
+        if (message.conversation) {
+          process.stdout.write(`  ${message.conversation.id} · turn ${message.conversation.turnIndex}/${message.conversation.turnLimit} · ${message.conversation.remainingTurns} remaining · ${message.conversation.status}\n`);
+          if (message.conversation.status === 'open') {
+            process.stdout.write(`  reply: o8 msg send --to ${shellQuotedArg(message.from)} --reply-to ${shellQuotedArg(message.id)} '<response>'\n`);
+          }
+        } else {
+          process.stdout.write('  Legacy message: no verified reply link.\n');
+        }
       }
       process.stdout.write(`cursor  ${output.cursor}\n`);
     } else {
@@ -282,6 +322,6 @@ export async function runMsg(
     'unknown_msg_subcommand',
     `Unknown msg subcommand: ${action ?? '(none)'}`,
     EXIT.INVALID_ARGS,
-    'Use `o8 msg send --to <agent> "<text>"` or `o8 msg inbox`.',
+    'Use `o8 msg send --to <agent> [--reply-to <message-id>] [--close] "<text>"` or `o8 msg inbox`.',
   );
 }

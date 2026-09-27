@@ -1,7 +1,5 @@
 import 'server-only';
 
-import { resolve } from 'node:path';
-
 import type Database from 'better-sqlite3';
 
 import type { RequestPrincipalContext } from '@/lib/auth/principal';
@@ -24,6 +22,7 @@ import {
 } from './live-presence';
 import {
   AGENT_MESSAGE_TEXT_MAX_LENGTH,
+  AgentConversationError,
   AgentPresenceWriteConflictError,
   type AgentMessageRefs,
   type AgentPresence,
@@ -38,9 +37,12 @@ import {
   listAgentPresenceAcrossRepos,
   listRecentAgentMessages,
   listRecentAgentMessagesAcrossRepos,
+  listAgentConversations,
+  normalizeAgentBusRepoPath,
   persistAgentMessage,
   releaseAgentInboxWake,
   updateAgentMessageDelivery,
+  updateAgentConversation,
   upsertAgentPresence,
 } from './store';
 
@@ -184,23 +186,37 @@ export async function postAgentMessage(
     throw new AgentBusError('The worker packet has no active lane.', 'agent_bus_lane_not_found', 404);
   }
   const to = requiredString(body.to, 'to');
+  const replyToId = optionalString(body.replyToId, 'replyToId', 200);
   let repo = optionalString(body.repo, 'repo', 2_000);
   let sender: AgentPresence | null = null;
   if (lane) {
-    repo = lane.repoPath;
+    repo = normalizeAgentBusRepoPath(lane.repoPath);
     sender = upsertAgentPresence(lanePresence(lane, new Date().toISOString()), sqlite);
   } else if (typeof body.fromAgentId === 'string') {
     sender = findAgentPresence({ agentId: body.fromAgentId }, sqlite);
     if (!sender) {
       throw new AgentBusError('Sender has not joined presence.', 'agent_sender_not_found', 404);
     }
-    if (repo && sender.repo !== repo) {
+    if (sender.repo !== normalizeAgentBusRepoPath(sender.repo)) {
+      throw new AgentBusError('Sender repository scope needs collision resolution.', 'agent_sender_repo_mismatch', 403);
+    }
+    if (repo && sender.repo !== repo && sender.repo !== normalizeAgentBusRepoPath(repo)) {
       throw new AgentBusError('Sender is not present in that repository.', 'agent_sender_repo_mismatch', 403);
     }
     repo = sender.repo;
   }
   if (repo) await reconcileLiveAgentPresence(repo, presenceSeams, sqlite);
-  const target = resolveAgentTarget(to, repo, sqlite);
+  const target = replyToId && to.toLowerCase() === 'operator' && repo ? {
+    agentId: 'operator',
+    name: 'operator',
+    repo: normalizeAgentBusRepoPath(repo),
+    worktreePath: null,
+    runtime: 'operator',
+    sessionKey: null,
+    laneId: null,
+    packetId: null,
+    lastSeen: new Date().toISOString(),
+  } satisfies AgentPresence : resolveAgentTarget(to, repo, sqlite);
   if (!target) {
     throw new AgentBusError(
       repo ? `No agent named ${to} is registered in that repository.` : `Agent name ${to} is absent or ambiguous.`,
@@ -208,17 +224,46 @@ export async function postAgentMessage(
       404,
     );
   }
-  if (lane && target.repo !== lane.repoPath) {
+  if (lane && target.repo !== normalizeAgentBusRepoPath(lane.repoPath)) {
     throw new AgentBusError('Workers can message only agents in their repository.', 'agent_repo_mismatch', 403);
   }
   const text = requiredString(body.text, 'text', AGENT_MESSAGE_TEXT_MAX_LENGTH);
-  let message = persistAgentMessage({
-    from: sender?.name ?? optionalString(body.from, 'from') ?? 'operator',
-    to: target.name,
-    repo: target.repo,
-    text,
-    refs: messageRefs(body, lane),
-  }, sqlite);
+  const requestId = optionalString(body.requestId, 'requestId', 200);
+  if (body.close !== undefined && typeof body.close !== 'boolean') {
+    throw new AgentBusError('close must be a boolean.', 'invalid_agent_close', 400);
+  }
+  if (replyToId && !sender && body.from !== undefined && body.from !== 'operator') {
+    throw new AgentBusError('Operator replies must use the operator identity.', 'agent_reply_sender_forbidden', 403);
+  }
+  let persisted;
+  try {
+    persisted = persistAgentMessage({
+      from: sender?.name ?? (replyToId ? 'operator' : optionalString(body.from, 'from') ?? 'operator'),
+      to: target.name,
+      repo: target.repo,
+      text,
+      refs: {
+        ...messageRefs(body, lane),
+        identities: {
+          from: sender ? { runtime: sender.runtime, sessionKey: sender.sessionKey } : null,
+          to: target.runtime === 'operator' ? null : { runtime: target.runtime, sessionKey: target.sessionKey },
+        },
+      },
+      replyToId,
+      requestId,
+      close: body.close === true,
+    }, sqlite);
+  } catch (error) {
+    if (error instanceof AgentConversationError) {
+      throw new AgentBusError(error.message, error.code, error.status);
+    }
+    throw error;
+  }
+  let { message } = persisted;
+  if (!persisted.created) return message;
+  if (target.runtime === 'operator') {
+    return updateAgentMessageDelivery(message.id, 'poll', 'Available in the operator Handoffs view.', sqlite);
+  }
   if (!isPresenceLive(target)) return message;
   const wakeSeams: AgentInboxWakeSeams = {
     claimCodexInboxWake: ({ target: wakeTarget, throughSequence }) => (
@@ -240,6 +285,43 @@ export async function postAgentMessage(
   return message;
 }
 
+export function readAgentConversations(
+  input: { repo: string | null; limit: number },
+  principal: RequestPrincipalContext,
+  sqlite: Database.Database = getSqlite(),
+) {
+  if (principal.role !== 'operator') {
+    throw new AgentBusError('Conversation history requires an operator credential.', 'agent_conversations_forbidden', 403);
+  }
+  const repo = requiredString(input.repo, 'repo', 2_000);
+  return { repo: normalizeAgentBusRepoPath(repo), conversations: listAgentConversations(repo, input.limit, sqlite) };
+}
+
+export function changeAgentConversation(
+  input: unknown,
+  principal: RequestPrincipalContext,
+  sqlite: Database.Database = getSqlite(),
+) {
+  if (principal.role !== 'operator') {
+    throw new AgentBusError('Only the operator can stop or extend a conversation.', 'agent_conversation_operator_required', 403);
+  }
+  const body = objectInput(input, 'invalid_agent_conversation');
+  const id = requiredString(body.id, 'id', 200);
+  const repo = requiredString(body.repo, 'repo', 2_000);
+  if (body.action !== 'close' && body.action !== 'extend') {
+    throw new AgentBusError('action must be close or extend.', 'invalid_agent_conversation_action', 400);
+  }
+  const summary = optionalString(body.summary, 'summary', AGENT_MESSAGE_TEXT_MAX_LENGTH);
+  try {
+    return updateAgentConversation({ id, repo, action: body.action, summary }, sqlite);
+  } catch (error) {
+    if (error instanceof AgentConversationError) {
+      throw new AgentBusError(error.message, error.code, error.status);
+    }
+    throw error;
+  }
+}
+
 export function joinAgentPresence(
   input: unknown,
   principal: RequestPrincipalContext,
@@ -253,7 +335,7 @@ export function joinAgentPresence(
   const repo = requiredString(body.repo, 'repo', 2_000);
   const automatic = body.automatic === true;
   const name = automatic
-    ? optionalString(body.name, 'name') ?? availableAutomaticAgentName(agentId, resolve(repo), sqlite)
+    ? optionalString(body.name, 'name') ?? availableAutomaticAgentName(agentId, normalizeAgentBusRepoPath(repo), sqlite)
     : requiredString(body.name, 'name');
   try {
     return upsertAgentPresence({
@@ -278,20 +360,24 @@ export function joinAgentPresence(
 export async function readAgentPresence(
   repo: string | null,
   principal: RequestPrincipalContext,
+  includeStale = false,
   sqlite: Database.Database = getSqlite(),
   presenceSeams: LiveAgentPresenceSeams = defaultLiveAgentPresenceSeams,
 ): Promise<AgentPresence[]> {
   requireBusPrincipal(principal);
+  if (includeStale && principal.role !== 'operator') {
+    throw new AgentBusError('Presence history requires an operator credential.', 'agent_presence_history_forbidden', 403);
+  }
   const lane = workerLane(principal);
   if (principal.role === 'worker' && !lane) {
     throw new AgentBusError('The worker packet has no active lane.', 'agent_bus_lane_not_found', 404);
   }
-  const requestedRepo = lane?.repoPath ?? requiredString(repo, 'repo', 2_000);
-  if (lane && repo && resolve(repo) !== resolve(lane.repoPath)) {
+  const requestedRepo = normalizeAgentBusRepoPath(lane?.repoPath ?? requiredString(repo, 'repo', 2_000));
+  if (lane && repo && normalizeAgentBusRepoPath(repo) !== normalizeAgentBusRepoPath(lane.repoPath)) {
     throw new AgentBusError('Workers can inspect only their repository.', 'agent_repo_mismatch', 403);
   }
   await reconcileLiveAgentPresence(requestedRepo, presenceSeams, sqlite);
-  return listAgentPresence(requestedRepo, {}, sqlite);
+  return listAgentPresence(requestedRepo, { includeStale }, sqlite);
 }
 
 export async function readAllAgentPresence(
@@ -308,6 +394,21 @@ export async function readAllAgentPresence(
   }
   await reconcileAllLiveAgentPresence(presenceSeams, sqlite);
   return listAgentPresenceAcrossRepos({}, sqlite);
+}
+
+/** Read persisted identities for transcript decoration without probing runtimes. */
+export function readStoredAgentPresence(
+  principal: RequestPrincipalContext,
+  sqlite: Database.Database = getSqlite(),
+): AgentPresence[] {
+  if (principal.role !== 'operator') {
+    throw new AgentBusError(
+      'Fleet agent presence requires an operator credential.',
+      'agent_presence_fleet_forbidden',
+      403,
+    );
+  }
+  return listAgentPresenceAcrossRepos({ includeStale: true }, sqlite);
 }
 
 function parseCursor(cursor: string | null): number {
@@ -379,7 +480,7 @@ export function readAgentExchanges(
   }
   const repo = requiredString(input.repo, 'repo', 2_000);
   return {
-    repo: resolve(repo),
+    repo: normalizeAgentBusRepoPath(repo),
     messages: listRecentAgentMessages(repo, input.limit, sqlite),
   };
 }

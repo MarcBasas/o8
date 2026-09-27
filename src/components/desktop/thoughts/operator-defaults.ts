@@ -1,12 +1,18 @@
 'use client';
 
 import { isThinkingEffort, type ThinkingEffort } from '@/lib/orchestrator/thinking-effort';
-import { fetchOperatorDefaultsValues } from '@/lib/operator/operator-defaults-values-client';
+import {
+  fetchFreshOperatorDefaultsValues,
+  fetchOperatorDefaultsRuntimeSnapshot,
+  fetchOperatorDefaultsValues,
+} from '@/lib/operator/operator-defaults-values-client';
 import { DEFAULT_ORCHESTRATOR_MODEL } from './use-orchestrator-stream/shared';
+import { MODEL_IDS } from '@/lib/models';
 
 interface OperatorDefaultsPayload {
   values?: {
     orchestratorModel?: unknown;
+    defaultDispatchModel?: unknown;
     orchestratorBackend?: unknown;
     inAppOrchestratorEnabled?: unknown;
     thinkingEffort?: unknown;
@@ -35,6 +41,7 @@ export const isThoughtsOrchestratorBackendSetting = isOrchestratorBackendSetting
 
 export interface ThoughtsOperatorDefaults {
   orchestratorModel: string;
+  defaultDispatchModel: string;
   orchestratorBackend: OrchestratorBackendSetting;
   inAppOrchestratorEnabled: boolean;
   thinkingEffort: ThinkingEffort;
@@ -45,6 +52,7 @@ export interface ThoughtsOperatorDefaults {
 
 export const THOUGHTS_OPERATOR_DEFAULTS_FALLBACK: ThoughtsOperatorDefaults = {
   orchestratorModel: DEFAULT_ORCHESTRATOR_MODEL,
+  defaultDispatchModel: MODEL_IDS.codexWorkerDefault,
   orchestratorBackend: 'auto',
   inAppOrchestratorEnabled: true,
   thinkingEffort: 'adaptive',
@@ -64,7 +72,7 @@ export async function fetchThoughtsOperatorDefaults(signal?: AbortSignal): Promi
 /** Bypass the short UI snapshot when a turn needs persisted truth at send time. */
 export async function fetchFreshThoughtsOperatorDefaults(signal?: AbortSignal): Promise<ThoughtsOperatorDefaults> {
   return await parseThoughtsOperatorDefaults(
-    fetch('/api/panel/operator-defaults?include=values', { cache: 'no-store', signal }),
+    fetchFreshOperatorDefaultsValues(signal),
     signal,
   );
 }
@@ -85,7 +93,7 @@ async function parseThoughtsOperatorDefaults(
 export async function fetchThoughtsRuntimeReadiness(): Promise<number | null> {
   if (readyRuntimeCount !== null) return readyRuntimeCount;
   if (!readyRuntimeCountInFlight) {
-    const request = fetch('/api/panel/operator-defaults', { cache: 'no-store' })
+    const request = fetchOperatorDefaultsRuntimeSnapshot()
       .then(async (response) => {
         if (!response.ok) return null;
         const payload = await response.json().catch(() => null) as OperatorDefaultsPayload | null;
@@ -122,6 +130,9 @@ export function normalizeThoughtsOperatorDefaults(payload: OperatorDefaultsPaylo
   const orchestratorBackend = isThoughtsOrchestratorBackendSetting(payload?.values?.orchestratorBackend)
     ? payload.values.orchestratorBackend
     : THOUGHTS_OPERATOR_DEFAULTS_FALLBACK.orchestratorBackend;
+  const defaultDispatchModel = typeof payload?.values?.defaultDispatchModel === 'string' && payload.values.defaultDispatchModel.trim()
+    ? payload.values.defaultDispatchModel.trim()
+    : THOUGHTS_OPERATOR_DEFAULTS_FALLBACK.defaultDispatchModel;
   const inAppOrchestratorEnabled = typeof payload?.values?.inAppOrchestratorEnabled === 'boolean'
     ? payload.values.inAppOrchestratorEnabled
     : THOUGHTS_OPERATOR_DEFAULTS_FALLBACK.inAppOrchestratorEnabled;
@@ -140,6 +151,7 @@ export function normalizeThoughtsOperatorDefaults(payload: OperatorDefaultsPaylo
 
   return {
     orchestratorModel,
+    defaultDispatchModel,
     orchestratorBackend,
     inAppOrchestratorEnabled,
     thinkingEffort,

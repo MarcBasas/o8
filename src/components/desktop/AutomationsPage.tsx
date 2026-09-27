@@ -3,71 +3,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AutomationEditor } from './automations-page/AutomationEditor';
 import { AutomationListRow } from './automations-page/AutomationRow';
+import { ConnectedAgentAutomations } from './automations-page/ConnectedAgentAutomations';
+import { readConnectedAutomationsSnapshot } from './automations-page/connected-cache';
+import { RamsButton } from './settings/shared';
+import { WorkspacePageHeader, WORKSPACE_PAGE_MAX_WIDTH, WORKSPACE_PAGE_TOP_PADDING } from './WorkspacePageHeader';
 import type {
   AutomationRecord,
-  AutomationScope,
   RegisteredRepo,
 } from './automations-page/types';
 
 const UI_FONT = 'var(--font-sans-system)';
-
-function ScopeTabs({ scope, mineCount, teamCount, onChange }: {
-  scope: AutomationScope;
-  mineCount: number;
-  teamCount: number;
-  onChange: (scope: AutomationScope) => void;
-}) {
-  const tabs: Array<{ id: AutomationScope; label: string; count: number }> = [
-    { id: 'mine', label: 'Mine', count: mineCount },
-    { id: 'team', label: 'Team', count: teamCount },
-  ];
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-      {tabs.map((tab) => {
-        const active = scope === tab.id;
-        return (
-          <button
-            key={tab.id}
-            type="button"
-            aria-pressed={active}
-            onClick={() => onChange(tab.id)}
-            style={{
-              height: 26,
-              display: 'inline-flex',
-              alignItems: 'center',
-              paddingTop: 0,
-              paddingRight: 10,
-              paddingBottom: 0,
-              paddingLeft: 10,
-              borderWidth: 0,
-              borderRadius: 7,
-              background: active ? 'var(--t-input-bg)' : 'transparent',
-              color: active ? 'var(--t-text)' : 'var(--t-text-muted)',
-              fontSize: 12,
-              fontWeight: 300,
-              letterSpacing: '-0.1px',
-              lineHeight: 1.25,
-              fontFamily: UI_FONT,
-              cursor: 'pointer',
-              transition: 'background 120ms ease, color 120ms ease',
-            }}
-          >
-            {tab.label}
-            <span style={{
-              marginLeft: 5,
-              color: 'var(--t-text-faint)',
-              fontSize: 9.5,
-              fontWeight: 260,
-              letterSpacing: '-0.4px',
-            }}>
-              {tab.count}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 function SectionHeader({ label, count }: { label: string; count: number }) {
   return (
@@ -119,40 +64,7 @@ function TruncatedRows({ children, count, limit = 6 }: { children: React.ReactNo
   );
 }
 
-function PrimaryButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        height: 30,
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        paddingTop: 0,
-        paddingRight: 12,
-        paddingBottom: 0,
-        paddingLeft: 12,
-        borderWidth: 1,
-        borderStyle: 'solid',
-        borderColor: 'var(--t-divider)',
-        borderRadius: 8,
-        background: 'var(--t-input-bg)',
-        color: 'var(--t-text)',
-        fontSize: 12,
-        fontWeight: 300,
-        letterSpacing: '-0.1px',
-        fontFamily: UI_FONT,
-        cursor: 'pointer',
-      }}
-    >
-      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M8 3v10M3 8h10" />
-      </svg>
-      {children}
-    </button>
-  );
-}
+const addGlyph = <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg>;
 
 function EmptyState({ title, body, actionLabel, onAction }: {
   title: string;
@@ -185,7 +97,7 @@ function EmptyState({ title, body, actionLabel, onAction }: {
       </span>
       {actionLabel && onAction ? (
         <div style={{ marginTop: 8 }}>
-          <PrimaryButton onClick={onAction}>{actionLabel}</PrimaryButton>
+          <RamsButton onClick={onAction} icon={addGlyph}>{actionLabel}</RamsButton>
         </div>
       ) : null}
     </div>
@@ -197,9 +109,13 @@ export function AutomationsPage({ currentOwner, onClose }: { currentOwner: strin
   const [repos, setRepos] = useState<RegisteredRepo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [scope, setScope] = useState<AutomationScope>('mine');
   const [modalOpen, setModalOpen] = useState(false);
   const [editingRow, setEditingRow] = useState<AutomationRecord | null>(null);
+  const [connectedActiveCount, setConnectedActiveCount] = useState(0);
+  const [connectedCount, setConnectedCount] = useState<number | null>(() => {
+    const cached = readConnectedAutomationsSnapshot();
+    return cached ? cached.installed === false ? 0 : cached.jobs?.length ?? 0 : null;
+  });
 
   const fetchRows = useCallback(async () => {
     try {
@@ -236,13 +152,11 @@ export function AutomationsPage({ currentOwner, onClose }: { currentOwner: strin
   }, [fetchRepos, fetchRows]);
 
   useEffect(() => {
-    if (scope !== 'mine') return;
     const intervalId = window.setInterval(() => { void fetchRows(); }, 15_000);
     return () => window.clearInterval(intervalId);
-  }, [fetchRows, scope]);
+  }, [fetchRows]);
 
   const mineRows = useMemo(() => rows.filter((row) => row.owner === currentOwner), [currentOwner, rows]);
-  const teamRows = useMemo(() => rows.filter((row) => row.owner !== currentOwner), [currentOwner, rows]);
   const activeCount = useMemo(
     () => mineRows.filter((row) => row.enabled && row.lastRunStatus !== 'idle').length,
     [mineRows],
@@ -335,86 +249,31 @@ export function AutomationsPage({ currentOwner, onClose }: { currentOwner: strin
       height: '100%',
       minHeight: 0,
       overflowY: 'auto',
+      scrollbarWidth: 'none',
       background: 'var(--t-chat-surface-bg, var(--t-canvas-bg))',
       color: 'var(--t-text)',
       fontFamily: UI_FONT,
     }}>
       <div style={{
         width: '100%',
-        maxWidth: 760,
+        maxWidth: WORKSPACE_PAGE_MAX_WIDTH,
         display: 'flex',
         flexDirection: 'column',
         gap: 14,
         marginRight: 'auto',
         marginLeft: 'auto',
-        paddingTop: 36,
-        paddingRight: 24,
+        paddingTop: WORKSPACE_PAGE_TOP_PADDING,
+        paddingRight: 28,
         paddingBottom: 64,
-        paddingLeft: 24,
+        paddingLeft: 28,
         boxSizing: 'border-box',
       }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
-          <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 5 }}>
-            <h1 style={{
-              marginTop: 0,
-              marginRight: 0,
-              marginBottom: 0,
-              marginLeft: 0,
-              color: 'var(--t-text)',
-              fontSize: 18,
-              fontWeight: 400,
-              letterSpacing: '-0.2px',
-              lineHeight: 1.25,
-            }}>
-              Automations
-            </h1>
-            <p style={{
-              marginTop: 0,
-              marginRight: 0,
-              marginBottom: 0,
-              marginLeft: 0,
-              color: 'var(--t-text-muted)',
-              fontSize: 12,
-              fontWeight: 300,
-              letterSpacing: '-0.1px',
-              lineHeight: 1.45,
-            }}>
-              Automate repetitive tasks with agents that run on schedules and triggers.
-            </p>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ color: 'var(--t-text-faint)', fontSize: 9.5, fontWeight: 260, letterSpacing: '-0.4px', whiteSpace: 'nowrap' }}>
-              {activeCount} active
-            </span>
-            <PrimaryButton onClick={handleNew}>New automation</PrimaryButton>
-            {onClose ? (
-              <button
-                type="button"
-                onClick={onClose}
-                style={{
-                  height: 30,
-                  paddingTop: 0,
-                  paddingRight: 8,
-                  paddingBottom: 0,
-                  paddingLeft: 8,
-                  borderWidth: 0,
-                  borderRadius: 8,
-                  background: 'transparent',
-                  color: 'var(--t-text-muted)',
-                  fontSize: 12,
-                  fontWeight: 300,
-                  letterSpacing: '-0.1px',
-                  fontFamily: UI_FONT,
-                  cursor: 'pointer',
-                }}
-              >
-                Done
-              </button>
-            ) : null}
-          </div>
-        </div>
-
-        <ScopeTabs scope={scope} mineCount={mineRows.length} teamCount={teamRows.length} onChange={setScope} />
+        <WorkspacePageHeader title="Automations" subtitle="Automate repetitive tasks with agents that run on schedules and triggers." onClose={onClose}>
+          <span style={{ color: 'var(--t-text-faint)', fontSize: 9.5, fontWeight: 260, letterSpacing: '-0.4px', whiteSpace: 'nowrap' }}>
+            {activeCount + connectedActiveCount} active
+          </span>
+          <RamsButton onClick={handleNew} icon={addGlyph}>New automation</RamsButton>
+        </WorkspacePageHeader>
 
         {loading ? (
           <div style={{ paddingTop: 32, color: 'var(--t-text-faint)', fontSize: 11, fontWeight: 300, letterSpacing: '-0.1px' }}>
@@ -422,19 +281,7 @@ export function AutomationsPage({ currentOwner, onClose }: { currentOwner: strin
           </div>
         ) : error ? (
           <EmptyState title="Automations unavailable" body={error} />
-        ) : scope === 'team' ? (
-          <EmptyState
-            title="Team automations aren’t available yet"
-            body="Shared automations need a team server. Your local automations stay available under Mine."
-          />
-        ) : mineRows.length === 0 ? (
-          <EmptyState
-            title="Let agents handle the repeat work"
-            body="Create a local automation that runs a prompt manually or on a cron schedule."
-            actionLabel="New automation"
-            onAction={handleNew}
-          />
-        ) : (
+        ) : mineRows.length > 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             <SectionHeader label="Automations" count={mineRows.length} />
             <TruncatedRows count={mineRows.length}>
@@ -454,10 +301,19 @@ export function AutomationsPage({ currentOwner, onClose }: { currentOwner: strin
               ))}
             </TruncatedRows>
           </div>
-        )}
+        ) : null}
+
+        <ConnectedAgentAutomations onActiveCountChange={setConnectedActiveCount} onTotalCountChange={setConnectedCount} />
+
+        {!loading && !error && mineRows.length === 0 && connectedCount === 0 ? (
+          <EmptyState
+            title="Let agents handle the repeat work"
+            body="Create a local automation that runs a prompt manually or on a cron schedule."
+          />
+        ) : null}
 
         <div style={{ paddingTop: 4, color: 'var(--t-text-faint)', fontSize: 9.5, fontWeight: 260, letterSpacing: '-0.4px', lineHeight: 1.25 }}>
-          Automations refresh every 15 seconds while Mine is open.
+          Automations refresh every 15 seconds while this page is open.
         </div>
       </div>
 

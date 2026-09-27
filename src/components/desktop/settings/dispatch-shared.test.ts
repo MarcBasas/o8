@@ -11,7 +11,7 @@ import {
 
 describe('settings dispatch picker menu surface', () => {
   it('uses an opaque themed content surface instead of transparent chrome tokens', () => {
-    expect(PICKER_MENU_POPOVER_BG).toBe('var(--t-panel-solid)');
+    expect(PICKER_MENU_POPOVER_BG).toBe('var(--t-popover-surface)');
     expect(PICKER_MENU_POPOVER_BG).not.toContain('--t-chat-surface-bg');
     expect(PICKER_MENU_POPOVER_BG).not.toContain('transparent');
     expect(PICKER_MENU_POPOVER_BG).not.toContain('rgba(0,0,0,0)');
@@ -33,7 +33,7 @@ describe('settings dispatch picker menu surface', () => {
   });
 
   it('offers the dispatcher-routed surface merge posture', () => {
-    expect(REQUIRE_APPROVAL_OPTIONS).toContainEqual({ value: 'surface', label: 'Surface' });
+    expect(REQUIRE_APPROVAL_OPTIONS).toContainEqual({ value: 'surface', label: 'Task owner' });
   });
 
   it('wraps arrow navigation and supports first/last keyboard jumps', () => {

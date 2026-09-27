@@ -1,5 +1,5 @@
 import 'server-only';
-import { CODEX_MODEL_IDS, isCodexModelId, isSupportedModelId, MODEL_IDS, SUPPORTED_MODEL_IDS } from '@/lib/models';
+import { isSupportedModelId, MODEL_IDS, SUPPORTED_MODEL_IDS } from '@/lib/models';
 import { isThinkingEffort, type ThinkingEffort } from '@/lib/orchestrator/thinking-effort';
 import type { OrchestratorRuntime } from '@/lib/orchestrator/types';
 import { isExecutionCarrierId, type ExecutionCarrierId } from '@/lib/runtimes/shared/execution-carrier';
@@ -26,7 +26,7 @@ import {
   type TargetingTier,
 } from './targeting-tier';
 export { isSubscriptionProfile };
-import { normalizeAcpModelId, isPlausibleAcpModelId } from '@/lib/orchestrator/acp-model-id';
+import { normalizeModelPinUpdates, normalizeStoredModelPins } from './model-pins';
 
 import { isOrchestratorBackendSetting, isReviewerBackendSetting, isCollideAggregator, isPrLinkDestination, sanitizeBranchPrefix, type OrchestratorBackendSetting, type ReviewerBackendSetting, type CollideAggregator, type PrLinkDestination } from './defaults-env';
 import {
@@ -38,6 +38,7 @@ import {
   envCommitAttribution,
   envPrLinkDestination,
   envBrainUseClaudeCli,
+  envBrainRoutingMode,
   envBuyinDocEnabled,
   envClassAComposer,
   envClaudeWorkerEffort,
@@ -76,6 +77,13 @@ import {
   type ClassAComposer,
   type WorkersUseBrain,
 } from './defaults-env';
+import {
+  applyBrainDefaultsUpdate,
+  BRAIN_DEFAULTS,
+  resolveBrainRoutingModeSettings,
+  resolveStoredBrainDefaults,
+  type BrainDefaults,
+} from './brain-routing-default';
 import { applyStorageReserveUpdate, resolveStorageReserveSettings, resolveStoredStorageReserve, STORAGE_RESERVE_FALLBACK, type StorageReserveDefaults } from './storage-reserve-defaults';
 import { applyWorkspaceParkingUpdate, resolveStoredWorkspaceParking, resolveWorkspaceParkingSettings, WORKSPACE_PARKING_FALLBACK, type WorkspaceParkingDefaults } from './workspace-parking-defaults';
 import { applyMeteredPacketCapUpdate, METERED_PACKET_CAP_FALLBACK, resolveMeteredPacketCapSettings, resolveStoredMeteredPacketCap, type MeteredPacketCapDefaults } from './metered-packet-cap-defaults';
@@ -84,6 +92,9 @@ import { applyBroadcastCommentaryUpdate, BROADCAST_COMMENTARY_FALLBACK, broadcas
 import { applyPresentationUpdate, PRESENTATION_FALLBACK, presentationSettingSources, resolvePresentationDefaults, resolveStoredPresentation, type PresentationDefaults } from './presentation-defaults';
 import { applyReviewContinuationUpdate, REVIEW_CONTINUATION_FALLBACK, resolveStoredReviewContinuation, type ReviewContinuationDefault } from './review-continuation-default';
 import { applyWorkspaceManifestPolicyUpdate, resolveStoredWorkspaceManifestPolicy, resolveWorkspaceManifestPolicySettings, WORKSPACE_MANIFEST_POLICY_FALLBACK, type WorkspaceManifestPolicyDefault } from './workspace-manifest-policy-default';
+import { applySymonVoiceUpdate, resolveStoredSymonVoice, resolveSymonVoiceSettings, SYMON_VOICE_FALLBACK, type SymonVoiceDefault } from './symon-voice-default';
+import { applyJudgmentProviderUpdate, JUDGMENT_PROVIDER_FALLBACK, resolveJudgmentProviderSettings, resolveStoredJudgmentProvider, type JudgmentProviderDefault } from './judgment-default';
+import { applyJudgmentAllowanceUpdate, JUDGMENT_ALLOWANCE_FALLBACK, resolveJudgmentAllowanceSettings, resolveStoredJudgmentAllowance, type JudgmentAllowanceDefaults } from './judgment-allowance-default';
 import {
   applyOperatorDefaultsTomlWithLock,
   getOperatorDefaultsTomlState as readOperatorDefaultsTomlState,
@@ -96,8 +107,8 @@ import {
   type OperatorDefaultsTomlState,
 } from '@/lib/settings/operator-defaults-store';
 export { getOperatorDefaultsTomlPath } from '@/lib/settings/operator-defaults-store';
-export { isOrchestratorBackendSetting, isReviewerBackendSetting, isCollideAggregator, isPrLinkDestination, isWorkspaceManifestPolicy } from './defaults-env';
-export type { OverlapGateMode, ClassAComposer, WorkersUseBrain, WorkspaceManifestPolicy, OrchestratorBackendSetting, ReviewerBackendSetting, CollideAggregator, PrLinkDestination } from './defaults-env';
+export { isBrainRoutingMode, isOrchestratorBackendSetting, isReviewerBackendSetting, isCollideAggregator, isPrLinkDestination, isWorkspaceManifestPolicy } from './defaults-env';
+export type { OverlapGateMode, BrainRoutingMode, ClassAComposer, WorkersUseBrain, WorkspaceManifestPolicy, OrchestratorBackendSetting, ReviewerBackendSetting, CollideAggregator, PrLinkDestination } from './defaults-env';
 export { coerceStoredTier, isTargetingTier, mergeTier } from './targeting-tier';
 export type { TargetingTier } from './targeting-tier';
 export {
@@ -112,10 +123,9 @@ export {
  * Override root with CORTEX_IDE_DATA_DIR. `~/.cortex-ide/` is not read. */
 export type SettingSource = 'env' | 'file' | 'profile' | 'default';
 export type RequireApproval = 'high-risk' | 'surface' | 'always' | 'never';
-
 export function isRequireApproval(value: unknown): value is RequireApproval { return value === 'high-risk' || value === 'surface' || value === 'always' || value === 'never'; }
 
-export interface OperatorDefaults extends StorageReserveDefaults, WorkspaceParkingDefaults, ApfsDependencyImagesDefaults, MeteredPacketCapDefaults, UiLoopDefaults, BroadcastCommentaryDefaults, PresentationDefaults, ReviewContinuationDefault, WorkspaceManifestPolicyDefault {
+export interface OperatorDefaults extends StorageReserveDefaults, WorkspaceParkingDefaults, ApfsDependencyImagesDefaults, MeteredPacketCapDefaults, UiLoopDefaults, BroadcastCommentaryDefaults, PresentationDefaults, ReviewContinuationDefault, WorkspaceManifestPolicyDefault, SymonVoiceDefault, JudgmentProviderDefault, JudgmentAllowanceDefaults, BrainDefaults {
   subscriptionProfile: SubscriptionProfile;
   parallelCap: number;
   overlapGate: OverlapGateMode;
@@ -123,6 +133,7 @@ export interface OperatorDefaults extends StorageReserveDefaults, WorkspaceParki
   supervisorAutoEscalate: boolean;
   thinkingEffort: ThinkingEffort;
   promptCachingEnabled: boolean;
+  autoTitleInferenceEnabled: boolean; // Optional background inference; code fallback remains available.
   /** Opt-in: replay the repo's test command against a rebased branch in the
    *  merge gate (in addition to typecheck). Default off — tests can be slow. */
   mergeTestReplayEnabled: boolean;
@@ -137,6 +148,8 @@ export interface OperatorDefaults extends StorageReserveDefaults, WorkspaceParki
   opencodeOrchestratorModel: string | null;
   /** Model for dispatched opencode workers. Null = the adapter default. */
   opencodeWorkerModel: string | null;
+  /** Model for dispatched 3code workers. Null = the configured 3code default. */
+  threecodeWorkerModel: string | null;
   defaultDispatchRuntime: OrchestratorRuntime;
   workerExecutionCarrier: ExecutionCarrierId | null;
   workerStartMode: WorkerStartMode;
@@ -145,10 +158,6 @@ export interface OperatorDefaults extends StorageReserveDefaults, WorkspaceParki
   codexWorkerEffort: ThinkingEffort;
   /** Default Claude Code worker effort. 'adaptive' preserves runtime default behavior. */
   claudeWorkerEffort: ThinkingEffort;
-  /** Codex subscription model used by Engineering Brain classify and compose calls. */
-  brainCodexModel: string;
-  /** Codex subscription effort used by Engineering Brain classify and compose calls. */
-  brainCodexEffort: ThinkingEffort;
   /**
    * Default model for DISPATCHED workers. Empty = let the runtime pick its own
    * default (today: Codex's configured model). Set it to a LOCAL model with the
@@ -315,7 +324,7 @@ export interface OperatorDefaultsWithSources {
 export const OPERATOR_DEFAULTS_FALLBACK: OperatorDefaults = {
   subscriptionProfile: 'both',
   parallelCap: 5,
-  overlapGate: 'advisory',
+  overlapGate: 'strict',
   healBotEnabled: true,
   supervisorAutoEscalate: false,
   ...REVIEW_CONTINUATION_FALLBACK,
@@ -325,19 +334,20 @@ export const OPERATOR_DEFAULTS_FALLBACK: OperatorDefaults = {
   // Operator-pinned subscription model; not a per-token API charge.
   thinkingEffort: 'max',
   promptCachingEnabled: true,
+  autoTitleInferenceEnabled: true,
   mergeTestReplayEnabled: false,
   requireApproval: 'high-risk',
   orchestratorModel: MODEL_IDS.orchestratorDefault,
   opencodeOrchestratorModel: null,
   opencodeWorkerModel: null,
+  threecodeWorkerModel: null,
   defaultDispatchRuntime: 'codex',
   workerExecutionCarrier: null,
   workerStartMode: 'autonomous',
   workerRuntimes: ['codex'],
   codexWorkerEffort: 'adaptive',
   claudeWorkerEffort: 'adaptive',
-  brainCodexModel: MODEL_IDS.codexWorkerDefault,
-  brainCodexEffort: 'xhigh',
+  ...BRAIN_DEFAULTS,
   defaultDispatchModel: '',
   localInferenceBaseUrl: '',
   localEmbedModel: '',
@@ -382,9 +392,9 @@ export const OPERATOR_DEFAULTS_FALLBACK: OperatorDefaults = {
   prLinkDestination: 'in-app',
   worktreeMaxCount: 20,
   worktreeMaxTotalGb: 20,
-  ...STORAGE_RESERVE_FALLBACK, ...WORKSPACE_PARKING_FALLBACK, ...METERED_PACKET_CAP_FALLBACK, ...UI_LOOP_FALLBACK,
+  ...STORAGE_RESERVE_FALLBACK, ...WORKSPACE_PARKING_FALLBACK, ...METERED_PACKET_CAP_FALLBACK, ...UI_LOOP_FALLBACK, ...SYMON_VOICE_FALLBACK, ...JUDGMENT_PROVIDER_FALLBACK, ...JUDGMENT_ALLOWANCE_FALLBACK,
 };
-interface StoredOperatorDefaults extends Partial<StorageReserveDefaults>, Partial<WorkspaceParkingDefaults>, Partial<ApfsDependencyImagesDefaults>, Partial<MeteredPacketCapDefaults>, Partial<UiLoopDefaults>, Partial<BroadcastCommentaryDefaults>, Partial<PresentationDefaults>, Partial<ReviewContinuationDefault>, Partial<WorkspaceManifestPolicyDefault> {
+interface StoredOperatorDefaults extends Partial<StorageReserveDefaults>, Partial<WorkspaceParkingDefaults>, Partial<ApfsDependencyImagesDefaults>, Partial<MeteredPacketCapDefaults>, Partial<UiLoopDefaults>, Partial<BroadcastCommentaryDefaults>, Partial<PresentationDefaults>, Partial<ReviewContinuationDefault>, Partial<WorkspaceManifestPolicyDefault>, Partial<SymonVoiceDefault>, Partial<JudgmentProviderDefault>, Partial<JudgmentAllowanceDefaults>, Partial<BrainDefaults> {
   subscriptionProfile?: SubscriptionProfile;
   parallelCap?: number;
   overlapGate?: OverlapGateMode;
@@ -392,11 +402,13 @@ interface StoredOperatorDefaults extends Partial<StorageReserveDefaults>, Partia
   supervisorAutoEscalate?: boolean;
   thinkingEffort?: ThinkingEffort;
   promptCachingEnabled?: boolean;
+  autoTitleInferenceEnabled?: boolean;
   mergeTestReplayEnabled?: boolean;
   requireApproval?: RequireApproval;
   orchestratorModel?: string;
   opencodeOrchestratorModel?: string | null;
   opencodeWorkerModel?: string | null;
+  threecodeWorkerModel?: string | null;
   defaultDispatchRuntime?: OrchestratorRuntime;
   workerExecutionCarrier?: ExecutionCarrierId | null;
   defaultDispatchRuntimeExplicit?: boolean;
@@ -404,8 +416,6 @@ interface StoredOperatorDefaults extends Partial<StorageReserveDefaults>, Partia
   workerRuntimes?: OrchestratorRuntime[];
   codexWorkerEffort?: ThinkingEffort;
   claudeWorkerEffort?: ThinkingEffort;
-  brainCodexModel?: string;
-  brainCodexEffort?: ThinkingEffort;
   defaultDispatchModel?: string;
   localInferenceBaseUrl?: string;
   localEmbedModel?: string;
@@ -475,18 +485,14 @@ function resolveFromFile(stored: StoredOperatorDefaults): FileOperatorDefaults {
   if (typeof stored.promptCachingEnabled === 'boolean') {
     result.promptCachingEnabled = stored.promptCachingEnabled;
   }
+  if (typeof stored.autoTitleInferenceEnabled === 'boolean') result.autoTitleInferenceEnabled = stored.autoTitleInferenceEnabled;
   if (typeof stored.mergeTestReplayEnabled === 'boolean') {
     result.mergeTestReplayEnabled = stored.mergeTestReplayEnabled;
   }
   if (isRequireApproval(stored.requireApproval)) {
     result.requireApproval = stored.requireApproval;
   }
-  for (const key of ['opencodeOrchestratorModel', 'opencodeWorkerModel'] as const) {
-    // A stored id that no longer parses is dropped rather than surfaced: the
-    // resolved value falls back to null (agent default), which still runs.
-    const normalized = normalizeAcpModelId(stored[key]);
-    if (normalized) result[key] = normalized;
-  }
+  Object.assign(result, normalizeStoredModelPins(stored));
   if (typeof stored.orchestratorModel === 'string' && stored.orchestratorModel.trim()) {
     result.orchestratorModel = stored.orchestratorModel.trim();
   }
@@ -508,12 +514,7 @@ function resolveFromFile(stored: StoredOperatorDefaults): FileOperatorDefaults {
   if (stored.claudeWorkerEffort && isThinkingEffort(stored.claudeWorkerEffort)) {
     result.claudeWorkerEffort = stored.claudeWorkerEffort;
   }
-  if (typeof stored.brainCodexModel === 'string' && isCodexModelId(stored.brainCodexModel.trim())) {
-    result.brainCodexModel = stored.brainCodexModel.trim();
-  }
-  if (stored.brainCodexEffort && isThinkingEffort(stored.brainCodexEffort)) {
-    result.brainCodexEffort = stored.brainCodexEffort;
-  }
+  Object.assign(result, resolveStoredBrainDefaults(stored));
   if (typeof stored.defaultDispatchModel === 'string') {
     // Empty string is meaningful here ("unset → runtime default"), so accept it.
     result.defaultDispatchModel = stored.defaultDispatchModel.trim();
@@ -607,7 +608,7 @@ function resolveFromFile(stored: StoredOperatorDefaults): FileOperatorDefaults {
   if (typeof stored.worktreeMaxTotalGb === 'number' && Number.isFinite(stored.worktreeMaxTotalGb) && stored.worktreeMaxTotalGb >= 0) {
     result.worktreeMaxTotalGb = stored.worktreeMaxTotalGb;
   }
-  Object.assign(result, resolveStoredStorageReserve(stored), resolveStoredWorkspaceParking(stored), resolveStoredMeteredPacketCap(stored));
+  Object.assign(result, resolveStoredStorageReserve(stored), resolveStoredWorkspaceParking(stored), resolveStoredMeteredPacketCap(stored), resolveStoredSymonVoice(stored), resolveStoredJudgmentProvider(stored), resolveStoredJudgmentAllowance(stored));
   const storedTriage = coerceStoredTier(stored.targetingTriage, OPERATOR_DEFAULTS_FALLBACK.targetingTriage);
   if (storedTriage) result.targetingTriage = storedTriage;
   const storedAction = coerceStoredTier(stored.targetingAction, OPERATOR_DEFAULTS_FALLBACK.targetingAction);
@@ -618,7 +619,7 @@ function resolveFromFile(stored: StoredOperatorDefaults): FileOperatorDefaults {
 // ── Resolution ──
 
 function resolveDefaults(fileValues: FileOperatorDefaults): OperatorDefaultsWithSources {
-  const meteredPacketCap = resolveMeteredPacketCapSettings(fileValues); const uiLoop = resolveUiLoopSettings(fileValues);
+  const meteredPacketCap = resolveMeteredPacketCapSettings(fileValues); const uiLoop = resolveUiLoopSettings(fileValues); const symonVoice = resolveSymonVoiceSettings(fileValues); const judgment = resolveJudgmentProviderSettings(fileValues); const judgmentAllowance = resolveJudgmentAllowanceSettings(fileValues);
   const envProfile = envSubscriptionProfile();
   const envCap = envParallelCap();
   const envGate = envOverlapGate();
@@ -640,6 +641,8 @@ function resolveDefaults(fileValues: FileOperatorDefaults): OperatorDefaultsWith
   const envCanvas = envExperimentalCanvas();
   const envNative = envNativeBrowserView();
   const envComposer = envClassAComposer();
+  const envBrainRouting = envBrainRoutingMode();
+  const brainRouting = resolveBrainRoutingModeSettings(envBrainRouting, fileValues);
   const envInApp = envInAppOrchestratorEnabled();
   const envBrainCli = envBrainUseClaudeCli();
   const envBrain = envWorkersUseBrain();
@@ -692,6 +695,7 @@ function resolveDefaults(fileValues: FileOperatorDefaults): OperatorDefaultsWith
     thinkingEffort: envThink ?? fileValues.thinkingEffort ?? OPERATOR_DEFAULTS_FALLBACK.thinkingEffort,
     promptCachingEnabled:
       envCache ?? fileValues.promptCachingEnabled ?? OPERATOR_DEFAULTS_FALLBACK.promptCachingEnabled,
+    autoTitleInferenceEnabled: fileValues.autoTitleInferenceEnabled ?? OPERATOR_DEFAULTS_FALLBACK.autoTitleInferenceEnabled,
     mergeTestReplayEnabled:
       fileValues.mergeTestReplayEnabled ?? OPERATOR_DEFAULTS_FALLBACK.mergeTestReplayEnabled,
     requireApproval: fileValues.requireApproval ?? OPERATOR_DEFAULTS_FALLBACK.requireApproval,
@@ -699,6 +703,7 @@ function resolveDefaults(fileValues: FileOperatorDefaults): OperatorDefaultsWith
     opencodeOrchestratorModel:
       fileValues.opencodeOrchestratorModel ?? OPERATOR_DEFAULTS_FALLBACK.opencodeOrchestratorModel,
     opencodeWorkerModel: fileValues.opencodeWorkerModel ?? OPERATOR_DEFAULTS_FALLBACK.opencodeWorkerModel,
+    threecodeWorkerModel: fileValues.threecodeWorkerModel ?? OPERATOR_DEFAULTS_FALLBACK.threecodeWorkerModel,
     defaultDispatchRuntime,
     workerExecutionCarrier: fileValues.workerExecutionCarrier !== undefined ? fileValues.workerExecutionCarrier : OPERATOR_DEFAULTS_FALLBACK.workerExecutionCarrier,
     workerStartMode: fileValues.workerStartMode ?? OPERATOR_DEFAULTS_FALLBACK.workerStartMode,
@@ -709,6 +714,7 @@ function resolveDefaults(fileValues: FileOperatorDefaults): OperatorDefaultsWith
       envClaudeEffort ?? fileValues.claudeWorkerEffort ?? OPERATOR_DEFAULTS_FALLBACK.claudeWorkerEffort,
     brainCodexModel: fileValues.brainCodexModel ?? OPERATOR_DEFAULTS_FALLBACK.brainCodexModel,
     brainCodexEffort: fileValues.brainCodexEffort ?? OPERATOR_DEFAULTS_FALLBACK.brainCodexEffort,
+    ...brainRouting.values,
     defaultDispatchModel: envDispatchModel ?? fileValues.defaultDispatchModel ?? OPERATOR_DEFAULTS_FALLBACK.defaultDispatchModel,
     localInferenceBaseUrl: envLocalBaseUrl ?? fileValues.localInferenceBaseUrl ?? OPERATOR_DEFAULTS_FALLBACK.localInferenceBaseUrl,
     localEmbedModel: envLocalEmbed ?? fileValues.localEmbedModel ?? OPERATOR_DEFAULTS_FALLBACK.localEmbedModel,
@@ -750,7 +756,7 @@ function resolveDefaults(fileValues: FileOperatorDefaults): OperatorDefaultsWith
     worktreeMaxTotalGb: envWtSize ?? fileValues.worktreeMaxTotalGb ?? OPERATOR_DEFAULTS_FALLBACK.worktreeMaxTotalGb,
     ...storageReserve.values,
     ...workspaceParking.values,
-    ...meteredPacketCap.values, ...uiLoop.values,
+    ...meteredPacketCap.values, ...uiLoop.values, ...symonVoice.values, ...judgment.values, ...judgmentAllowance.values,
   };
 
   const sources: Record<keyof OperatorDefaults, SettingSource> = {
@@ -767,11 +773,13 @@ function resolveDefaults(fileValues: FileOperatorDefaults): OperatorDefaultsWith
     thinkingEffort: envThink !== null ? 'env' : fileValues.thinkingEffort !== undefined ? 'file' : 'default',
     promptCachingEnabled:
       envCache !== null ? 'env' : fileValues.promptCachingEnabled !== undefined ? 'file' : 'default',
+    autoTitleInferenceEnabled: fileValues.autoTitleInferenceEnabled !== undefined ? 'file' : 'default',
     mergeTestReplayEnabled: fileValues.mergeTestReplayEnabled !== undefined ? 'file' : 'default',
     requireApproval: fileValues.requireApproval !== undefined ? 'file' : 'default',
     orchestratorModel: envModel !== null ? 'env' : fileValues.orchestratorModel !== undefined ? 'file' : 'default',
     opencodeOrchestratorModel: fileValues.opencodeOrchestratorModel !== undefined ? 'file' : 'default',
     opencodeWorkerModel: fileValues.opencodeWorkerModel !== undefined ? 'file' : 'default',
+    threecodeWorkerModel: fileValues.threecodeWorkerModel !== undefined ? 'file' : 'default',
     defaultDispatchRuntime: profileDefaults ? 'profile' : envRuntime !== null ? 'env' : fileValues.defaultDispatchRuntimeExplicit ? 'file' : 'default',
     workerExecutionCarrier: fileValues.workerExecutionCarrier !== undefined ? 'file' : 'default',
     workerStartMode: fileValues.workerStartMode !== undefined ? 'file' : 'default',
@@ -782,6 +790,7 @@ function resolveDefaults(fileValues: FileOperatorDefaults): OperatorDefaultsWith
       envClaudeEffort !== null ? 'env' : fileValues.claudeWorkerEffort !== undefined ? 'file' : 'default',
     brainCodexModel: fileValues.brainCodexModel !== undefined ? 'file' : 'default',
     brainCodexEffort: fileValues.brainCodexEffort !== undefined ? 'file' : 'default',
+    ...brainRouting.sources,
     defaultDispatchModel: envDispatchModel !== null ? 'env' : fileValues.defaultDispatchModel !== undefined ? 'file' : 'default',
     localInferenceBaseUrl: envLocalBaseUrl !== null ? 'env' : fileValues.localInferenceBaseUrl !== undefined ? 'file' : 'default',
     localEmbedModel: envLocalEmbed !== null ? 'env' : fileValues.localEmbedModel !== undefined ? 'file' : 'default',
@@ -820,7 +829,7 @@ function resolveDefaults(fileValues: FileOperatorDefaults): OperatorDefaultsWith
     worktreeMaxTotalGb: envWtSize !== null ? 'env' : fileValues.worktreeMaxTotalGb !== undefined ? 'file' : 'default',
     ...storageReserve.sources,
     ...workspaceParking.sources,
-    ...meteredPacketCap.sources, ...uiLoop.sources,
+    ...meteredPacketCap.sources, ...uiLoop.sources, ...symonVoice.sources, ...judgment.sources, ...judgmentAllowance.sources,
   };
 
   return { values: resolved, sources };
@@ -896,6 +905,7 @@ async function updateOperatorDefaultsOnce(update: Partial<OperatorDefaults>): Pr
   if (update.promptCachingEnabled !== undefined) {
     stored.promptCachingEnabled = Boolean(update.promptCachingEnabled);
   }
+  if (update.autoTitleInferenceEnabled !== undefined) stored.autoTitleInferenceEnabled = Boolean(update.autoTitleInferenceEnabled);
   if (update.mergeTestReplayEnabled !== undefined) {
     stored.mergeTestReplayEnabled = Boolean(update.mergeTestReplayEnabled);
   }
@@ -912,18 +922,7 @@ async function updateOperatorDefaultsOnce(update: Partial<OperatorDefaults>): Pr
     }
     stored.orchestratorModel = trimmed;
   }
-  for (const key of ['opencodeOrchestratorModel', 'opencodeWorkerModel'] as const) {
-    const value = update[key];
-    if (value === undefined) continue;
-    // null is meaningful: "no pin, use whatever the agent booted with".
-    if (value === null) { stored[key] = null; continue; }
-    if (!isPlausibleAcpModelId(value)) {
-      throw new Error(
-        `${key} ${JSON.stringify(value)} is not a usable model id. Expect provider/model, optionally with a /low or /high suffix — pick one from the model list rather than typing it.`,
-      );
-    }
-    stored[key] = value.trim();
-  }
+  Object.assign(stored, normalizeModelPinUpdates(update));
   if (update.defaultDispatchRuntime !== undefined) {
     if (!isDispatchRuntime(update.defaultDispatchRuntime)) {
       throw new Error('defaultDispatchRuntime must name a dispatchable runtime.');
@@ -959,19 +958,7 @@ async function updateOperatorDefaultsOnce(update: Partial<OperatorDefaults>): Pr
     }
     stored.claudeWorkerEffort = update.claudeWorkerEffort;
   }
-  if (update.brainCodexModel !== undefined) {
-    const trimmed = update.brainCodexModel.trim();
-    if (!isCodexModelId(trimmed)) {
-      throw new Error(`brainCodexModel ${JSON.stringify(trimmed)} is unsupported; valid values are ${CODEX_MODEL_IDS.map((model) => JSON.stringify(model)).join(', ')}.`);
-    }
-    stored.brainCodexModel = trimmed;
-  }
-  if (update.brainCodexEffort !== undefined) {
-    if (!isThinkingEffort(update.brainCodexEffort)) {
-      throw new Error('brainCodexEffort must be a valid ThinkingEffort value.');
-    }
-    stored.brainCodexEffort = update.brainCodexEffort;
-  }
+  applyBrainDefaultsUpdate(stored, update);
   if (update.defaultDispatchModel !== undefined) {
     // Empty string clears it (back to the runtime default); any string is valid
     // (cloud name, or the `ollama:`/`lmstudio:` local convention).
@@ -1103,7 +1090,7 @@ async function updateOperatorDefaultsOnce(update: Partial<OperatorDefaults>): Pr
   }
   applyStorageReserveUpdate(stored, update);
   applyWorkspaceParkingUpdate(stored, update);
-  applyMeteredPacketCapUpdate(stored, update); applyUiLoopUpdate(stored, update);
+  applyMeteredPacketCapUpdate(stored, update); applyUiLoopUpdate(stored, update); applySymonVoiceUpdate(stored, update); applyJudgmentProviderUpdate(stored, update); applyJudgmentAllowanceUpdate(stored, update);
   if (update.targetingTriage !== undefined) {
     if (!isTargetingTier(update.targetingTriage)) {
       throw new Error('targetingTriage must be { runtime: dispatch-runtime, model: string, effort: thinking-effort }.');
@@ -1171,16 +1158,14 @@ export function resolveDefaultWorkerEffortSync(
   });
 }
 
-/** Default worker model ('' = runtime's own default). Applied at the Codex
- *  launch chokepoint so every dispatched worker inherits it; per-mission model
- *  still wins. Set to `ollama:<model>` / `lmstudio:<model>` to dispatch local. */
+/** Default worker model ('' = runtime default) at the Codex launch chokepoint.
+ * Per-mission wins; use `ollama:<model>` or `lmstudio:<model>` for local workers. */
 export function resolveDefaultDispatchModelSync(): string {
   return getOperatorDefaultsSync().values.defaultDispatchModel;
 }
 
-/** Local inference endpoint base URL ('' = use cloud). Read by the Brain
- *  embeddings path to route to a local OpenAI-compatible server (Ollama /
- *  LM Studio). NO trailing /v1 — consumers append the path. */
+/** Local OpenAI-compatible inference base URL ('' = cloud) for Brain embeddings.
+ * No trailing /v1; consumers append paths. */
 export function resolveLocalInferenceBaseUrlSync(): string {
   return getOperatorDefaultsSync().values.localInferenceBaseUrl;
 }
@@ -1211,21 +1196,15 @@ export function resolveCrossHouseWorkerFallbackSync(): boolean {
   return getOperatorDefaultsSync().values.crossHouseWorkerFallback;
 }
 
-/**
- * Which backend drives the in-app Orchestrator. 'auto' means "defer to
- * {@link resolveInAppOrchestratorEnabledSync}" — the registry's
- * `resolveOrchestratorBackendId` applies that fallback so 'auto' is byte-identical
- * to the pre-setting derivation.
- */
+/** In-app orchestrator backend. 'auto' defers to
+ * {@link resolveInAppOrchestratorEnabledSync} through the registry, preserving
+ * the pre-setting derivation. */
 export function resolveOrchestratorBackendSync(): OrchestratorBackendSetting {
   return getOperatorDefaultsSync().values.orchestratorBackend;
 }
 
-/**
- * The operator's pinned model for the opencode ACP orchestrator, or null to run
- * on whatever the agent boots with. Discovered ids, so no SUPPORTED_MODEL_IDS
- * check — see acp-model-id.ts for why that is shape-only.
- */
+/** Pinned opencode ACP model, or null for its boot model. Discovered ids have
+ * shape-only validation; see acp-model-id.ts. */
 export function resolveOpencodeOrchestratorModelSync(): string | null {
   return getOperatorDefaultsSync().values.opencodeOrchestratorModel;
 }
@@ -1233,6 +1212,11 @@ export function resolveOpencodeOrchestratorModelSync(): string | null {
 /** The operator's pinned model for dispatched opencode workers, or null. */
 export function resolveOpencodeWorkerModelSync(): string | null {
   return getOperatorDefaultsSync().values.opencodeWorkerModel;
+}
+
+/** The operator's pinned model for dispatched 3code workers, or null. */
+export function resolveThreecodeWorkerModelSync(): string | null {
+  return getOperatorDefaultsSync().values.threecodeWorkerModel;
 }
 
 /** Which backend runs lane auto-reviews ('follow' → ride the orchestrator). */

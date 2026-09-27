@@ -402,9 +402,8 @@ function normalizePacket(raw: unknown, index: number, existing: Array<Pick<Orche
         : null,
     // #1329 — originating orchestrator thread id lives only on the packet; drop
     // it here and a rerun/re-read would silently sever session-rule inheritance.
-    orchestratorThreadId: typeof packet.orchestratorThreadId === 'string' && packet.orchestratorThreadId.trim()
-      ? packet.orchestratorThreadId.trim()
-      : undefined,
+    orchestratorThreadId: typeof packet.orchestratorThreadId === 'string' && packet.orchestratorThreadId.trim() ? packet.orchestratorThreadId.trim() : undefined,
+    orchestratorTurnId: typeof packet.orchestratorTurnId === 'string' && packet.orchestratorTurnId.trim() ? packet.orchestratorTurnId.trim() : undefined,
     dispatcher: normalizePacketDispatcher(packet.dispatcher), launchContext: normalizePacketLaunchContext(packet.launchContext),
     prompt: typeof packet.prompt === 'string' && packet.prompt.trim() ? packet.prompt : undefined,
     allowedFiles: Array.isArray(packet.allowedFiles)
@@ -816,7 +815,11 @@ export async function loadOrchestratorMissionState(): Promise<OrchestratorMissio
   return orchestratorMissionCache;
 }
 
-export async function persistOrchestratorMissionState(state: OrchestratorMissionState) {
+// The server never deletes a packet the snapshot merely omits (#2351).
+export async function persistOrchestratorMissionState(
+  state: OrchestratorMissionState,
+  removedPacketIds: readonly string[] = [],
+) {
   if (typeof window === 'undefined') return;
   const normalized = normalizeOrchestratorMissionState({
     ...state,
@@ -827,7 +830,7 @@ export async function persistOrchestratorMissionState(state: OrchestratorMission
     const response = await fetch(ORCHESTRATOR_STATE_API_PATH, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mission: normalized }),
+      body: JSON.stringify({ mission: normalized, removedPacketIds }),
     });
     if (response.ok) {
       const payload = await response.json() as Partial<OrchestratorStateApiResponse>;

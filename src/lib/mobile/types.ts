@@ -9,6 +9,7 @@ import type { MobileApprovalCard } from '@/lib/approvals/types';
 import type { OrchestratorBackendId } from '@/lib/lane/orchestrator-backends/types';
 import type { OrchestratorRuntime } from '@/lib/orchestrator/runtime-capabilities';
 import type { OrchestratorPacketRecovery } from '@/lib/orchestrator/types';
+import type { ThinkingEffort } from '@/lib/orchestrator/thinking-effort';
 import type { ClaudeCodeStreamJsonChatEvent } from '@/lib/claude-code/stream-json-parser';
 import type { CompactionTrigger } from '@/lib/runtimes/compaction-detector';
 
@@ -41,6 +42,18 @@ export interface MobileControlAction {
   reasonUnavailable?: string;
 }
 
+/**
+ * Advisory referee read of how urgently an item needs the operator (#2440).
+ * Ordering only: no threshold, gate, or auto-decision reads it. `abstain` marks
+ * a confidence under the abstain floor, which keeps the item in today's order.
+ */
+export interface MobileInboxUrgency {
+  score: number;
+  confidence: number;
+  abstain: boolean;
+  receiptId: string | null;
+}
+
 export interface MobileInboxItem {
   id: string;
   kind: MobileInboxItemKind;
@@ -53,6 +66,22 @@ export interface MobileInboxItem {
   sessionKey?: string;
   timestampLabel?: string;
   actions: MobileControlAction[];
+  /** Absent when the setting is off, the call failed, or no score is cached yet. */
+  urgency?: MobileInboxUrgency;
+  /**
+   * ADVISORY referee chips (#2439), computed on the desktop from the stored
+   * merge-card referee facts. Nothing decides on them. Absent when the setting
+   * is off, the approval has no stored facts, or no chip clears its threshold.
+   */
+  refereeChips?: MobileInboxRefereeChip[];
+}
+
+/** One calibrated referee fact shown on an inbox card. Only `docs-only` is calibrated today. */
+export interface MobileInboxRefereeChip {
+  kind: 'docs-only';
+  /** The referee's answer, 0..1. */
+  probability: number;
+  receiptId: string | null;
 }
 
 export interface MobileInboxSummary {
@@ -306,6 +335,20 @@ export interface MobileTranscriptCommand {
   };
 }
 
+export interface MobileTurnReceipt {
+  leadModel: string;
+  effort: ThinkingEffort;
+  mode: 'solo' | 'multitask' | 'fast' | 'moa' | 'fusion';
+  pickedMode?: 'solo' | 'multitask' | 'fast' | 'moa' | 'fusion';
+  workers?: Array<{
+    packetId: string;
+    runtime: OrchestratorRuntime;
+    model: string;
+  }>;
+}
+
+export type MobilePendingTurnWorkers = Record<string, NonNullable<MobileTurnReceipt['workers']>>;
+
 // Shared transcript shape used across mobile history and runtime tails.
 export interface MobileTranscriptEntry {
   id: string;
@@ -322,6 +365,7 @@ export interface MobileTranscriptEntry {
   /** Runtime family that authored this individual turn. */
   backend?: OrchestratorBackendId;
   model?: string;
+  receipt?: MobileTurnReceipt;
   tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
   costUsd?: number;
   sources?: MobileTranscriptSource[];
@@ -360,6 +404,8 @@ export interface MobileTranscriptEntry {
     };
     /** Stable archive basename; the full turns remain retrievable through /recall. */
     archiveRef?: string;
+    /** Record-only judgment scores per compacted entry (#2465); nothing reads them. */
+    scorer?: import('@/lib/orchestrator/compaction-scorer').CompactionScorerRecord;
   };
   /** Structured orchestrator status event (mission complete / merge / heal) — rendered as OrchestratorStatusCard. */
   statusEvent?: import('@/lib/orchestrator/status-events').OrchestratorStatusEventData;
@@ -561,6 +607,33 @@ export interface MobileActivityEvent {
   repo?: string;
   /** Event time as epoch milliseconds. */
   timestamp: number;
+}
+
+/**
+ * Per-day commit counts returned by /api/mobile/activity as `commitCounts`.
+ * Computed from a dated `git log --all --since` query per tracked repo, so the
+ * counts cover the whole window regardless of the capped `events` list.
+ */
+export interface MobileCommitDayCounts {
+  /**
+   * Day boundary used for bucketing, in minutes east of UTC. Echoes the
+   * `utcOffsetMinutes` query param; 0 (UTC days) when absent or invalid.
+   */
+  utcOffsetMinutes: number;
+  /**
+   * Today plus the seven preceding days, oldest first. Every day is present;
+   * a day without commits has `count: 0`. Commits are deduplicated per repo
+   * and summed across tracked repos, dated by committer date.
+   */
+  days: Array<{ /** Local calendar date, `YYYY-MM-DD`. */ date: string; count: number }>;
+}
+
+/** Response body of GET /api/mobile/activity. */
+export interface MobileActivityResponse {
+  /** Newest-first receipts, capped at 40. */
+  events: MobileActivityEvent[];
+  /** Additive field; older clients ignore it. */
+  commitCounts: MobileCommitDayCounts;
 }
 
 export type MobileOrchestratorTranscriptRole = 'user' | 'assistant' | 'tool' | 'system';

@@ -5,22 +5,14 @@ import { AttachFilesButton } from './AttachFilesButton';
 import { ComposerModeChip, FleetWorkerChip } from './ComposerFleetChips';
 import type { ComposerMode } from './composer-mode';
 import { MicButton } from './MicButton';
-import { VoiceModeButton } from './VoiceModeButton';
 import { SessionRulesChip } from './SessionRulesChip';
 import { ModelThinkingChip } from './ModelThinkingChip';
 import type { OrchestratorBackendSetting } from './operator-defaults';
 import type { OrchestratorWorkspaceTarget } from '@/lib/orchestrator/types';
-import { type ThinkingEffort } from '@/lib/orchestrator/thinking-effort';
+import { THINKING_EFFORT_LABELS, type ThinkingEffort } from '@/lib/orchestrator/thinking-effort';
+import { ComposerSelectorFooterView } from './composer-selector/ComposerSelectorFooter';
+import type { ComposerSelectorController } from './composer-selector/useComposerSelectorState';
 
-const EFFORT_LABELS: Record<ThinkingEffort, string> = {
-  adaptive: 'adaptive',
-  low: 'low',
-  medium: 'medium',
-  high: 'high',
-  max: 'max',
-  xhigh: 'xhigh',
-  ultra: 'ultra',
-};
 // xhigh stays in the menu but reads as a sibling option to max, NOT as
 // "even better than max". max gets the brand orange to anchor it as the
 // climax tier; xhigh gets a muted dot so it doesn't outshine max.
@@ -49,7 +41,7 @@ export function ThinkingChip({
   onChange?: (next: ThinkingEffort) => void;
 }) {
   const detailsRef = useRef<HTMLDetailsElement>(null);
-  const label = EFFORT_LABELS[effort];
+  const label = THINKING_EFFORT_LABELS[effort].short;
   const dotColor = EFFORT_DOT[effort];
   const options = adaptiveEnabled ? EFFORT_OPTIONS : EFFORT_OPTIONS.filter((option) => option !== 'adaptive');
 
@@ -74,7 +66,7 @@ export function ThinkingChip({
             aria-hidden="true"
             style={{ width: 6, height: 6, borderRadius: 999, background: EFFORT_DOT[option] }}
           />
-          <span>{EFFORT_LABELS[option]}</span>
+          <span>{THINKING_EFFORT_LABELS[option].long}</span>
         </span>
         {active ? <span style={{ fontSize: 11, color: 'var(--t-accent)' }}>•</span> : null}
       </button>
@@ -122,7 +114,7 @@ export function ThinkingChip({
           position: 'absolute', bottom: 30, left: 0, width: 156,
           paddingTop: 4, paddingRight: 4, paddingBottom: 4, paddingLeft: 4,
           borderRadius: 10, borderWidth: 1, borderStyle: 'solid',
-          borderColor: 'var(--t-border)', background: 'var(--t-panel)',
+          borderColor: 'var(--t-border)', background: 'var(--t-popover-surface)',
           backdropFilter: 'blur(18px) saturate(1.3)', boxShadow: 'var(--t-panel-shadow)',
           display: 'flex', flexDirection: 'column', gap: 2, zIndex: 20,
         }}
@@ -167,16 +159,18 @@ function compactRepoPath(path: string): string {
 const REPO_TARGET_MENU_WIDTH = 320;
 const REPO_TARGET_MENU_HEIGHT = 280;
 
-function RepoTargetChip({
+export function RepoTargetChip({
   repoLabel,
   workspaceTargets,
   selectedRepoPath,
   onSelectRepoPath,
+  onAddProject,
 }: {
   repoLabel?: string | null;
   workspaceTargets?: OrchestratorWorkspaceTarget[];
   selectedRepoPath?: string | null;
   onSelectRepoPath?: (next: string) => void;
+  onAddProject?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -218,11 +212,15 @@ function RepoTargetChip({
     () => targets.find((target) => target.localPath === selectedRepoPath) ?? null,
     [selectedRepoPath, targets],
   );
-  const label = selectedTarget?.label
+  const label = selectedRepoPath === '~' ? 'Project' : selectedTarget?.label
     ?? repoLabel
     ?? repoPathLabel(selectedRepoPath)
-    ?? (targets[0]?.label ?? null);
-  const canSelect = targets.length > 0 && Boolean(onSelectRepoPath);
+    ?? 'Project';
+  const targetName = selectedTarget?.repoName?.trim()
+    || repoLabel?.trim()
+    || (selectedRepoPath && selectedRepoPath !== '~' ? repoPathLabel(selectedRepoPath) : null);
+  const accessibleLabel = targetName ? `Project target: ${targetName}` : 'Project target';
+  const canSelect = (targets.length > 0 && Boolean(onSelectRepoPath)) || Boolean(onAddProject);
   const showingAffordance = canSelect && (hovered || focused || open);
 
   if (!label) return null;
@@ -238,7 +236,8 @@ function RepoTargetChip({
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         disabled={!canSelect}
-        title={selectedRepoPath ? `Chat target: ${selectedRepoPath}` : 'Chat target'}
+        title={accessibleLabel}
+        aria-label={accessibleLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
         style={{
@@ -281,7 +280,7 @@ function RepoTargetChip({
       <ComposerPopover anchorRef={buttonRef} open={open} onClose={() => setOpen(false)} align="start">
         <div
           role="listbox"
-          aria-label="Chat target repo"
+          aria-label="Project target"
           style={{
             width: REPO_TARGET_MENU_WIDTH,
             maxHeight: REPO_TARGET_MENU_HEIGHT,
@@ -295,7 +294,7 @@ function RepoTargetChip({
             borderWidth: 1,
             borderStyle: 'solid',
             borderColor: 'var(--t-border)',
-            background: 'var(--t-panel)',
+            background: 'var(--t-popover-surface)',
             backdropFilter: 'blur(18px) saturate(1.3)',
             boxShadow: 'var(--t-panel-shadow)',
             display: 'flex',
@@ -399,6 +398,11 @@ function RepoTargetChip({
               </div>
             );
           })}
+          {onAddProject ? (
+            <button type="button" role="option" aria-selected={false} onClick={() => { onAddProject(); setOpen(false); }} style={{ width: '100%', paddingTop: 8, paddingRight: 9, paddingBottom: 8, paddingLeft: 12, borderWidth: 0, borderRadius: 7, background: 'transparent', color: 'var(--t-text-secondary)', cursor: 'pointer', textAlign: 'left', fontSize: 11.5, fontFamily: 'var(--font-sans-system)' }}>
+              Add repository…
+            </button>
+          ) : null}
         </div>
       </ComposerPopover>
     </div>
@@ -407,6 +411,7 @@ function RepoTargetChip({
 
 export function InputButtons({
   input,
+  hasAttachments = false,
   onSubmit,
   modelLabel,
   modelId,
@@ -416,10 +421,6 @@ export function InputButtons({
   effort = 'adaptive',
   onEffortChange,
   adaptiveEnabled = true,
-  swarmEnabled = false,
-  onSetSwarm,
-  collideEnabled = false,
-  onSetCollide,
   sessionRulesThreadId,
   repoLabel,
   displayMessagesCount = 0,
@@ -429,18 +430,20 @@ export function InputButtons({
   onFileReferenceSelect,
   composerMode,
   onComposerModeChange,
+  composerSelectorController,
   repoPath,
   workspaceTargets,
   selectedRepoPath,
   onSelectRepoPath,
   inlineLeadingExtras,
   inlineMeterSlot,
-  voiceModeEnabled,
-  onVoiceModeChange,
   onBrowsePrompts,
   onSavePrompt,
+  onRequestTextareaFocus,
+  composerSelectorV1Enabled = false,
 }: {
   input: string;
+  hasAttachments?: boolean;
   enhancing: boolean;
   preEnhanceInput: string | null;
   onEnhance: () => void;
@@ -458,12 +461,6 @@ export function InputButtons({
   effort?: ThinkingEffort;
   onEffortChange?: (effort: ThinkingEffort) => void;
   adaptiveEnabled?: boolean;
-  /** UltraCode / swarm tier — Claude fans work out to native sub-agents + Codex. */
-  swarmEnabled?: boolean;
-  onSetSwarm?: (enabled: boolean) => void;
-  /** Collide / MoA tier — Claude + Codex propose independently, Claude synthesizes. */
-  collideEnabled?: boolean;
-  onSetCollide?: (enabled: boolean) => void;
   /**
    * Session rules (#1329). `undefined` = surface doesn't carry session rules
    * (CLI lanes) → chip hidden. `null` = orchestrator surface, thread not yet
@@ -483,6 +480,7 @@ export function InputButtons({
   onFileReferenceSelect?: (path: string) => void;
   composerMode?: ComposerMode;
   onComposerModeChange?: (mode: ComposerMode) => void;
+  composerSelectorController?: ComposerSelectorController;
   repoPath?: string | null;
   workspaceTargets?: OrchestratorWorkspaceTarget[];
   selectedRepoPath?: string | null;
@@ -493,9 +491,15 @@ export function InputButtons({
   onVoiceModeChange?: (enabled: boolean) => void;
   onBrowsePrompts?: () => void;
   onSavePrompt?: (body: string) => void;
+  onRequestTextareaFocus?: () => void;
+  composerSelectorV1Enabled?: boolean;
 }) {
-  const canSubmit = Boolean(input.trim());
+  const canSubmit = Boolean(input.trim() || hasAttachments);
   const showRepoChip = Boolean(repoLabel) && displayMessagesCount === 0;
+  const selectorReady = Boolean(
+    composerSelectorController && composerMode && modelLabel && modelId && activeBackend && onEffortChange,
+  );
+  const selectorControls = composerSelectorController;
 
   // Adaptive composer row: measure available width and, below the threshold,
   // collapse the in-input pickers (model + agent) to icon-only — matching the
@@ -513,6 +517,78 @@ export function InputButtons({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  if (
+    composerSelectorV1Enabled
+    && selectorControls
+    && selectorReady
+  ) {
+    return (
+      <ComposerChipCompactContext.Provider value={compact}>
+        <ComposerSelectorFooterView
+          input={input}
+          state={selectorControls.state}
+          defaults={selectorControls.defaults}
+          composerModelGroups={selectorControls.composerModelGroups}
+          onModeChange={selectorControls.onModeChange}
+          onModelChange={selectorControls.onModelChange}
+          onBackendChange={selectorControls.onBackendChange}
+          onEffortChange={selectorControls.onEffortChange}
+          onRuntimeChange={selectorControls.onRuntimeChange}
+          onWorkerModelChange={selectorControls.onWorkerModelChange}
+          onWorkerStartModeChange={selectorControls.onWorkerStartModeChange}
+          saving={selectorControls.savingWorkerDefaults}
+          leadingControls={(
+            <>
+              {inlineLeadingExtras ? (
+                <span style={{ display: 'inline-flex', alignItems: 'center', minWidth: 0, overflow: 'hidden' }}>
+                  {inlineLeadingExtras}
+                </span>
+              ) : null}
+              {showRepoChip ? (
+                <>
+                  {compact || !inlineLeadingExtras ? null : <span style={{ color: 'var(--t-text-faint)' }}>·</span>}
+                  <RepoTargetChip
+                    repoLabel={repoLabel}
+                    workspaceTargets={workspaceTargets}
+                    selectedRepoPath={selectedRepoPath}
+                    onSelectRepoPath={onSelectRepoPath}
+                  />
+                </>
+              ) : null}
+              {sessionRulesThreadId !== undefined ? (
+                <span data-testid="composer-selector-session-rules" style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0 }}>
+                  <SessionRulesChip threadId={sessionRulesThreadId} repoPath={repoPath} />
+                </span>
+              ) : null}
+            </>
+          )}
+          attachControl={(
+            <AttachFilesButton
+              onUploadDiskFiles={onUploadDiskFiles}
+              onFileReferenceSelect={onFileReferenceSelect}
+              repoPath={repoPath}
+              promptBody={input}
+              onBrowsePrompts={onBrowsePrompts}
+              onSavePrompt={onSavePrompt}
+            />
+          )}
+          meterControl={inlineMeterSlot}
+          micControl={<MicButton />}
+          sendControl={(
+            <SendPill
+              canSubmit={canSubmit}
+              working={working}
+              onSubmit={onSubmit}
+              onStop={onStop}
+            />
+          )}
+          containerRef={rowRef}
+          onRequestTextareaFocus={onRequestTextareaFocus}
+        />
+      </ComposerChipCompactContext.Provider>
+    );
+  }
 
   return (
     <ComposerChipCompactContext.Provider value={compact}>
@@ -582,9 +658,6 @@ export function InputButtons({
         onSavePrompt={onSavePrompt}
       />
       <MicButton />
-      {onVoiceModeChange ? (
-        <VoiceModeButton enabled={Boolean(voiceModeEnabled)} onChange={onVoiceModeChange} />
-      ) : null}
 
       </div>
 
@@ -597,7 +670,10 @@ export function InputButtons({
           Pinned, never shrinks or clips. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
       {composerMode && onComposerModeChange ? (
-        <ComposerModeChip mode={composerMode} onModeChange={onComposerModeChange} />
+        <ComposerModeChip
+          mode={selectorControls?.state.mode ?? composerMode}
+          onModeChange={selectorControls?.onModeChange ?? onComposerModeChange}
+        />
       ) : null}
       {inlineMeterSlot ? (
         <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -608,22 +684,27 @@ export function InputButtons({
         <ModelThinkingChip
           split
           compact={compact}
-          modelLabel={modelLabel}
-          modelId={modelId}
-          onModelChange={onModelChange}
-          activeBackend={activeBackend}
-          onBackendChange={onBackendChange}
-          effort={effort}
+          modelLabel={selectorControls?.state.leadModelLabel ?? modelLabel}
+          modelId={selectorControls?.state.leadModelId ?? modelId}
+          onModelChange={selectorControls?.onModelChange ?? onModelChange}
+          activeBackend={selectorControls?.state.leadBackend ?? activeBackend}
+          onBackendChange={selectorControls?.onBackendChange ?? onBackendChange}
+          effort={selectorControls?.state.effort ?? effort}
           adaptiveEnabled={adaptiveEnabled}
-          onEffortChange={onEffortChange}
-          swarmEnabled={swarmEnabled}
-          onSetSwarm={onSetSwarm}
-          collideEnabled={collideEnabled}
-          onSetCollide={onSetCollide}
+          onEffortChange={selectorControls?.onEffortChange ?? onEffortChange}
+          composerMode={selectorControls?.state.mode ?? composerMode}
         />
       ) : null}
-      {composerMode && composerMode !== 'solo' ? (
-        <FleetWorkerChip compact={compact} />
+      {composerMode && (selectorControls?.state.mode ?? composerMode) !== 'solo' ? (
+        <FleetWorkerChip
+          compact={compact}
+          defaults={selectorControls?.defaults}
+          workerModelLocked={selectorControls?.workerModelLocked}
+          saving={selectorControls?.savingWorkerDefaults}
+          onRuntimeChange={selectorControls?.onRuntimeChange}
+          onWorkerModelChange={selectorControls?.onWorkerModelChange}
+          onWorkerStartModeChange={selectorControls?.onWorkerStartModeChange}
+        />
       ) : null}
 
       {/* Send — ↵ enter key when idle, square stop while working

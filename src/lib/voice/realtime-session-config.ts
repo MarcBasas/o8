@@ -25,6 +25,33 @@ export const REALTIME_MODEL = 'gpt-realtime-2.1-mini';
 export const REALTIME_FLAGSHIP_MODEL = 'gpt-realtime-2.1';
 
 /**
+ * gpt-live-1 (#2411) — OpenAI's full-duplex voice layer, TRIAL ONLY. Unlike the
+ * realtime models it does not reason: it delegates reasoning AND tool calls to a
+ * backend Responses model named at session creation, billing $0.05/min for the
+ * voice layer plus that backend's tokens. A cheap voice front with a bigger brain
+ * behind it is exactly the split this product wants for Symon.
+ *
+ * CAUTION — the published docs and the observed mint disagree. The model page
+ * lists `v1/realtime` as "Not supported" for this id and sends it to
+ * `POST /v1/live/sessions` with a server-side SDP exchange instead of a
+ * `client_secrets` ephemeral token. A client-secrets mint for it nonetheless
+ * returned 200 (2026-09-16, mint only, no session opened) — which is precisely
+ * the trap {@link REALTIME_CAPABLE_MODELS} exists to document: the mint succeeds
+ * and the refusal only lands later at the transport. One operator session
+ * settles it; until that reports back the `live` variant stays unproven and the
+ * experiment switch stays unset.
+ */
+export const REALTIME_LIVE_MODEL = 'gpt-live-1';
+
+/**
+ * Backend Responses model for the delegated `live` variant. The delegation docs
+ * make `delegation.responses.model` REQUIRED at creation and name no default, so
+ * this carries the documented recommended starting point. Override it with
+ * `O8_SYMON_LIVE_BACKEND_MODEL` to re-aim the brain without a rebuild.
+ */
+export const DEFAULT_LIVE_BACKEND_MODEL = 'gpt-5.6-terra';
+
+/**
  * Model ids the OpenAI realtime endpoint actually accepts.
  *
  * `POST /v1/realtime/client_secrets` mints a token for ids the realtime
@@ -41,6 +68,7 @@ export const REALTIME_CAPABLE_MODELS = [
   REALTIME_MODEL,
   'gpt-realtime-2',
   'gpt-realtime',
+  REALTIME_LIVE_MODEL,
 ] as const;
 
 export type RealtimeModelCheck =
@@ -63,8 +91,45 @@ export function assertRealtimeCapableModel(model: string): RealtimeModelCheck {
     allowed,
   };
 }
-export type PhoneCodeModelVariant = 'mini' | 'flagship';
+export type PhoneCodeModelVariant = 'mini' | 'flagship' | 'live';
 export type PhoneCodeModelExperiment = PhoneCodeModelVariant | 'ab';
+
+/**
+ * The brain a phone session runs on (#2423). `realtime` is the standard path
+ * every plan gets; `live` is the delegated voice layer a paid plan may choose
+ * per session. This is the operator's choice, not a cohort assignment — the
+ * caller resolves the plan before asking for it.
+ */
+export type SymonBrain = 'realtime' | 'live';
+
+interface PhoneRealtimeModelSelection {
+  model: string;
+  variant: PhoneCodeModelVariant;
+  backendModel?: string;
+}
+
+/**
+ * The delegated `live` pair: the voice layer's id plus the backend Responses
+ * model that actually reasons. Shared by the operator's brain choice and the
+ * developer experiment so the two can never name different backends.
+ */
+function liveModelSelection(liveBackendModel?: string | null): PhoneRealtimeModelSelection {
+  const configuredBackend = typeof liveBackendModel === 'string' ? liveBackendModel.trim() : '';
+  return {
+    variant: 'live',
+    model: REALTIME_LIVE_MODEL,
+    backendModel: configuredBackend || DEFAULT_LIVE_BACKEND_MODEL,
+  };
+}
+
+const PHONE_CODE_MODEL_VARIANTS: readonly PhoneCodeModelVariant[] = ['mini', 'flagship', 'live'];
+
+/** Narrow an env string / operator header to a known variant, else null. */
+function asPhoneCodeModelVariant(value: unknown): PhoneCodeModelVariant | null {
+  return typeof value === 'string' && (PHONE_CODE_MODEL_VARIANTS as readonly string[]).includes(value)
+    ? (value as PhoneCodeModelVariant)
+    : null;
+}
 export type PhoneRealtimeExperience = 'repository-catch-up';
 
 function stableBucket(value: string): number {
@@ -76,30 +141,46 @@ function stableBucket(value: string): number {
   return hash >>> 0;
 }
 
-/** Ordinary Life uses mini; catch-up uses flagship; Code can run an experiment. */
+/**
+ * An explicit live brain wins outright; otherwise ordinary Life uses mini,
+ * catch-up uses flagship, and Code can run an experiment.
+ */
 export function selectPhoneRealtimeModel(input: {
   workspaceMode: 'o8' | 'code';
+  /**
+   * The plan-resolved brain for this session (#2423). `live` outranks workspace
+   * mode, the catch-up experience, and the experiment, because it is the thing
+   * the operator explicitly asked this session to run on.
+   */
+  brain?: SymonBrain | null;
   experiment?: string | null;
   bucketKey: string;
   operatorOverride?: string | null;
   experience?: PhoneRealtimeExperience | null;
-}): { model: string; variant: PhoneCodeModelVariant } {
+  /**
+   * Backend Responses model for the `live` variant, supplied by the caller from
+   * `O8_SYMON_LIVE_BACKEND_MODEL`. Kept an INPUT, not a `process.env` read: this
+   * module is isomorphic and the browser realtime client imports it too.
+   */
+  liveBackendModel?: string | null;
+}): PhoneRealtimeModelSelection {
+  if (input.brain === 'live') return liveModelSelection(input.liveBackendModel);
   if (input.experience === 'repository-catch-up') {
     return { model: REALTIME_FLAGSHIP_MODEL, variant: 'flagship' };
   }
   if (input.workspaceMode !== 'code') {
     return { model: REALTIME_MODEL, variant: 'mini' };
   }
-  const override = input.operatorOverride === 'mini' || input.operatorOverride === 'flagship'
-    ? input.operatorOverride
-    : null;
-  const configured: PhoneCodeModelExperiment = input.experiment === 'flagship' || input.experiment === 'ab'
-    ? input.experiment
-    : 'mini';
+  const override = asPhoneCodeModelVariant(input.operatorOverride);
+  const configured: PhoneCodeModelExperiment =
+    asPhoneCodeModelVariant(input.experiment) ?? (input.experiment === 'ab' ? 'ab' : 'mini');
+  // The A/B bucket stays a two-way mini/flagship split: `live` is an explicit
+  // opt-in, never something a hash can hand an unsuspecting session.
   const variant: PhoneCodeModelVariant = override
     ?? (configured === 'ab'
       ? (stableBucket(input.bucketKey) % 2 === 0 ? 'mini' : 'flagship')
       : configured);
+  if (variant === 'live') return liveModelSelection(input.liveBackendModel);
   return {
     variant,
     model: variant === 'flagship' ? REALTIME_FLAGSHIP_MODEL : REALTIME_MODEL,
@@ -179,10 +260,10 @@ export const DEFAULT_INSTRUCTIONS =
 export const SURFACE_TOOL_NAME = 'render_surface';
 
 /**
- * The bounded Mac-executed tool catalog exposed to PHONE Symon on Code. Life
- * keeps the full bridge catalog, and desktop callers never pass through this
- * selector. Keep this list explicit so a new mail/media/browser tool cannot
- * silently become available merely because the desktop catalog grew.
+ * The bounded Mac-executed tool catalog exposed to PHONE Symon on Code. Desktop
+ * callers never pass through this selector. Keep this list explicit so a new
+ * mail/media/browser tool cannot silently become available merely because the
+ * desktop catalog grew.
  */
 export const PHONE_CODE_TOOL_NAMES = [
   'symon_execute_plan',
@@ -206,9 +287,57 @@ export const PHONE_CODE_TOOL_NAMES = [
   'repo_commit_diff',
   'symon_ledger_recent',
   'symon_ledger_undo',
+  'symon_watch',
+  'symon_watch_list',
+  'symon_watch_cancel',
+  'symon_watch_run',
 ] as const;
 
-export interface PhoneCodeToolSelection {
+/**
+ * The bounded Mac-executed pack for the phone's default o8 workspace. It keeps
+ * the tools named by the shared conductor instructions (plans, dispatch,
+ * delegation, ledger), the phone-native machine/agent/terminal/GitHub families,
+ * and the read-oriented o8 control plane. Desktop Life catalogs such as mail,
+ * calendar, browser, shell, file, screen, and mac_* stay out. MCP tools are not
+ * listed here because selectPhoneO8Tools appends every live mcp__ schema: adding
+ * that server to Symon is already an explicit operator opt-in.
+ */
+export const PHONE_O8_TOOL_NAMES = [
+  'symon_machine_list',
+  'symon_machine_switch',
+  'symon_execute_plan',
+  'o8_status',
+  'o8_team_inbox',
+  'o8_ask',
+  'o8_needs_me',
+  'o8_attention_why',
+  'o8_review_diff',
+  'o8_packet_wait',
+  'o8_recap',
+  'o8_usage',
+  'o8_panel_read',
+  'o8_dispatch',
+  'o8_delegate',
+  'escalate',
+  'agent_turn',
+  'terminal_list',
+  'terminal_send',
+  'gh_issue_create',
+  'gh_comment',
+  'gh_pr_list',
+  'gh_issue_list',
+  'gh_issue_view',
+  'gh_pr_view',
+  'gh_triage',
+  'symon_ledger_recent',
+  'symon_ledger_undo',
+  'symon_watch',
+  'symon_watch_list',
+  'symon_watch_cancel',
+  'symon_watch_run',
+] as const;
+
+export interface PhoneToolSelection {
   tools: Array<Record<string, unknown>>;
   missing: string[];
 }
@@ -248,7 +377,7 @@ function phoneScopedTool(tool: Record<string, unknown>): Record<string, unknown>
 /** Select exactly the frozen Code pack, in canonical order, from the live Mac catalog. */
 export function selectPhoneCodeTools(
   tools: Array<Record<string, unknown>>,
-): PhoneCodeToolSelection {
+): PhoneToolSelection {
   const available = new Map<string, Record<string, unknown>>();
   for (const tool of tools) {
     if (tool.type !== 'function' || typeof tool.name !== 'string' || available.has(tool.name)) continue;
@@ -261,6 +390,34 @@ export function selectPhoneCodeTools(
       return tool ? [phoneScopedTool(tool)] : [];
     }),
     missing: PHONE_CODE_TOOL_NAMES.filter((name) => !available.has(name)),
+  };
+}
+
+/** Select the frozen o8 pack, followed by operator-attached MCP tools in bridge order. */
+export function selectPhoneO8Tools(
+  tools: Array<Record<string, unknown>>,
+): PhoneToolSelection {
+  const available = new Map<string, Record<string, unknown>>();
+  for (const tool of tools) {
+    if (tool.type !== 'function' || typeof tool.name !== 'string' || available.has(tool.name)) continue;
+    available.set(tool.name, tool);
+  }
+
+  const selectedNames = new Set<string>(PHONE_O8_TOOL_NAMES);
+  const mcpTools = Array.from(available.entries()).flatMap(([name, tool]) => {
+    if (!name.startsWith('mcp__') || selectedNames.has(name)) return [];
+    selectedNames.add(name);
+    return [tool];
+  });
+  return {
+    tools: [
+      ...PHONE_O8_TOOL_NAMES.flatMap((name) => {
+        const tool = available.get(name);
+        return tool ? [tool] : [];
+      }),
+      ...mcpTools,
+    ],
+    missing: PHONE_O8_TOOL_NAMES.filter((name) => !available.has(name)),
   };
 }
 
@@ -409,6 +566,13 @@ export interface RealtimeMintInputs {
    * on ambient noise, 2026-07-11).
    */
   micProfile?: RealtimeMicProfile;
+  /**
+   * Backend Responses model for a delegating voice model ({@link REALTIME_LIVE_MODEL}).
+   * When set, the persona and tool schemas move into `delegation.responses` —
+   * that backend is what reasons and calls tools, so a brain left at the top
+   * level would reach nothing. OMIT for every realtime model.
+   */
+  backendModel?: string;
 }
 
 /**
@@ -460,7 +624,7 @@ export const MIC_PROFILE_AUDIO_INPUT: Record<
  * `micProfile: 'near_field'` (the phone noise gate, 2026-07-11).
  */
 export function buildRealtimeMintSession(inputs: RealtimeMintInputs): Record<string, unknown> {
-  const { model, voice, instructions, tools, inputTranscriptionModel } = inputs;
+  const { model, voice, instructions, tools, inputTranscriptionModel, backendModel } = inputs;
 
   // The noise gate ships ONLY when a micProfile is passed (the phone mint);
   // desk mints omit it and stay byte-identical to the pre-gate shape.
@@ -476,6 +640,24 @@ export function buildRealtimeMintSession(inputs: RealtimeMintInputs): Record<str
   }
 
   const session: Record<string, unknown> = { type: 'realtime', model, audio };
+
+  // A delegating voice model carries no brain of its own. The docs put the
+  // backend model, its prompt, and its tool schemas under `delegation.responses`
+  // and name no top-level `tools` for such a session, so the whole payload moves
+  // there together — split across both places it would half-arrive.
+  if (backendModel) {
+    const responses: Record<string, unknown> = { model: backendModel };
+    if (instructions) {
+      responses.instructions = instructions;
+    }
+    if (Array.isArray(tools) && tools.length > 0) {
+      responses.tools = tools;
+      responses.tool_choice = 'auto';
+    }
+    session.delegation = { type: 'responses', responses };
+    return session;
+  }
+
   if (instructions) {
     session.instructions = instructions;
   }

@@ -18,10 +18,8 @@ import { requiresNativeWorkerToken } from '@/lib/claude-code/worker-token';
 import type { ClaudeCodeModelSource } from '@/lib/claude-code/worker-profile-types';
 import { claudeCarrierPresentation } from './claude-carrier-presentation';
 import { scanAndLink } from './cli-locate';
-import {
-  detectNativeClaudeAuth,
-  type ClaudeLoginState,
-} from './claude-login-probe';
+import { probeAntigravityLogin } from './antigravity-login-probe';
+import { detectNativeClaudeAuth, type ClaudeLoginState } from './claude-login-probe';
 import { cliInvocation } from '@/lib/runtimes/shared/cli-spawn';
 import {
   localProviderIds,
@@ -40,6 +38,7 @@ import {
 } from '@/lib/deepseek-harness/runtime-resolution';
 import { validateRuntimeModelSelection } from './model-compatibility';
 import { suggestMachineAuthProfile } from './auth-profile-suggestion';
+import { assertThreecodeWorkerModelAvailable } from '@/lib/runtimes/threecode-model-catalogue';
 
 const execFileAsync = promisify(execFile);
 const CACHE_TTL_MS = 60_000;
@@ -83,6 +82,7 @@ export interface RuntimeAuthSnapshot {
 }
 
 export interface DispatchableRuntimeAvailability {
+  installed?: boolean;
   id: OrchestratorRuntime;
   label: string;
   available: boolean;
@@ -331,7 +331,7 @@ async function detectGemini(): Promise<RuntimeAuthStatus> {
       installed: false,
       authenticated: false,
       detail: 'Gemini CLI is not installed.',
-      fix: 'Install Gemini CLI, then sign in or set GEMINI_API_KEY.',
+      fix: 'Install Gemini CLI for enterprise or paid API access. For free or AI Pro/Ultra, install Antigravity CLI (agy).',
     });
   }
 
@@ -347,7 +347,7 @@ async function detectGemini(): Promise<RuntimeAuthStatus> {
     detail: authenticated
       ? 'Gemini CLI is installed and has local sign-in or API-key evidence.'
       : 'Gemini CLI is installed but no local sign-in or API-key evidence was found.',
-    fix: 'Run `gemini` once to sign in or set GEMINI_API_KEY.',
+    fix: 'Use enterprise sign-in or set a paid GEMINI_API_KEY. For free or AI Pro/Ultra, use Antigravity CLI (agy).',
     binaryPath,
   });
 }
@@ -596,11 +596,12 @@ async function detectDeclarativeRuntime(runtime: OrchestratorRuntime): Promise<R
   });
 }
 
-export function detectRuntimeAuthStatus(runtime: OrchestratorRuntime): Promise<RuntimeAuthStatus> {
+export function detectRuntimeAuthStatus(runtime: OrchestratorRuntime, deadlineAt?: number): Promise<RuntimeAuthStatus> {
   switch (runtime) {
     case 'codex': return detectCodex();
     case 'claude-code': return detectClaude();
     case 'gemini': return detectGemini();
+    case 'antigravity': return probeAntigravityLogin(deadlineAt).then(status => nowStatus('antigravity', 'antigravity', status));
     case 'opencode': return detectOpencode();
     case 'cursor': return detectCursor();
     case 'grok': return detectGrok();
@@ -716,6 +717,7 @@ export async function getDispatchableRuntimeAvailability(
     return {
       id,
       label: ORCHESTRATOR_RUNTIMES[id].label,
+      installed: status?.installed ?? false,
       available,
       unavailableReason: available ? null : status?.unavailableReason ?? 'adapter_unavailable',
       detail: status?.detail ?? `${ORCHESTRATOR_RUNTIMES[id].label} readiness could not be determined.`,
@@ -735,6 +737,9 @@ export async function assertRuntimeDispatchable(
    */
   options?: { claudeCodeCarrier?: ClaudeCodeModelSource | null },
 ): Promise<void> {
+  if (runtime === '3code' && model?.trim()) {
+    await assertThreecodeWorkerModelAvailable(model);
+  }
   const snapshot = runtime === 'claude-code'
     ? options?.claudeCodeCarrier
       ? await getRuntimeAuthSnapshotForClaudeCarrier(options.claudeCodeCarrier)

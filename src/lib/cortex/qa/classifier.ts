@@ -3,7 +3,9 @@
  * provider chain rewired in path-to-70 phase 1.7 v2,
  * fast-path + cache shipped in #1115).
  *
- * Five-tier provider chain — all return the same { class, bm25Variants } shape:
+ * Five-tier provider chain — all return the same { class, bm25Variants } shape.
+ * When `judgment.provider` is on, a typed referee choice (`./referee.ts`,
+ * #2436) runs first and falls through to this chain unless confident:
  *   1. OpenRouter (flash-lite + gpt-5.4-nano + grok-4.3 fallback) — paid HTTP, ~500ms
  *   2. Gemini Flash JSON-mode (free-tier HTTP, ~0.5-1.5s — promoted above the
  *      CLI tiers 2026-06-11: HTTP beats a 6-8s process bootstrap)
@@ -43,12 +45,18 @@ import { callOpenRouter, OPENROUTER_PRIMARY_MODEL } from '@/lib/cortex/qa/llm/op
 import { callSonnet } from '@/lib/cortex/qa/llm/sonnet-adapter';
 import { STRICT_JSON_SYSTEM_PROMPTS_V1 } from '@/lib/prompts/v1';
 import { noteBrainQuotaError } from './brain-quota-alert';
+import { classifyWithReferee, isBrainRefereeEnabled } from './referee';
+import { brainRouteCacheKeySync, usesManagedBrainInferenceSync } from '@/lib/operator/brain-routing';
 
 export type QuestionClass = 'A' | 'B';
 
 export interface ClassifierResult {
   class: QuestionClass;
   bm25Variants: string[];
+  /** Set only when the judgment referee tier classified the question (#2436). */
+  classifier?: 'referee';
+  /** Judgment receipt id for the referee classification. */
+  receiptId?: string | null;
 }
 
 // ── In-process classifier cache ──────────────────────────────────────────────
@@ -71,7 +79,9 @@ interface ClassifierCacheEntry {
 const classifierCache = new Map<string, ClassifierCacheEntry>();
 
 function classifierCacheKey(question: string): string {
-  return createHash('sha256').update(question.trim().toLowerCase()).digest('hex');
+  return createHash('sha256')
+    .update(`${brainRouteCacheKeySync()}\x00${question.trim().toLowerCase()}`)
+    .digest('hex');
 }
 
 function getCachedClassification(question: string): ClassifierResult | null {
@@ -81,6 +91,9 @@ function getCachedClassification(question: string): ClassifierResult | null {
     classifierCache.delete(classifierCacheKey(question));
     return null;
   }
+  // A referee answer cached while `judgment.provider` was on must not outlive
+  // the setting: treat it as a miss so the model tiers run.
+  if (entry.result.classifier === 'referee' && !isBrainRefereeEnabled()) return null;
   return entry.result;
 }
 
@@ -131,6 +144,31 @@ export async function classifyQuestion(question: string): Promise<ClassifierResu
   }
 
   const prompt = `${CLASSIFIER_PROMPT}\n\nQuestion: ${question}`;
+
+  // Referee tier (#2436): a typed choice question when `judgment.provider` is
+  // on. Returns null when off, failed, abstained, or under the confidence
+  // threshold, and the tiers below run exactly as before.
+  const refereeResult = await classifyWithReferee(question);
+  if (refereeResult) {
+    console.info('[qa][classifier] resolved via referee (tier 0)');
+    setCachedClassification(question, refereeResult);
+    return refereeResult;
+  }
+
+  // Managed auto mode has no alternate payer. The enabled referee above is
+  // preserved on its managed-only judgment route; if it cannot decide, keep
+  // classification on managed inference and then use the deterministic result.
+  if (usesManagedBrainInferenceSync()) {
+    const managedResult = await tryOpenRouter(prompt, question, undefined, 25_000, true);
+    if (managedResult) {
+      console.info('[qa][classifier] resolved via managed inference');
+      setCachedClassification(question, managedResult);
+      return managedResult;
+    }
+    console.info('[qa][classifier] managed inference unavailable; resolved via heuristic');
+    return fallback(question);
+  }
+
   // O8_EVAL_MODE=1 routes the Anthropic tiers through the REPL one-shot
   // adapters (subscription-billed, #1124) instead of OpenRouter's paid
   // `anthropic/claude-...` models. The REPL path also skips the OpenRouter
@@ -244,18 +282,24 @@ export async function classifyQuestionForRecall(question: string): Promise<Class
   const cached = getCachedClassification(question);
   if (cached) return cached;
 
-  try {
-    await assertUnderBrainDailyCap();
-  } catch {
-    return null;
+  const managedOnly = usesManagedBrainInferenceSync();
+  if (!managedOnly) {
+    try {
+      await assertUnderBrainDailyCap();
+    } catch {
+      return null;
+    }
   }
 
   const prompt = `${CLASSIFIER_PROMPT}\n\nQuestion: ${question}`;
-  const openrouterResult = await tryOpenRouter(prompt, question, undefined, 6_000);
+  const openrouterResult = await tryOpenRouter(prompt, question, undefined, 6_000, managedOnly);
   if (openrouterResult) {
     setCachedClassification(question, openrouterResult);
     return openrouterResult;
   }
+  // Managed Brain must not retry this Palette Recall request through a local
+  // Gemini key after its sole managed payer is unavailable or capped.
+  if (managedOnly) return null;
 
   const apiKey = process.env.GOOGLE_AI_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
@@ -329,12 +373,13 @@ async function tryOpenRouter(
   question: string,
   model?: string,
   timeoutMs = 25_000,
+  managedOnly = false,
 ): Promise<ClassifierResult | null> {
   try {
     // 25s — bumped from 10s alongside composer's bump to handle multi-row
     // prompts under load. Classifier prompts are small but grok-4.1-fast
     // occasionally takes 8-12s when OpenRouter routes through a slow upstream.
-    const text = await callOpenRouter(prompt, { timeoutMs, model });
+    const text = await callOpenRouter(prompt, { timeoutMs, model, managedOnly });
     return parseClassifierJson(text, question);
   } catch (err) {
     console.warn('[qa][classifier] OpenRouter failed:', err instanceof Error ? err.message : err);

@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { resolveClaudeCodeWorkerSelection, selectedClaudeCodeWorkerModelSync } from '@/lib/claude-code/worker-profile';
-import { resolveCodexReasoningEffort } from '@/lib/codex/reasoning-effort';
+import { EffortPinRejectionError, isHonoredEffortPin, resolveAdapterEffort, resolveEffortPin } from '@/lib/orchestrator/effort-pin';
 import { listSessionRuleTexts } from '@/lib/db/session-rules-store';
 import { dispatch as dispatchLaneCommand } from '@/lib/lane/commands';
 import { recordLaneEvent } from '@/lib/lane/events';
@@ -10,12 +10,14 @@ import {
   getOperatorDefaultsSync,
   resolveDefaultWorkerEffortSync,
   resolveOpencodeWorkerModelSync,
+  resolveThreecodeWorkerModelSync,
 } from '@/lib/operator/defaults';
 import { resolveSubscriptionProfileRouting } from '@/lib/operator/subscription-profile';
 import { recordRoleRoutingReceiptSafely } from '@/lib/operator/role-routing-ledger';
 import type { RoleId, RoleRouteChoice } from '@/lib/operator/role-routing';
 import type { PacketSpendCap } from './metered-spend';
 import { getProjectContext } from '@/lib/projects/context';
+import { appendMobileOrchestratorTurnWorker } from '@/lib/mobile/orchestrator-turn-receipt';
 import { resolveDefaultBranch } from '@/lib/repos/registry';
 import { assertRuntimeDispatchable } from '@/lib/runtimes/shared/auth-detect';
 import { assertExecutionCarrierDispatchable, type ExecutionCarrierPreflightEvidence } from '@/lib/runtimes/shared/execution-carrier-preflight';
@@ -66,6 +68,13 @@ function operatorWorkerModelFor(runtime: OrchestratorRuntime): string | null {
       return null;
     }
   }
+  if (runtime === '3code') {
+    try {
+      return resolveThreecodeWorkerModelSync();
+    } catch {
+      return null;
+    }
+  }
   if (runtime !== 'opencode') return null;
   try {
     return resolveOpencodeWorkerModelSync();
@@ -92,9 +101,9 @@ function resolveLaunchWorkerRouting(workerRouting: WorkerRouting): WorkerRouting
     workerRouting.selectedEffort,
   );
   const concreteEffort = defaultEffort === 'adaptive' ? undefined : defaultEffort;
-  const selectedEffort = concreteEffort && workerRouting.selectedRuntime === 'codex'
-    ? resolveCodexReasoningEffort(concreteEffort, selectedModel) as typeof concreteEffort
-    : concreteEffort ?? null;
+  const selectedEffort = concreteEffort
+    ? resolveAdapterEffort(workerRouting.selectedRuntime, selectedModel, concreteEffort) as typeof concreteEffort
+    : null;
 
   return {
     ...workerRouting,
@@ -163,6 +172,27 @@ function carrierAuditReason(packet: OrchestratorPacket, routing: WorkerRouting, 
     : reason;
 }
 
+function appendTurnWorkerSafely(
+  packet: OrchestratorPacket,
+  routing: WorkerRouting,
+  launchedModel?: string | null,
+): void {
+  if (!packet.orchestratorThreadId || !packet.orchestratorTurnId) return;
+  const model = launchedModel
+    ?? routing.selectedModel
+    ?? getRuntimeCapability(routing.selectedRuntime).defaultModel;
+  if (!model) return;
+  try {
+    appendMobileOrchestratorTurnWorker({
+      tabId: packet.orchestratorThreadId,
+      messageId: packet.orchestratorTurnId,
+      worker: { packetId: packet.id, runtime: routing.selectedRuntime, model },
+    });
+  } catch (error) {
+    console.warn('[turn-receipt] failed to append launched worker', packet.id, error);
+  }
+}
+
 export async function launchPacketWithStorageAdmission(input: {
   packet: OrchestratorPacket;
   allPackets: OrchestratorPacket[];
@@ -171,6 +201,23 @@ export async function launchPacketWithStorageAdmission(input: {
 }): Promise<LaunchPacketResult> {
   const { packet, allPackets, storageAdmission } = input;
   const workerRouting = resolveLaunchWorkerRouting(input.workerRouting);
+  // A concrete persisted pin that was actually honored at creation must still be
+  // honored at the launch boundary. If a runtime change since creation
+  // (recovery, a re-routed lane) would drop or coerce it, fail clearly BEFORE any
+  // worktree/lane/provider work. Deliberate no-op pins (runtime without a
+  // reasoning surface) keep their legacy behavior.
+  if (isHonoredEffortPin(packet.workerRouting)) {
+    const pin = resolveEffortPin({
+      requestedEffort: packet.workerRouting?.requestedEffort,
+      runtime: workerRouting.selectedRuntime,
+      explicitModel: input.workerRouting.requestedModel,
+      model: workerRouting.selectedModel,
+      modelDisposition: workerRouting.modelDisposition,
+    });
+    if (!pin.ok) {
+      throw new EffortPinRejectionError(pin.code, `Refusing to launch packet ${packet.id}: ${pin.message}`);
+    }
+  }
   const spendCap = resolvePacketSpendCap(packet, workerRouting.selectedRuntime);
   const launchContext = bindWorkerLaunchParent(packet.launchContext, {
     threadId: packet.orchestratorThreadId,
@@ -241,6 +288,7 @@ export async function launchPacketWithStorageAdmission(input: {
       reason: carrierAuditReason(packet, workerRouting, workerRouting.reason),
       fallbackReason: fallback ? workerRouting.reason : null,
     });
+    appendTurnWorkerSafely(packet, workerRouting, lane.model);
     return result;
   }
   const claimKey = `packet-storage-launch:${admissionLease.receipt.reservationId}`;
@@ -251,7 +299,7 @@ export async function launchPacketWithStorageAdmission(input: {
     reconcileUnresolved: async () => {
       const lane = await findExactCommittedLaunch(packet, launchGeneration, workerRouting);
       if (!lane) return null;
-      return {
+      const result = {
         laneId: lane.id,
         sessionKey: lane.sessionKey,
         workerRouting,
@@ -259,6 +307,8 @@ export async function launchPacketWithStorageAdmission(input: {
         spendCap,
         dependencyMaterializationMode: packet.lane?.dependencyMaterializationMode ?? null,
       };
+      appendTurnWorkerSafely(packet, workerRouting, lane.model);
+      return result;
     },
   }, async () => {
     let laneResult: Awaited<ReturnType<typeof dispatchLaneCommand>>;
@@ -350,6 +400,7 @@ export async function launchPacketWithStorageAdmission(input: {
         console.warn('[session-rules] failed to record rules_applied event', error);
       }
     }
+    appendTurnWorkerSafely(packet, workerRouting, launchResult.lane?.model);
     return {
       laneId: laneResult.laneId,
       sessionKey: launchResult.lane?.sessionKey ?? null,

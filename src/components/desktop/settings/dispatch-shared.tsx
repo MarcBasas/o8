@@ -17,8 +17,10 @@ import {
   type OrchestratorRuntime,
   type RuntimeAuthHouse,
 } from '@/lib/orchestrator/runtime-capabilities';
-import type { ThinkingEffort } from '@/lib/orchestrator/thinking-effort';
+import { THINKING_EFFORT_LABELS, type ThinkingEffort } from '@/lib/orchestrator/thinking-effort';
 import type { AgentRoleRoute } from '@/lib/operator/role-routing';
+import type { JudgmentProvider } from '@/lib/operator/judgment-default';
+import type { JudgmentPath } from '@/lib/judgment/route';
 import type { RoleRoutingReceipt } from '@/lib/operator/role-routing-ledger';
 import {
   APP_FONT_STACK,
@@ -36,6 +38,7 @@ export type SettingSource = 'env' | 'file' | 'profile' | 'default';
 export type SubscriptionProfile = 'both' | 'claude-only' | 'codex-only';
 export type DispatchRuntime = OrchestratorRuntime;
 export type ClassAComposer = 'auto' | 'haiku-cli' | 'sonnet-cli' | 'fastest';
+export type BrainRoutingMode = 'auto' | 'subscription';
 export type WorkersUseBrain = 'off' | 'auto' | 'all';
 export type WorkspaceManifestPolicy = 'disabled' | 'one-approval' | 'auto';
 // Was a hand-maintained copy that had drifted three backends behind
@@ -74,6 +77,7 @@ export interface OperatorDefaults {
   requireApproval: RequireApproval;
   thinkingEffort: ThinkingEffort;
   promptCachingEnabled: boolean;
+  autoTitleInferenceEnabled: boolean;
   orchestratorModel: string;
   /**
    * opencode ACP model pins. Null = unset, meaning the agent's own default.
@@ -82,6 +86,8 @@ export interface OperatorDefaults {
    */
   opencodeOrchestratorModel: string | null;
   opencodeWorkerModel: string | null;
+  /** 3code CLI model pin. Null leaves the local 3code configuration in control. */
+  threecodeWorkerModel: string | null;
   defaultDispatchRuntime: DispatchRuntime;
   workerExecutionCarrier: 'ori' | null;
   workerRuntimes: DispatchRuntime[];
@@ -89,6 +95,7 @@ export interface OperatorDefaults {
   claudeWorkerEffort: ThinkingEffort;
   brainCodexModel: string;
   brainCodexEffort: ThinkingEffort;
+  brainRoutingMode: BrainRoutingMode;
   defaultDispatchModel: string;
   localInferenceBaseUrl: string;
   localEmbedModel: string;
@@ -101,7 +108,16 @@ export interface OperatorDefaults {
   classAComposer: ClassAComposer;
   inAppOrchestratorEnabled: boolean;
   brainUseClaudeCli: boolean;
+  brainWarmupEnabled: boolean;
   workersUseBrain: WorkersUseBrain;
+  /** Typed judgment provider (#2434). 'off' sends nothing anywhere. */
+  judgmentProvider: JudgmentProvider;
+  /** Managed judgment calls per install per day (#2486). Null = not configured. */
+  judgmentManagedDailyAllowance: number | null;
+  /** Last day of the managed judgment public beta, YYYY-MM-DD (#2486). Null = no expiry. */
+  judgmentBetaEndDate: string | null;
+  /** Shows Managed in the judgment row (#2485). Off until the hosted endpoint exists. */
+  judgmentManagedOptionVisible: boolean;
   workspaceManifestPolicy: WorkspaceManifestPolicy;
   crossHouseWorkerFallback: boolean;
   orchestratorBackend: OrchestratorBackendSetting;
@@ -137,6 +153,8 @@ export type OperatorDefaultSources = {
 export interface OperatorDefaultsResponse {
   values: OperatorDefaults;
   sources: OperatorDefaultSources;
+  /** The path a judgment call takes right now, from the route resolver (#2485). */
+  judgmentPath?: JudgmentPath;
   effectiveOverride: {
     apfsDependencyImages: boolean | null;
   };
@@ -176,51 +194,63 @@ export const ENV_LOCKED_REASON = 'Locked by an environment variable — unset it
 
 export const REQUIRE_APPROVAL_OPTIONS: Array<{ value: RequireApproval; label: string }> = [
   { value: 'always', label: 'Always' },
-  { value: 'surface', label: 'Surface' },
-  { value: 'high-risk', label: 'Risk' },
+  { value: 'surface', label: 'Task owner' },
+  { value: 'high-risk', label: 'After review' },
   { value: 'never', label: 'Never' },
 ];
 
+export const MERGE_APPROVAL_DESCRIPTIONS: Record<RequireApproval, string> = {
+  always: 'Ask before agent merges, even after automated review.',
+  surface: 'Send changes needing approval to the person or agent that started the task. Routine reviewed changes can merge automatically.',
+  'high-risk': 'Allow reviewed changes to merge automatically; other merges require approval.',
+  never: 'Skip routine merge approval. Required checks and blocking safeguards still apply.',
+};
+
 export const SUBSCRIPTION_PROFILE_OPTIONS: Array<{ value: SubscriptionProfile; label: string; detail: string }> = [
-  { value: 'both', label: 'All available', detail: 'Use any installed dispatchable runtime; Codex remains the fallback until you choose one.' },
+  { value: 'both', label: 'All available', detail: 'Allow any connected tool to run tasks. Choose the default worker below.' },
   { value: 'claude-only', label: 'Claude only', detail: 'Everything runs on your Claude subscription — Opus orchestrates, Sonnet works, escalates only when needed.' },
-  { value: 'codex-only', label: 'Codex / OpenAI only', detail: 'Everything runs on Codex / OpenAI — GPT-6 Astra orchestrates, Terra works, escalates to Sol when needed.' },
+  { value: 'codex-only', label: 'Codex / OpenAI only', detail: 'Use connected Codex / OpenAI models for orchestration and workers. Choose their defaults below.' },
 ];
 
-export const THINKING_EFFORT_OPTIONS: Array<{ value: ThinkingEffort; label: string; detail: string }> = [
-  { value: 'adaptive', label: 'Adaptive', detail: 'Let the model choose.' },
-  { value: 'low', label: 'Low', detail: 'Quick answers.' },
-  { value: 'medium', label: 'Medium', detail: 'Balanced cost and quality.' },
-  { value: 'high', label: 'High', detail: 'Deeper reasoning, more tokens.' },
-  { value: 'max', label: 'Max', detail: 'Highest effort allowed.' },
-  { value: 'xhigh', label: 'Extended', detail: 'Extended thinking budget.' },
+const SETTINGS_THINKING_EFFORTS: readonly ThinkingEffort[] = [
+  'adaptive', 'low', 'medium', 'high', 'max', 'xhigh',
 ];
+
+export const THINKING_EFFORT_OPTIONS: Array<{ value: ThinkingEffort; label: string; detail: string }> = SETTINGS_THINKING_EFFORTS.map((value) => ({
+  value,
+  label: THINKING_EFFORT_LABELS[value].long,
+  detail: THINKING_EFFORT_LABELS[value].detail,
+}));
 
 export const CODEX_WORKER_EFFORT_OPTIONS: Array<{ value: ThinkingEffort; label: string; detail: string }> = [
   { value: 'adaptive', label: 'Runtime default', detail: 'Leave Codex at its default.' },
-  { value: 'low', label: 'Low', detail: 'Quick worker turns.' },
-  { value: 'medium', label: 'Medium', detail: 'Balanced cost and quality.' },
-  { value: 'high', label: 'High', detail: 'Deeper worker reasoning.' },
-  { value: 'xhigh', label: 'Extended', detail: 'Codex top effort.' },
+  { value: 'low', label: THINKING_EFFORT_LABELS.low.long, detail: 'Quick worker turns.' },
+  { value: 'medium', label: THINKING_EFFORT_LABELS.medium.long, detail: 'Balanced cost and quality.' },
+  { value: 'high', label: THINKING_EFFORT_LABELS.high.long, detail: 'Deeper worker reasoning.' },
+  { value: 'xhigh', label: THINKING_EFFORT_LABELS.xhigh.long, detail: 'Codex top effort.' },
 ];
 
 export const CLAUDE_WORKER_EFFORT_OPTIONS: Array<{ value: ThinkingEffort; label: string; detail: string }> = [
   { value: 'adaptive', label: 'Runtime default', detail: 'Leave Claude Code at its default.' },
-  { value: 'low', label: 'Low', detail: 'Quick worker turns.' },
-  { value: 'medium', label: 'Medium', detail: 'Balanced cost and quality.' },
-  { value: 'high', label: 'High', detail: 'Deeper worker reasoning.' },
-  { value: 'max', label: 'Max', detail: 'Claude Code top effort.' },
+  { value: 'low', label: THINKING_EFFORT_LABELS.low.long, detail: 'Quick worker turns.' },
+  { value: 'medium', label: THINKING_EFFORT_LABELS.medium.long, detail: 'Balanced cost and quality.' },
+  { value: 'high', label: THINKING_EFFORT_LABELS.high.long, detail: 'Deeper worker reasoning.' },
+  { value: 'max', label: THINKING_EFFORT_LABELS.max.long, detail: 'Claude Code top effort.' },
 ];
 
 export const BRAIN_CODEX_MODEL_OPTIONS: Array<{ value: string; label: string; detail: string }> = [
   { value: MODEL_IDS.raw.openAiGpt6Astra, label: 'Astra', detail: 'Most capable model for complex, demanding work.' },
+  { value: MODEL_IDS.raw.openAiGpt6Sol, label: 'GPT-6 Sol', detail: 'Balanced model for everyday work.' },
+  { value: MODEL_IDS.raw.openAiGpt6Luna, label: 'GPT-6 Luna', detail: 'Fast model for easier tasks.' },
   { value: MODEL_IDS.raw.openAiGpt56Terra, label: 'Terra', detail: 'Balanced Brain answers and repo reasoning.' },
-  { value: MODEL_IDS.raw.openAiGpt56Sol, label: 'Sol', detail: 'Frontier reasoning for the hardest questions.' },
+  { value: MODEL_IDS.raw.openAiGpt56Sol, label: 'GPT-5.6 Sol', detail: 'Frontier reasoning for the hardest questions.' },
   { value: MODEL_IDS.raw.openAiGpt56Luna, label: 'Luna', detail: 'Fast, inexpensive factual lookup.' },
   { value: MODEL_IDS.raw.openAiGpt55, label: 'GPT-5.5', detail: 'Previous-generation compatibility route.' },
 ];
 
 export const ORCHESTRATOR_MODEL_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: MODEL_IDS.raw.anthropicClaudeOpus55, label: 'Opus 5.5' },
+  { value: MODEL_IDS.raw.anthropicClaudeFable51, label: 'Fable 5.1' },
   { value: MODEL_IDS.raw.anthropicClaudeFable5, label: 'Fable 5' },
   { value: MODEL_IDS.raw.anthropicClaudeOpus5, label: 'Opus 5' },
   { value: MODEL_IDS.raw.anthropicClaudeOpus48, label: 'Opus 4.8' },
@@ -237,7 +267,7 @@ export const DISPATCH_RUNTIME_OPTIONS: Array<{ value: DispatchRuntime; label: st
     return { value, label: capability.label, detail: capability.description };
   });
 
-export const PICKER_MENU_POPOVER_BG = 'var(--t-panel-solid)';
+export const PICKER_MENU_POPOVER_BG = 'var(--t-popover-surface)';
 
 export function resolvePickerGroupOpen(current: string | null, pickerId: string, nextOpen: boolean): string | null {
   if (nextOpen) return pickerId;
@@ -393,6 +423,7 @@ export function PickerMenu<T extends string>({ value, options, onChange, disable
           id={listboxId}
           ref={popoverRef}
           data-o8-settings-portal="true"
+          data-o8-settings-escape-scope
           role="listbox"
           aria-label="Settings picker options"
           aria-activedescendant={highlightedIndex >= 0 ? `${listboxId}-option-${highlightedIndex}` : undefined}

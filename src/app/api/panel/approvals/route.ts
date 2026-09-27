@@ -27,6 +27,7 @@ import { launchRuntimeSurface } from '@/lib/runtime/actions';
 import type { RuntimeId } from '@/lib/runtimes';
 import { getRuntime } from '@/lib/runtimes/registry';
 import { invalidateInboxCache } from '@/lib/mobile/inbox';
+import { approvedFromCardFact } from '@/lib/mobile/inbox-referee-chips';
 import { publishRealtimeMutation } from '@/lib/realtime/publisher';
 import { findLaneBySession, getLane } from '@/lib/lane/registry';
 
@@ -98,7 +99,7 @@ export async function GET(request: NextRequest) {
  *
  * Create: { action: 'create', approval: CreateApprovalInput }
  * Create test: { action: 'test', sessionKey?: string }
- * Resolve: { action: 'approve' | 'reject', id: string, editedCommand?: string }
+ * Resolve: { action: 'approve' | 'reject', id: string, editedCommand?: string, via?: 'chip' }
  */
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({})) as Record<string, unknown>;
@@ -110,6 +111,9 @@ export async function POST(request: NextRequest) {
       : null) as Partial<CreateApprovalInput> | null;
     if (!approvalBody) {
       return NextResponse.json({ ok: false, error: 'Approval payload is required' }, { status: 400 });
+    }
+    if (approvalBody.toolName === 'orchestrator_review') {
+      return NextResponse.json({ ok: false, error: 'Orchestrator reviews must use the governed review route.' }, { status: 403 });
     }
 
     try {
@@ -213,6 +217,11 @@ export async function POST(request: NextRequest) {
   }
 
   const editedCommand = typeof body.editedCommand === 'string' ? body.editedCommand : undefined;
+  // #2219 — the operator's rejection reason is the correction the next worker on
+  // the packet and the Brain read back; it must land on the resolution record.
+  const rejectReason = action === 'reject' && typeof body.reason === 'string'
+    ? body.reason.trim().slice(0, 4000) || undefined
+    : undefined;
   const requestedStrategy = typeof body.strategy === 'string'
     && (body.strategy === 'ours' || body.strategy === 'theirs' || body.strategy === 'manual')
     ? body.strategy
@@ -272,8 +281,9 @@ export async function POST(request: NextRequest) {
       id,
       action,
       'desktop',
-      undefined,
+      rejectReason,
       current.updatedAt,
+      action === 'approve' ? approvedFromCardFact(body.via, current) : undefined,
     );
     const approval = resolutionClaim.approval;
     if (!approval) {

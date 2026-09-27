@@ -170,7 +170,8 @@ function openHandsNdjson(): DeclarativeRunLogPatterns {
   };
 }
 
-function parserForProfile(profile: DeclarativeParserProfile, label: string): DeclarativeRunLogPatterns {
+function parserForProfile(profile: DeclarativeParserProfile, label: string): DeclarativeOwnedRuntimeConfig['parseRunLog'] {
+  if (profile === 'antigravity-stream-json') return { profile: 'antigravity-stream-json' };
   if (profile === 'copilot-jsonl') return copilotJsonl();
   if (profile === 'openhands-ndjson') return openHandsNdjson();
   if (profile === 'qwen-stream-json') return qwenStreamJson();
@@ -193,6 +194,7 @@ function materializeDeclarativeWorkerConfig(runtimeId: OrchestratorRuntime): Dec
     rootEnvVar: `O8_OWNED_${token}_ROOT`,
     rootDefault: path.join(getDataDir(), `owned-${runtimeId}`),
     binaryName: capability.binaryName,
+    defaultModel: capability.defaultModel,
     binaryEnvOverride: `O8_${token}_BIN`,
     humanLabel: `Owned ${capability.shortLabel}`,
     squadShortName: capability.shortLabel,
@@ -202,7 +204,7 @@ function materializeDeclarativeWorkerConfig(runtimeId: OrchestratorRuntime): Dec
     sessionFileName: manifest.sessionFileName,
     parseRunLog: parserForProfile(manifest.parserProfile, capability.label),
     ...(manifest.extraSpawnEnv
-      ? { extraSpawnEnv: () => ({ ...manifest.extraSpawnEnv }) }
+      ? { staticSpawnEnv: { ...manifest.extraSpawnEnv } }
       : {}),
     costFormat: manifest.costFormat,
   };

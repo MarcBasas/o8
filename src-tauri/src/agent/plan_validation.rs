@@ -4,13 +4,29 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    OnceLock,
+};
 
 use super::{plan::PlanSurface, safety, tools};
 
 const MIN_PLAN_STEPS: usize = 2;
 const MAX_PLAN_STEPS: usize = 5;
 static PLAN_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CONFIRM_TOOL_PHRASES: OnceLock<HashMap<String, String>> = OnceLock::new();
+
+fn confirm_tool_phrase(tool: &str) -> Option<String> {
+    CONFIRM_TOOL_PHRASES
+        .get_or_init(|| {
+            serde_json::from_str(include_str!(
+                "../../../src/lib/symon/confirm-tool-phrases.json"
+            ))
+            .expect("the bundled confirm tool phrase map must be valid JSON")
+        })
+        .get(tool)
+        .cloned()
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,15 +59,24 @@ pub(super) struct ValidatedPlan {
 pub(super) fn validate_plan(args: Value, surface: PlanSurface) -> Result<ValidatedPlan, String> {
     let input: PlanInput =
         serde_json::from_value(args).map_err(|error| format!("Invalid plan shape: {error}"))?;
-    if !(MIN_PLAN_STEPS..=MAX_PLAN_STEPS).contains(&input.steps.len()) {
+    // A watch's saved plan may hold a single action: the operator already
+    // approved the standing intent, and the run still shows its own card.
+    let min_steps = if surface == PlanSurface::WatchRun {
+        1
+    } else {
+        MIN_PLAN_STEPS
+    };
+    if !(min_steps..=MAX_PLAN_STEPS).contains(&input.steps.len()) {
         return Err(format!(
-            "A plan must contain {MIN_PLAN_STEPS} to {MAX_PLAN_STEPS} steps"
+            "A plan must contain {min_steps} to {MAX_PLAN_STEPS} steps"
         ));
     }
 
     let all_schemas = schema_map(tools::all_tools());
     let available_schemas = match surface {
-        PlanSurface::Cascaded => schema_map(tools::enabled_tools()),
+        // A watch body was authored in an earlier turn, so it is held to the
+        // narrower catalog the model is ever shown, not the full one.
+        PlanSurface::Cascaded | PlanSurface::WatchRun => schema_map(tools::enabled_tools()),
         PlanSurface::Realtime => all_schemas.clone(),
     };
     let mut steps = Vec::with_capacity(input.steps.len());
@@ -227,6 +252,9 @@ fn safe_arg(args: &Value, key: &str) -> Option<String> {
 }
 
 fn redacted_step_summary(tool: &str, args: &Value, schema: &Value) -> String {
+    if let Some(phrase) = confirm_tool_phrase(tool) {
+        return phrase;
+    }
     let quoted = |key: &str| safe_arg(args, key).map(|value| format!(" “{value}”"));
     match tool {
         "open_app" => format!(
@@ -391,6 +419,40 @@ mod tests {
     }
 
     #[test]
+    fn a_watch_body_may_hold_one_step_and_still_refuses_control_tools() {
+        // The operator already approved the standing intent, so a saved body of
+        // one action is legitimate — it still passes the confirmation card when
+        // it runs. The live-plan surfaces keep their two-step floor.
+        assert!(validate_plan(
+            plan_args(vec![json!({ "tool": "mac_weather", "args": {} })]),
+            PlanSurface::WatchRun
+        )
+        .is_ok());
+        assert!(validate_plan(
+            plan_args(vec![json!({ "tool": "mac_weather", "args": {} })]),
+            PlanSurface::Realtime
+        )
+        .is_err());
+        // A watch body can neither re-enter the watch machinery nor smuggle a
+        // tool the model is never shown.
+        assert!(validate_plan(
+            plan_args(vec![json!({ "tool": "symon_watch_run", "args": { "id": "watch_1" } })]),
+            PlanSurface::WatchRun
+        )
+        .unwrap_err()
+        .contains("control tool"));
+        assert!(validate_plan(
+            plan_args(vec![
+                json!({ "tool": "mac_mail_send_draft", "args": { "subject": "Hello" } }),
+                json!({ "tool": "mac_weather", "args": {} }),
+            ]),
+            PlanSurface::WatchRun
+        )
+        .unwrap_err()
+        .contains("not available"));
+    }
+
+    #[test]
     fn unavailable_destructive_and_control_tools_are_rejected() {
         let destructive = validate_plan(
             plan_args(vec![
@@ -452,5 +514,18 @@ mod tests {
         assert!(readback.contains("Draft email “Hello”"));
         assert!(readback.contains("Comment on GitHub issue #52 in “o8”"));
         assert!(readback.contains("Send a message to “+12155550100”"));
+    }
+
+    #[test]
+    fn shared_confirm_tool_phrases_drive_static_plan_steps() {
+        let schema = json!({ "name": "o8_approve_item" });
+        assert_eq!(
+            redacted_step_summary("o8_approve_item", &json!({}), &schema),
+            "approve the item"
+        );
+        assert_eq!(
+            redacted_step_summary("o8_dispatch", &json!({}), &json!({ "name": "o8_dispatch" })),
+            "dispatch a worker"
+        );
     }
 }

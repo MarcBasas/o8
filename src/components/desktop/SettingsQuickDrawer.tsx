@@ -16,7 +16,6 @@ import {
   LogOut,
   MessageSquare,
   Settings2,
-  Sparkles,
 } from './lucide-shims';
 import { useO8Auth, type O8AuthState } from '@/components/auth/O8AuthProvider';
 import {
@@ -35,19 +34,13 @@ import { CapacityRows, capacitySummary } from './settings-quick-drawer/capacity-
 const FONT = 'var(--font-sans-system)';
 const MONO = '"SF Mono", ui-monospace, "Cascadia Code", Menlo, monospace';
 const POLL_MS = 30_000;
-const RELEASE_URL = 'https://github.com/hurttlocker/o8/releases/latest';
 const DOCS_URL = 'https://o8.run';
 // The canonical community invite — MUST match the README footer + o8.run
 // (the drawer previously carried a different, stale invite).
 const DISCORD_URL = 'https://o8.run/discord';
-// Paint the panel token directly — NOT through color-mix. In glass mode
-// --t-panel-solid is a linear-gradient (an <image>), and color-mix() only
-// accepts <color> args, so the old color-mix() was invalid CSS → the whole
-// background was dropped → the drawer rendered transparent over the dark
-// vibrancy with near-black text (illegible). A gradient is a valid
-// `background`, so this restores the frosted cream/graphite menu card in
-// every palette × surface combo.
-const PANEL_BG = 'var(--t-panel-solid, var(--t-panel, rgba(255,255,255,0.92)))';
+// Paint the floating surface directly. It can be a gradient in glass mode,
+// which color-mix() cannot accept as a color argument.
+const PANEL_BG = 'var(--t-popover-surface)';
 const ROW_HOVER_BG = 'var(--t-panel-hover, rgba(15, 23, 42, 0.04))';
 const SUBTLE_BG = 'var(--t-bg-card, rgba(15, 23, 42, 0.04))';
 const BORDER = 'var(--t-panel-border, rgba(15, 23, 42, 0.1))';
@@ -60,9 +53,6 @@ interface SettingsQuickDrawerProps {
   anchorRect: DOMRect | null;
   onClose: () => void;
   onOpenSettings: () => void;
-  /** When provided, the What's-new row opens the in-app Brain-summarized
-   *  card instead of the external releases page. */
-  onWhatsNew?: () => void;
 }
 
 type UsageState =
@@ -295,7 +285,6 @@ export function SettingsQuickDrawer({
   anchorRect,
   onClose,
   onOpenSettings,
-  onWhatsNew,
 }: SettingsQuickDrawerProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -522,12 +511,6 @@ export function SettingsQuickDrawer({
                       ? `v${version}`
                       : ''}
             </span>
-          </RowButton>
-
-          <RowButton onClick={onWhatsNew ?? (() => openExternalUrl(RELEASE_URL))}>
-            <IconFrame><Sparkles size={13} /></IconFrame>
-            <span style={{ flex: 1, color: TEXT, fontSize: 13.5, fontWeight: 300, letterSpacing: '-0.1px' }}>What&apos;s new</span>
-            {onWhatsNew ? null : <ExternalLink size={11} color={FAINT} />}
           </RowButton>
 
           <RowButton

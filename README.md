@@ -4,7 +4,7 @@
 
 # o8
 
-[![CI](https://github.com/hurttlocker/o8/actions/workflows/ci.yml/badge.svg)](https://github.com/hurttlocker/o8/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/hurttlocker/o8)](https://github.com/hurttlocker/o8/releases) [![Benchmark](https://img.shields.io/badge/benchmark-published%20with%20losses-8A5CF6)](./docs/user/honest-benchmark-2026-08.md)
+[![CI](https://github.com/hurttlocker/o8/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/hurttlocker/o8/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/hurttlocker/o8)](https://github.com/hurttlocker/o8/releases) [![Benchmark](https://img.shields.io/badge/benchmark-published%20with%20losses-8A5CF6)](./docs/user/honest-benchmark-2026-08.md)
 
 **Run a fleet of coding agents. Approve what ships.**
 
@@ -14,7 +14,7 @@ o8 is an open-source control room for one person running several AI coding agent
 
 macOS today. Linux compiles in CI, but nobody has yet installed it, launched it, and merged a packet on a mainstream distro. Windows is help wanted. Both are on the [roadmap](./ROADMAP.md).
 
-![Four agents on the canvas: two finished and waiting for review, one still working, and a live browser card previewing the page they built](./assets/fleet.gif)
+![One ask, three workers: the orchestrator splits the task into packets, each worker builds its page in its own worktree, and the plan and every tile report as they go](./assets/three-workers.gif)
 
 The aim is that you can hand out several pieces of work, look away, and come back to a readable account of what finished, what is blocked, and what needs your decision. The roadmap says how far along that is.
 
@@ -25,6 +25,8 @@ The aim is that you can hand out several pieces of work, look away, and come bac
 3. The work lands for review: the diff, the receipts, and the cost when the runtime reports it.
 4. You approve, reject, steer, or rerun. You can delegate the review to an orchestrator. By default its approved merges go through, and the approval setting can make every merge wait for you.
 5. The merge writes the audit trail and records the outcome. Project rules and recorded outcomes are what the Brain and the next packet retrieve. Learning from your rejections and steers is still an open arc.
+
+![A solo session reviews the working tree, gives its verdict, commits when asked, and shows the log](./assets/review-and-commit.gif)
 
 A merge that fails climbs a five-step ladder that ends at a human card. The lifecycle gaps that remain are on the roadmap. The same verbs work from the app, the `o8` CLI, any MCP client, your phone, and your voice. The long version is [How o8 works](./docs/user/how-o8-works.md).
 
@@ -37,6 +39,8 @@ A merge that fails climbs a five-step ladder that ends at a human card. The life
 | | 3code · Prime Agent · DeepSeek Harness |
 
 Eighteen runtimes, one adapter contract, and a test that keeps this table equal to the registry. Registered is not certified: readiness differs by CLI version and platform, and a first-run picker shows what is installed and working on your machine. Adding a runtime is a small documented patch: [runtime adapter contract](./docs/internals/runtime-adapter-contract.md). Claude Code can also keep its tools and session behavior while another model supplies inference: [model carriers](./docs/user/claude-code-model-carriers.md).
+
+![Before sending: the Lead chip sets the model and its thinking effort, and the mode chip sets Solo, Multitask, Compare plans, or Fusion](./assets/choose-before-you-send.gif)
 
 ## Get it
 
@@ -66,9 +70,13 @@ Use the returned mission and packet IDs with `mission dispatch`, `mission wait`,
 
 `npm run tauri:dev` builds the native shell (a much longer first build). After a hard kill, `node scripts/dev.mjs cleanup` recovers the ports. Bring at least one agent CLI you already use (`claude`, `codex`, `grok`, `opencode`, `gemini`); no API keys are needed to start, and [`.env.example`](./.env.example) documents every optional one.
 
-- **Phone:** pair by QR. The iOS app is in beta via [o8.run](https://o8.run); the mobile web surface ships in this repo and works from any phone on your network.
+- **Phone:** pair by QR. The mobile web surface ships in this repo and works from any phone on your network; the iPhone app is below.
 - **Headless:** `o8 serve` runs the control plane on a machine with no screen, same gates. Pair a phone or attach the desktop later.
 - **MCP:** Settings → MCP → Install exposes the operator tools (`create_mission`, `submit_review`, `approve_and_merge`, `cortex_ask`, and the webview controls) to Claude Desktop, Claude Code, or any MCP client.
+
+### iPhone app
+
+The iPhone app is a remote control for the desktop: approve work, steer an agent, watch the fleet, and talk to Symon. It is in open beta on [TestFlight](https://testflight.apple.com/join/kp4RQG5Q). Install it, then pair it from the desktop: the phone button in the status bar opens a QR code, and the app scans it.
 
 ## Your data
 
@@ -90,7 +98,7 @@ o8 is building toward an operating system for delegated work: models and agents 
 
 ## Contributing
 
-Start with [CONTRIBUTING.md](./CONTRIBUTING.md) and the issues labeled [`claimable`](https://github.com/hurttlocker/o8/issues?q=is%3Aissue+is%3Aopen+label%3Aclaimable) or [`help wanted`](https://github.com/hurttlocker/o8/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22). UI changes read [`docs/design`](./docs/design/DESIGN.md) first. The full documentation index is [`docs/README.md`](./docs/README.md); the `o8` CLI reference is [`AGENTS.md`](./AGENTS.md).
+Start with [CONTRIBUTING.md](./CONTRIBUTING.md) and the issues labeled [`claimable`](https://github.com/hurttlocker/o8/issues?q=is%3Aissue+is%3Aopen+label%3Aclaimable) or [`help wanted`](https://github.com/hurttlocker/o8/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22). UI changes read [`docs/design`](./docs/design/DESIGN.md) first. The full documentation index is [`docs/README.md`](./docs/README.md); the detailed agent and `o8` CLI reference is [`AGENT_REFERENCE.md`](./AGENT_REFERENCE.md).
 
 Community: [Discord](https://discord.gg/TFK2x9A5WS) · Built in public by [@marquisehurtt](https://x.com/marquisehurtt)
 

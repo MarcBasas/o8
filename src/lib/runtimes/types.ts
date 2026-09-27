@@ -192,6 +192,10 @@ export interface RuntimeTranscriptEntry {
   compaction?: CompactionEvent;
   /** Structured tool calls — UI renders as italic collapsible cards (Codex parity) */
   toolCalls?: RuntimeTranscriptToolCall[];
+  /** Provider reasoning content, rendered separately from the assistant answer. */
+  thinking?: string;
+  /** The provider started reasoning but did not expose its contents. */
+  thinkingActive?: boolean;
 }
 
 // ── Review ──
@@ -267,6 +271,8 @@ export interface RuntimeSessionTransformProviderResult {
 export interface LaunchOptions {
   cwd: string;
   prompt: string;
+  /** Operator-facing task name for an owned worker surface. */
+  taskName?: string;
   /** Stable caller correlation persisted before an owned process is spawned. */
   clientMutationId?: string;
   model?: string;

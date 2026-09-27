@@ -41,6 +41,7 @@ import { handleCodexJsonLine, type CodexLineHandlerState } from './codex-orchest
 import { codexOrchestrationModeFlags } from './orchestrator-backends/orchestration-mode';
 import type { OrchestratorExecutionMode } from '@/lib/orchestrator/types';
 import { prepareSingleOrchestratorLaunch } from './single-orchestrator-policy';
+import { codexComposerImagePaths, type ComposerImageAttachment } from '@/lib/mobile/orchestrator-image-media';
 import { cliInvocation } from '@/lib/runtimes/shared/cli-spawn';
 import {
   ensureRegisteredSession,
@@ -93,6 +94,7 @@ export interface SendToCodexOrchestratorOptions {
   toolProfile?: ToolProfile;
   thinkingEffort?: ThinkingEffort;
   model?: string;
+  attachments?: ComposerImageAttachment[];
   signal?: AbortSignal;
   crashSurvival?: OrchestratorCrashSurvivalMeta;
 }
@@ -213,12 +215,15 @@ function sandboxFlagsForMode(mode: CodexOrchestratorPermissionMode): string[] {
   return ['--dangerously-bypass-approvals-and-sandbox'];
 }
 
-function reasoningEffortFromThinkingEffort(effort: ThinkingEffort | undefined, model?: string): string {
+function reasoningEffortFromThinkingEffort(
+  effort: ThinkingEffort | undefined,
+  model?: string,
+): Exclude<ThinkingEffort, 'adaptive'> {
   if (!effort || effort === 'adaptive') return 'xhigh';
   // Codex effort tiers: low, medium, high, xhigh, max, ultra. The `max`/`ultra`
   // tiers are honored only on flagship models; every other model clamps to
   // xhigh. See resolveCodexReasoningEffort.
-  return resolveCodexReasoningEffort(effort, model);
+  return resolveCodexReasoningEffort(effort, model) as Exclude<ThinkingEffort, 'adaptive'>;
 }
 
 /**
@@ -300,7 +305,7 @@ export async function sendToCodexOrchestrator(
   await sendToCodexOrchestratorAttempt(session, message, (event) => {
     if (event.type === 'error' || event.type === 'done') deferredTerminalEvents.push(event);
     else {
-      streamed = true;
+      if (event.type !== 'turn_receipt') streamed = true;
       onEvent(event);
     }
   }, options);
@@ -384,7 +389,7 @@ async function sendToCodexOrchestratorAttempt(
   try {
     // A 'propose' turn gets the operator-stripped (read-only proposer) config —
     // Collide's dispatch lockout.
-    const prepared = prepareCodexHome(session.repoPath, options.toolProfile ?? 'full', model);
+    const prepared = prepareCodexHome(session.repoPath, options.toolProfile ?? 'full', model, session.historyThreadId);
     codexHome = prepared.codexHome;
     model = prepared.model;
     if (prepared.note) {
@@ -432,6 +437,18 @@ async function sendToCodexOrchestratorAttempt(
   }
   if (settleBeforeSpawnIfAborted()) return;
 
+  let imagePaths: string[];
+  try {
+    imagePaths = codexComposerImagePaths(options.attachments ?? [], codexHome);
+  } catch (error) {
+    session.status = 'dead';
+    onEvent({ type: 'error', error: `Unable to prepare image attachments: ${error instanceof Error ? error.message : String(error)}` });
+    onEvent({ type: 'done', sessionId: session.threadId, cost: null });
+    return;
+  }
+
+  onEvent({ type: 'turn_receipt', leadModel: model, effort: reasoningEffort });
+
   // First-turn launch vs resume.
   const isResume = Boolean(session.threadId);
   const args: string[] = isResume
@@ -447,6 +464,7 @@ async function sendToCodexOrchestratorAttempt(
         // gpt-image-2 in Codex CLI 0.130.0 → 400s every turn at spawn).
         '-c',
         'tools.image_generation=false',
+        ...imagePaths.flatMap((path) => ['--image', path]),
         '--',
         message,
       ]
@@ -460,6 +478,7 @@ async function sendToCodexOrchestratorAttempt(
         'tools.image_generation=false',
         '-C',
         session.repoPath,
+        ...imagePaths.flatMap((path) => ['--image', path]),
         '--',
         message,
       ];
@@ -662,9 +681,13 @@ async function sendToCodexOrchestratorAttempt(
       const crashStderr = crashRecord && code !== 0
         ? readFileSync(crashRecord.stderrPath, 'utf8')
         : '';
+      const diagnostic = (stderr || crashStderr).trim();
+      // Startup warnings can fill the display limit before the resume failure.
+      // Keep that diagnostic visible to the one-time missing-thread recovery.
+      const resumeDiagnostic = diagnostic.split(/\r?\n/).find(isMissingCodexRolloutResumeError);
       const error = code === 0
         ? undefined
-        : (stderr || crashStderr).trim().slice(0, 500) || `codex exited with code ${code}`;
+        : (resumeDiagnostic || diagnostic).slice(0, 500) || `codex exited with code ${code}`;
       settle(code === 0 ? 'ready' : 'dead', error, true);
     });
 

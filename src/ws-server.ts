@@ -56,7 +56,8 @@ import { getDataDir, migrateDataDirOnce } from '@/lib/data-dir-migration';
 import { TERMINAL_SCROLLBACK_LINES } from '@/lib/terminal/client-retention';
 import { TerminalHiddenBuffer } from '@/lib/ws-server/terminal-hidden-buffer';
 import { resizeTerminalIfChanged } from '@/lib/ws-server/terminal-resize';
-import { waitForTerminalResyncBarrier } from '@/lib/ws-server/terminal-resync-barrier';
+import { waitForTerminalResyncBarrier, type TerminalResyncCapture } from '@/lib/ws-server/terminal-resync-barrier';
+import { formatTmuxResyncSnapshot, parseTmuxSnapshotCursor } from '@/lib/ws-server/terminal-resync-snapshot';
 import { TerminalWorkloadStats } from '@/lib/ws-server/terminal-workload-stats';
 
 migrateDataDirOnce();
@@ -135,18 +136,25 @@ import {
 } from './lib/mobile/orchestrator-thread-history';
 import { OrchestratorThreadProjectError } from './lib/mobile/orchestrator-thread-project';
 import { persistOrchestratorThreadUserMessageFromWire } from './lib/ws-server/orchestrator-thread-send';
+import {
+  composerBackendSupportsImages,
+  validateComposerImageAttachments,
+  type ComposerImageAttachment,
+} from './lib/mobile/composer-image-validation';
 import { createAssistantTextBuffer } from './lib/ws-server/orchestrator-assistant-text';
+import { prepareOrchestratorProjectTurn } from './lib/ws-server/orchestrator-project-context';
 import { getLiveReviewChangeSet } from './lib/review/live-changes';
 import { mayHaveGitRepositoryContext } from './lib/git/repository-context';
 import { deriveIdempotencyKey, withIdempotency } from './lib/orchestrator/idempotency-store';
 import { isManualThinkingEffort, type ManualThinkingEffort } from './lib/orchestrator/thinking-effort';
 import { withSessionRules } from './lib/orchestrator/session-rules-prompt';
+import { withOrchestratorTurnReceiptContext } from './lib/orchestrator/turn-receipt-context';
 import {
   backendSwitchRequiresExplicitHandoff,
   prepareBackendSwitchHandoff,
   recordBackendSwitchHandoffAudit,
 } from './lib/orchestrator/backend-switch-carry';
-import { resolveOrchestratorTranscriptMessage } from './lib/orchestrator/composer-wire';
+import { isComposerWireMode, resolveOrchestratorTranscriptMessage } from './lib/orchestrator/composer-wire';
 import {
   resolveOrchestratorMessageRepoPath,
   resolveOrchestratorRepoPath,
@@ -180,6 +188,7 @@ import {
 import {
   orchestratorModeAllowsBackendFallback,
   resolveOrchestratorExecutionBackendId,
+  resolveTurnReceiptMode,
   sendOrchestratorBackendTurn,
 } from './lib/lane/orchestrator-send-entry';
 import {
@@ -215,9 +224,20 @@ import {
   getOperatorDefaultsSync,
   resolveHealBotEnabledSync,
   resolveInAppOrchestratorEnabledSync,
-  resolveReviewContinuationSync,
-  resolveSupervisorAutoEscalateSync,
 } from './lib/operator/defaults';
+import { routeReviewContinuation, type ReviewContinuationLane } from './lib/orchestrator/review-continuation';
+import {
+  findLeadThreadBinding,
+  getLeadStatus,
+  queueLeadReviewContinuation,
+  queueLeadSupervisorReturn,
+  queueLeadWorkerReturn,
+  sendLeadThreadMessage,
+  stopLead,
+  waitForLead,
+} from './lib/orchestrator/lead-lifecycle';
+import { resolveLeadRepoPath, validateLeadAttachments } from './lib/orchestrator/lead-contract';
+import { queueOrchestratorEscalation as queueSupervisorEscalationTurn } from './lib/orchestrator/supervisor-escalation';
 import { startWorktreeReaper, stopWorktreeReaper } from './lib/lane/worktree-reaper';
 import { startLaneZombieReaper, stopLaneZombieReaper } from './lib/lane/reaper';
 import { collectPersistedTmuxSessions } from './lib/terminal/state-store';
@@ -237,6 +257,7 @@ import {
 import { isLoopbackAddress } from './lib/auth/loopback-request';
 import { bootCompactorScheduler } from './lib/cortex/compactor-scheduler';
 import { bootAutomationsScheduler } from './lib/automations/scheduler';
+import { drainParkedSymonWatches } from './lib/automations/symon-watch';
 import { startBroadcastDirectorLoop } from './lib/broadcast/director';
 import { startBroadcastSpeakerLoop } from './lib/broadcast/speaker';
 import type {
@@ -913,6 +934,8 @@ async function getSessionTranscript(
 // ── Terminal attachment state ──
 
 interface TerminalClientView {
+  /** A viewer may receive output but never write or resize the backing PTY. */
+  readOnly: boolean;
   visible: boolean;
   requestedVisible: boolean;
   hiddenBuffer: TerminalHiddenBuffer;
@@ -933,6 +956,8 @@ interface TerminalAttachment {
   clientIds: Set<string>;
   clientViews: Map<string, TerminalClientView>;
   snapshotSource: 'tmux' | 'scrollback';
+  /** The first attach came from a viewer; its tmux client ignores window size. */
+  observerOwned?: boolean;
   cols: number;
   rows: number;
   batchBuffer: string;
@@ -964,6 +989,7 @@ interface InternalTerminalSignalPayload {
 }
 
 const terminalAttachments = new Map<string, TerminalAttachment>();
+const watchedAttemptIds = new WeakMap<object, string>();
 const terminalWorkloadStats = process.env.O8_TERMINAL_BENCH === '1'
   ? new TerminalWorkloadStats()
   : null;
@@ -1234,6 +1260,8 @@ function handleReboundOrchestratorEvent(record: OrchestratorTurnRecord, event: O
         data: { repoPath, threadId, turnId: assistantMessageId ?? null, explanation: event.explanation, steps: event.steps, backend },
       });
       break;
+    case 'turn_receipt':
+      break;
     case 'done':
       if (threadId && event.sessionId) {
         writeOrchestratorBackendSessionId(threadId, backend, event.sessionId);
@@ -1326,53 +1354,17 @@ function enqueueOrchestratorAutoMessage(
 }
 
 function queueOrchestratorEscalation(repoPath: string, message: string): void {
-  // Supervisor escalations spawn fresh orchestrator turns into the user's
-  // chat — that's how codex agent narrative + bash runs end up bleeding into
-  // the orchestrator transcript. Default OFF: supervisor failures surface via
-  // lane status + activity feed instead, leaving the chat clean.
-  // Set O8_SUPERVISOR_AUTO_ESCALATE=1 (or flip Settings → Dispatch &
-  // Supervision → Auto-escalate) to restore the old auto-investigation.
-  if (!resolveSupervisorAutoEscalateSync()) {
-    console.log(`[supervisor] Escalation suppressed (auto-escalate disabled): ${repoPath} — ${message.slice(0, 80)}`);
-    return;
-  }
-  enqueueOrchestratorAutoMessage(repoPath, message, 'escalation');
+  if (queueLeadSupervisorReturn(repoPath, message)) return;
+  queueSupervisorEscalationTurn(repoPath, message, enqueueOrchestratorAutoMessage);
 }
 
-// #1481 — review-ready self-continuation. When a MISSION lane lands at
-// review, the fleet must not park until the operator re-prompts: queue one
-// bounded orchestrator turn ("review + merge per the standing instruction").
-// Gated on its own operator setting (reviewContinuation, default ON —
-// distinct from the noisy failure-investigation escalations above), scoped to
-// packet-bound lanes, and deduped per lane so a flapping transition can't
-// spam turns. The operator prompt arms the loop; it is not its clock.
-const REVIEW_CONTINUATION_DEDUPE_MS = 10 * 60 * 1000;
-const reviewContinuationQueuedAt = new Map<string, number>();
-
-function queueReviewContinuation(lane: { id: string; label: string; repoPath: string; packetId?: string | null; branch?: string | null }): void {
-  if (!lane.packetId) return; // ad-hoc lanes have no mission contract to continue
-  if (!resolveReviewContinuationSync()) return;
-  const last = reviewContinuationQueuedAt.get(lane.id);
-  const now = Date.now();
-  if (last && now - last < REVIEW_CONTINUATION_DEDUPE_MS) return;
-  reviewContinuationQueuedAt.set(lane.id, now);
-  if (reviewContinuationQueuedAt.size > 200) {
-    for (const [key, ts] of reviewContinuationQueuedAt) {
-      if (now - ts > REVIEW_CONTINUATION_DEDUPE_MS) reviewContinuationQueuedAt.delete(key);
-    }
-  }
-  enqueueOrchestratorAutoMessage(
-    lane.repoPath,
-    [
-      `[FLEET] Lane "${lane.label}" (${lane.id}, packet ${lane.packetId}) reached review-ready.`,
-      'Per the mission\'s standing instruction, continue the loop for THIS packet now:',
-      `1. o8_packet_diff / o8_merge_preview for packet ${lane.packetId}`,
-      '2. If the diff is clean, submit_review + approve_and_merge (rebase-before-merge discipline applies).',
-      '3. If it is not clean, record findings via submit_review(approved:false) or steer the worker — do not merge.',
-      'This is a bounded self-continuation turn (one per lane review transition; Settings → Dispatch & Supervision → Review continuation).',
-    ].join('\n'),
-    'review continuation',
-  );
+function queueReviewContinuation(lane: ReviewContinuationLane): void {
+  routeReviewContinuation(lane, enqueueOrchestratorAutoMessage, (reviewLane) => queueLeadReviewContinuation({
+    repoPath: reviewLane.repoPath,
+    packetId: reviewLane.packetId,
+    laneId: reviewLane.id,
+    label: reviewLane.label,
+  }));
 }
 
 async function drainOrchestratorAutoQueue(): Promise<void> {
@@ -1411,6 +1403,8 @@ async function drainOrchestratorAutoQueue(): Promise<void> {
       const sessionName = session!.sessionName;
       let wsMsg: string | null = null;
       switch (event.type) {
+        case 'turn_receipt':
+          break;
         case 'text':
           wsMsg = JSON.stringify({ channel: 'orchestrator', event: 'output', data: { text: event.text, repoPath: next.repoPath, thinking: false, backend: backend.id } });
           break;
@@ -1561,22 +1555,40 @@ function listDashTmuxSessionsWithAge(): DashSessionInfo[] {
  * Empty on any failure. Caller trims the trailing visible rows because the
  * attach repaints them.
  */
-function captureTmuxPaneResult(sessionName: string): { ok: boolean; data: string } {
+function captureTmuxPaneResult(sessionName: string, includeCursor = false): TerminalResyncCapture {
   try {
-    return {
-      ok: true,
-      data: execFileSync(
-      resolveTmuxBinary(),
-      dashTmuxArgs('capture-pane', '-p', '-e', '-S', `-${TERMINAL_SCROLLBACK_LINES}`, '-t', sessionName),
+    const tmuxBinary = resolveTmuxBinary();
+    const tmuxEnv = sanitizePtyEnv() as NodeJS.ProcessEnv;
+    const tmuxArgs = (...args: string[]) => isDashTerminalSession(sessionName) ? dashTmuxArgs(...args) : args;
+    const data = execFileSync(
+      tmuxBinary,
+      tmuxArgs('capture-pane', '-p', '-e', '-S', `-${TERMINAL_SCROLLBACK_LINES}`, '-t', sessionName),
       {
         windowsHide: true,
         timeout: 4000,
         encoding: 'utf-8',
         maxBuffer: TERMINAL_TMUX_SNAPSHOT_MAX_BYTES,
         stdio: ['ignore', 'pipe', 'ignore'],
-        env: sanitizePtyEnv() as NodeJS.ProcessEnv,
+        env: tmuxEnv,
       },
-      ),
+    );
+    let cursor = null;
+    if (includeCursor) {
+      try {
+        const position = execFileSync(
+          tmuxBinary,
+          tmuxArgs('display-message', '-p', '-t', sessionName, '#{cursor_x} #{cursor_y} #{pane_width} #{pane_height}'),
+          { windowsHide: true, timeout: 4000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], env: tmuxEnv },
+        );
+        cursor = parseTmuxSnapshotCursor(position);
+      } catch {
+        // Keep the captured screen even if tmux cannot report its cursor.
+      }
+    }
+    return {
+      ok: true,
+      data,
+      cursor,
     };
   } catch {
     return { ok: false, data: '' };
@@ -1706,6 +1718,7 @@ function ensureTerminalClientView(
   let view = attachment.clientViews.get(clientId);
   if (!view) {
     view = {
+      readOnly: false,
       visible: true,
       requestedVisible: true,
       hiddenBuffer: new TerminalHiddenBuffer(TERMINAL_HIDDEN_BUFFER_MAX_BYTES),
@@ -1728,6 +1741,18 @@ function sendTerminalData(client: ClientState, sessionName: string, bytes: Buffe
     event: 'data',
     data: { sessionName, data: bytes.toString('base64') },
   }));
+}
+
+function sendObserverDimensions(attachment: TerminalAttachment) {
+  for (const clientId of attachment.clientIds) {
+    if (!attachment.clientViews.get(clientId)?.readOnly) continue;
+    const client = clients.get(clientId);
+    if (client) sendTerminal(client, 'dimensions', {
+      sessionName: attachment.sessionName,
+      cols: attachment.cols,
+      rows: attachment.rows,
+    });
+  }
 }
 
 function flushHiddenTerminalView(
@@ -1854,17 +1879,17 @@ function sendTerminalScrollback(client: ClientState, attachment: TerminalAttachm
   ensureTerminalClientView(attachment, client.id).lastGoodOffset = attachment.streamEndOffset;
 }
 
-function registerTerminalAttachment(attachment: TerminalAttachment) {
+function registerTerminalAttachment(attachment: TerminalAttachment, recordClients = true) {
   const { sessionName, ptyProcess } = attachment;
 
   for (const clientId of attachment.clientIds) {
     ensureTerminalClientView(attachment, clientId);
-    terminalWorkloadStats?.recordAttach(sessionName, clientId);
+    if (recordClients) terminalWorkloadStats?.recordAttach(sessionName, clientId);
   }
 
   ptyProcess.onData((data: string) => {
     const att = terminalAttachments.get(sessionName);
-    if (!att) return;
+    if (!att || att.ptyProcess !== ptyProcess) return;
 
     att.lastOutputAt = Date.now();
     terminalWorkloadStats?.recordPty(sessionName, data, att.lastOutputAt);
@@ -1885,7 +1910,7 @@ function registerTerminalAttachment(attachment: TerminalAttachment) {
   ptyProcess.onExit(({ exitCode }: { exitCode: number }) => {
     console.log(`[ws-server] Terminal PTY exited for ${sessionName} (code ${exitCode})`);
     const att = terminalAttachments.get(sessionName);
-    if (!att) return;
+    if (!att || att.ptyProcess !== ptyProcess) return;
 
     if (att.batchTimer) clearTimeout(att.batchTimer);
     if (att.orphanTimer) clearTimeout(att.orphanTimer);
@@ -1924,6 +1949,7 @@ function spawnTmuxAttachPty(
   sessionName: string,
   cols: number,
   rows: number,
+  ignoreSize = false,
 ) {
   if (!terminalHost) {
     throw new Error('node-pty not available');
@@ -1934,8 +1960,8 @@ function spawnTmuxAttachPty(
   const cwd = process.env.HOME ?? homedir() ?? '/tmp';
   const dashboardSession = isDashTerminalSession(sessionName);
   const attachArgs = dashboardSession
-    ? dashTmuxArgs('attach-session', '-t', sessionName)
-    : ['attach-session', '-t', sessionName];
+    ? dashTmuxArgs('attach-session', ...(ignoreSize ? ['-r'] : []), '-t', sessionName)
+    : ['attach-session', ...(ignoreSize ? ['-r'] : []), '-t', sessionName];
   const serverDescription = dashboardSession ? ` -L ${dashTmuxServerName()}` : '';
 
   try {
@@ -1952,8 +1978,8 @@ function spawnTmuxAttachPty(
   } catch (directError) {
     const shell = resolvePreferredShell();
     const shellCmd = dashboardSession
-      ? `exec "${tmuxBin}" -L "${dashTmuxServerName()}" attach-session -t "${sessionName}"`
-      : `exec "${tmuxBin}" attach-session -t "${sessionName}"`;
+      ? `exec "${tmuxBin}" -L "${dashTmuxServerName()}" attach-session${ignoreSize ? ' -r' : ''} -t "${sessionName}"`
+      : `exec "${tmuxBin}" attach-session${ignoreSize ? ' -r' : ''} -t "${sessionName}"`;
     console.warn(`[ws-server] Direct tmux PTY spawn failed, falling back to shell wrapper: ${directError instanceof Error ? directError.message : String(directError)}`);
     console.log(`[ws-server] Spawning terminal via shell: ${shellCmd}`);
     return terminalHost.spawn({
@@ -1966,6 +1992,54 @@ function spawnTmuxAttachPty(
       env,
     });
   }
+}
+
+function replaceTmuxAttachmentPty(
+  attachment: TerminalAttachment,
+  cols: number,
+  rows: number,
+  observerOwned: boolean,
+) {
+  const replacement = spawnTmuxAttachPty(attachment.sessionName, cols, rows, observerOwned);
+  const previous = attachment.ptyProcess;
+  if (attachment.batchTimer) clearTimeout(attachment.batchTimer);
+  if (attachment.batchBuffer) deliverTerminalBatch(attachment, attachment.batchBuffer);
+  attachment.batchTimer = null;
+  attachment.batchBuffer = '';
+  attachment.ptyProcess = replacement;
+  attachment.cols = cols;
+  attachment.rows = rows;
+  attachment.observerOwned = observerOwned;
+  registerTerminalAttachment(attachment, false);
+  sendObserverDimensions(attachment);
+  try { previous.kill(); } catch { /* detached during replacement */ }
+}
+
+function tmuxSessionDimensions(sessionName: string): { cols: number; rows: number } {
+  const tmuxBin = resolveTmuxBinary();
+  const tmuxArgs = (...args: string[]) => isDashTerminalSession(sessionName) ? dashTmuxArgs(...args) : args;
+  const options = {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 2000,
+    env: sanitizePtyEnv() as NodeJS.ProcessEnv,
+  } as const;
+  const output = execFileSync(
+    tmuxBin,
+    tmuxArgs('display-message', '-p', '-t', sessionName, '#{window_width} #{window_height}'),
+    options,
+  ).trim();
+  const match = /^(\d+) (\d+)$/.exec(output);
+  const cols = Number(match?.[1]);
+  const rows = Number(match?.[2]);
+  if (!Number.isSafeInteger(cols) || !Number.isSafeInteger(rows) || cols < 1 || rows < 1) {
+    throw new Error(`Could not read terminal dimensions for ${sessionName}`);
+  }
+  // tmux reserves status rows inside the attach client's tty. Match the
+  // existing pane height so opening an observer cannot shrink its window.
+  const status = execFileSync(tmuxBin, tmuxArgs('show-options', '-v', '-t', sessionName, 'status'), options).trim();
+  const statusRows = status === 'off' ? 0 : /^\d+$/.test(status) ? Number(status) : 1;
+  return { cols, rows: rows + statusRows };
 }
 
 const chatListeners = new Set<(delta: ChatDelta) => void>();
@@ -3046,9 +3120,14 @@ function deriveRuntimeHealth(fleet: CommandCenterSnapshot['fleet']): RealtimeHea
 }
 
 async function publishGlobalRealtimeSnapshot(options: { fresh?: boolean; reason?: string } = {}) {
-  // Backoff gate: after consecutive bridge failures, skip attempts until the
-  // retry window opens — the periodic caller re-invokes, so no reschedule needed.
-  if (!canAttemptRealtimeBridge(globalSnapshotBridgeBackoff)) return;
+  // A failed global fetch must wake itself: workspace mutations are not periodic.
+  if (!canAttemptRealtimeBridge(globalSnapshotBridgeBackoff)) {
+    scheduleRealtimeRuntimeRefresh({
+      reason: 'global-bridge.retry',
+      delayMs: Math.max(1_000, getRealtimeBridgeRetryDelay(globalSnapshotBridgeBackoff)),
+    });
+    return;
+  }
   // Single-flight: fold an overlapping call into one trailing re-fire instead of
   // launching a second concurrent fetch (which is how the timeout spiral started).
   if (globalSnapshotInFlight) {
@@ -3145,7 +3224,10 @@ async function publishGlobalRealtimeSnapshot(options: { fresh?: boolean; reason?
     const msg = error instanceof Error ? error.message : 'unknown';
     // Silently skip transient 404s during startup / packet transitions — the route
     // exists but Next.js may not have compiled/rendered it yet.
-    if (typeof msg === 'string' && msg.includes('(404)')) return;
+    if (typeof msg === 'string' && msg.includes('(404)')) {
+      scheduleRealtimeRuntimeRefresh({ reason: 'global-bridge.retry', delayMs: 1_000 });
+      return;
+    }
     const failure = recordRealtimeBridgeFailure(globalSnapshotBridgeBackoff);
     if (failure.transition === 'down') {
       if (await shouldOverrideBridgeDown('global-snapshot')) {
@@ -3156,6 +3238,10 @@ async function publishGlobalRealtimeSnapshot(options: { fresh?: boolean; reason?
         publishRealtimeBridgeConnectionState('global-snapshot', 'down', msg);
       }
     }
+    scheduleRealtimeRuntimeRefresh({
+      reason: 'global-bridge.retry',
+      delayMs: Math.max(1_000, getRealtimeBridgeRetryDelay(globalSnapshotBridgeBackoff)),
+    });
   } finally {
     globalSnapshotInFlight = false;
     if (globalSnapshotRerequest) {
@@ -4140,6 +4226,10 @@ function handleSymonAgentStatus(client: ClientState, msg: Record<string, unknown
     void abortSymonSessionCalls(sessionId, existingOwner, 'session_preempted');
     pushSymonStatus(existingOwner.clientId, sessionId, 'idle', 'preempted');
   }
+  // Only a NEW owner is a registration. A phone sends connecting/live/acting
+  // repeatedly through one session, and re-draining on each of those would make
+  // Symon repeat a parked watch every few seconds.
+  const isNewRegistration = !existingOwner || existingOwner.clientId !== client.id;
   startAgentSession(sessionId);
   symonSessions.set(sessionId, {
     clientId: client.id,
@@ -4148,6 +4238,13 @@ function handleSymonAgentStatus(client: ClientState, msg: Record<string, unknown
     activeMachine: existingOwner?.activeMachine ?? DEFAULT_SYMON_MACHINE,
   });
   preemptOtherSymonSessions(sessionId, 'preempted');
+  // A watch that fired while the phone was away is owed its report the moment a
+  // session is live again. Best effort: registration never waits on delivery.
+  if (isNewRegistration) {
+    void drainParkedSymonWatches().catch((error) => {
+      console.warn('[symon-watch] drain on registration failed:', error);
+    });
+  }
   updateAgentStatus(sessionId, status);
   persistAgentRegistry();
 }
@@ -4993,18 +5090,112 @@ async function handleOrchestratorSendMsg(client: ClientState, msg: Record<string
   if (!repoPath || !message) return;
 
   const correlationId = resolveOrchestratorCommandCorrelationId(msg);
+  const threadId = resolveMsgThreadId(msg);
+  let attachments: ComposerImageAttachment[] | undefined;
+  try {
+    attachments = 'attachments' in msg ? validateComposerImageAttachments(msg.attachments) : undefined;
+  } catch (error) {
+    send(client, {
+      channel: 'orchestrator', event: 'error',
+      data: {
+        error: error instanceof Error ? error.message : 'Invalid image attachment.',
+        repoPath, threadId, ...orchestratorCommandAckCorrelation(correlationId),
+      },
+    });
+    return;
+  }
+  const leadBinding = threadId ? findLeadThreadBinding(threadId) : null;
+  if (threadId && leadBinding) {
+    try {
+      if (!correlationId) {
+        throw new Error('Persistent lead thread sends require a correlation id.');
+      }
+      for (const field of ['backend', 'model', 'thinkingEffort'] as const) {
+        if (field in msg && typeof msg[field] !== 'string') {
+          throw new Error(`${field} must be a string when supplied.`);
+        }
+      }
+      if ('displayMessage' in msg && typeof msg.displayMessage !== 'string') {
+        throw new Error('displayMessage must be a string when supplied.');
+      }
+      if ('permissionMode' in msg && msg.permissionMode !== 'full' && msg.permissionMode !== 'plan') {
+        throw new Error('permissionMode must be full or plan when supplied.');
+      }
+      const leadAttachments = attachments ? validateLeadAttachments(attachments) : undefined;
+      const transcriptMessage = resolveOrchestratorTranscriptMessage({ message, displayMessage: msg.displayMessage });
+      const leadReceipt = await sendLeadThreadMessage({
+        threadId,
+        repoPath,
+        message,
+        displayMessage: transcriptMessage,
+        projectId: msg.projectId,
+        permissionMode: msg.permissionMode === 'plan' ? 'plan' : 'full',
+        attachments: leadAttachments,
+        idempotencyKey: `ws:${correlationId}`,
+        backend: typeof msg.backend === 'string' ? msg.backend : undefined,
+        model: typeof msg.model === 'string' ? msg.model : undefined,
+        effort: typeof msg.thinkingEffort === 'string' ? msg.thinkingEffort : undefined,
+      });
+      if (leadReceipt) {
+        sendOrchestratorSendAck(client, {
+          repoPath,
+          threadId,
+          backend: leadReceipt.lead.routing.backend,
+          correlationId,
+          state: leadReceipt.duplicate ? 'replayed' : 'accepted',
+          duplicate: leadReceipt.duplicate,
+        });
+        send(client, {
+          channel: 'orchestrator',
+          event: 'status',
+          data: {
+            status: 'busy',
+            leadStatus: leadReceipt.lead.status,
+            repoPath,
+            threadId,
+            backend: leadReceipt.lead.routing.backend,
+            lead: leadReceipt.lead,
+            admittedTurnId: leadReceipt.admittedTurnId,
+          },
+        });
+        void sendLeadTerminalStatus(client, leadReceipt.lead.id, leadReceipt.admittedTurnId, leadReceipt.cursor)
+          .catch((error) => console.warn('[ws-server] Persistent lead terminal status watch failed:', error));
+        return;
+      }
+    } catch (error) {
+      send(client, {
+        channel: 'orchestrator',
+        event: 'error',
+        data: {
+          error: error instanceof Error ? error.message : 'Persistent lead send failed.',
+          repoPath,
+          threadId,
+          ...orchestratorCommandAckCorrelation(correlationId),
+        },
+      });
+      return;
+    }
+  }
+  const requestedBackendId = resolveMsgBackendId(msg);
+  const backendId = resolveOrchestratorExecutionBackendId(requestedBackendId, msg.orchestrationMode);
+  if (attachments?.length && !composerBackendSupportsImages(backendId)) {
+    send(client, {
+      channel: 'orchestrator', event: 'error',
+      data: {
+        error: `${backendId} cannot receive composer images. Select Codex or Claude, then retry the image turn.`,
+        repoPath, threadId, ...orchestratorCommandAckCorrelation(correlationId),
+      },
+    });
+    return;
+  }
   // Legacy clients did not send a correlation id. Preserve their exact
   // execution behavior; the one-shot handler still emits an uncorrelated
   // accepted ACK at the later, truthful acceptance point.
   if (!correlationId) {
-    await handleOrchestratorSendMsgOnce(client, msg, undefined);
+    await handleOrchestratorSendMsgOnce(client, msg, undefined, attachments);
     return;
   }
-
-  const requestedBackendId = resolveMsgBackendId(msg);
-  const backendId = resolveOrchestratorExecutionBackendId(requestedBackendId, msg.orchestrationMode);
   const agentId = backendId === requestedBackendId ? resolveMsgAgentId(msg, backendId) : '';
-  const threadId = resolveMsgThreadId(msg);
   const scopeId = orchestratorSendIdempotencyScope({
     repoPath,
     backend: backendId,
@@ -5024,7 +5215,7 @@ async function handleOrchestratorSendMsg(client: ClientState, msg: Record<string
       scopeId,
       ttlMs: ORCHESTRATOR_SEND_IDEMPOTENCY_TTL_MS,
     }, async () => {
-      await handleOrchestratorSendMsgOnce(client, msg, correlationId);
+      await handleOrchestratorSendMsgOnce(client, msg, correlationId, attachments);
     });
 
     // The first caller receives `accepted` from inside the reserved execution,
@@ -5061,10 +5252,64 @@ async function handleOrchestratorSendMsg(client: ClientState, msg: Record<string
   }
 }
 
+async function sendLeadTerminalStatus(
+  client: ClientState,
+  leadId: string,
+  turnId: string,
+  afterCursor: number,
+): Promise<void> {
+  const deadline = Date.now() + 10 * 60_000;
+  let cursor = afterCursor;
+  while (Date.now() < deadline) {
+    const receipt = await waitForLead({
+      leadId,
+      turnId,
+      afterCursor: cursor,
+      waitMs: Math.min(30_000, deadline - Date.now()),
+    });
+    cursor = receipt.cursor;
+    const leadStatus = receipt.lead.status;
+    const status = leadStatus === 'stopped' ? 'stopped' : receipt.requestedTurn?.status;
+    if (!status || status === 'queued' || status === 'running' || status === 'waiting_workers') continue;
+    const assistantText = receipt.requestedTurn?.resultText
+      ?? receipt.requestedTurn?.outcome?.summary
+      ?? receipt.requestedTurn?.error
+      ?? '';
+    if (assistantText) {
+      send(client, {
+        channel: 'orchestrator',
+        event: 'output',
+        data: {
+          text: assistantText,
+          repoPath: receipt.lead.repoPath,
+          threadId: receipt.lead.threadId,
+          backend: receipt.lead.routing.backend,
+          assistantMessageId: `lead-assistant-${receipt.requestedTurn?.id}`,
+        },
+      });
+    }
+    send(client, {
+      channel: 'orchestrator',
+      event: 'status',
+      data: {
+        status: status === 'failed' || status === 'stopped' ? 'dead' : 'ready',
+        leadStatus: status,
+        repoPath: receipt.lead.repoPath,
+        threadId: receipt.lead.threadId,
+        backend: receipt.lead.routing.backend,
+        lead: receipt.lead,
+        admittedTurnId: turnId,
+      },
+    });
+    return;
+  }
+}
+
 async function handleOrchestratorSendMsgOnce(
   client: ClientState,
   msg: Record<string, unknown>,
   correlationId: string | undefined,
+  attachments: ComposerImageAttachment[] | undefined,
 ) {
   const repoPath = resolveOrchestratorMessageRepoPath(msg);
   const message = typeof msg.message === 'string' ? msg.message : null;
@@ -5091,18 +5336,6 @@ async function handleOrchestratorSendMsgOnce(
     ? msg.model.trim()
     : undefined;
   const crossHouseRole = msg.surface === 'canvas-agent' ? 'canvas-agent' : 'orchestrator';
-  // Composer picture pills — validated data URIs only, capped so one send
-  // can't balloon the stdin payload (8 images, ~5MB base64 each).
-  const attachments = Array.isArray(msg.attachments)
-    ? (msg.attachments as Array<{ dataUri?: unknown; name?: unknown }>)
-        .filter((att): att is { dataUri: string; name?: string } =>
-          typeof att?.dataUri === 'string'
-          && /^data:image\/[a-z+.-]+;base64,/i.test(att.dataUri)
-          && att.dataUri.length < 5_000_000)
-        .slice(0, 8)
-        .map((att) => ({ dataUri: att.dataUri, ...(typeof att.name === 'string' ? { name: att.name } : {}) }))
-    : undefined;
-
   const requestedBackendId = resolveMsgBackendId(msg);
   const requestedBackend = getOrchestratorBackend(requestedBackendId);
   const executionBackendId = resolveOrchestratorExecutionBackendId(requestedBackendId, msg.orchestrationMode);
@@ -5156,6 +5389,7 @@ async function handleOrchestratorSendMsgOnce(
   // rejected attempt streamed so the retry's reply is not appended to it.
   const assistantText = createAssistantTextBuffer();
   let activeAssistantModel = model ?? null;
+  let activeAssistantReceipt: MobileTranscriptEntry['receipt'];
   // Incremental persistence (2026-06-22): persist the streamed assistant text
   // every ~1.5s WHILE the turn runs, not only at terminal points. Without this,
   // a turn whose child wedges (never emits 'done', the await never resolves)
@@ -5170,10 +5404,11 @@ async function handleOrchestratorSendMsgOnce(
     backendId: OrchestratorBackendId = activeBackend.id,
     receipt?: Extract<OrchestratorEvent, { type: 'done' }>,
     assistantModel: string | null = activeAssistantModel,
+    receiptOnly = false,
   ) => {
     if (!isThreadBacked || !assistantMessageId) return;
     if (undoneOrchestratorUserMessageIds.has(userMessageId)) return;
-    if (!assistantText.shouldPersist(!!receipt)) return;
+    if (!receiptOnly && !assistantText.shouldPersist(!!receipt)) return;
     try {
       const updatedThread = upsertMobileOrchestratorAssistantMessage({
         tabId: threadId,
@@ -5184,6 +5419,7 @@ async function handleOrchestratorSendMsgOnce(
         agent: activeAgentTag,
         sessionId,
         model: assistantModel,
+        receipt: activeAssistantReceipt,
         ...(receipt?.usage ? {
           tokens: {
             input: receipt.usage.inputTokens,
@@ -5266,6 +5502,7 @@ async function handleOrchestratorSendMsgOnce(
       backend: activeBackend.id,
       agent: activeAgentTag,
       timestampMs: turnStartedAtMs,
+      attachments,
       handoff: backendSwitchHandoff ? {
         handoffId: backendSwitchHandoff.packet.handoffId,
         from: backendSwitchHandoff.seam.from,
@@ -5295,10 +5532,20 @@ async function handleOrchestratorSendMsgOnce(
     const turnBody = backendSwitchHandoff
       ? `${backendSwitchHandoff.prelude}\n\n${message}`
       : message;
-    const turnMessage = withSessionRules(turnBody, threadId);
-    if (turnMessage !== message) {
+    const projectTurn = await prepareOrchestratorProjectTurn({
+      message: turnBody,
+      persistedProjectId: updatedThread?.projectId,
+      repoPath: updatedThread?.repoPath ?? repoPath,
+    });
+    const turnMessageWithRules = withSessionRules(projectTurn.message, threadId);
+    if (turnMessageWithRules !== projectTurn.message) {
       console.log(`[session-rules] Injected session rules into orchestrator turn (thread=${threadId ?? 'none'})`);
     }
+    const turnMessage = withOrchestratorTurnReceiptContext({
+      message: turnMessageWithRules,
+      threadId,
+      turnId: assistantMessageId,
+    });
     // Fable Slice 6 #2 — server-side metered-window valve. The 15K auto-compact
     // target lives in the desktop client's React effect; a headless or mobile
     // operator never mounts it, so a metered window could grow unbounded at
@@ -5442,7 +5689,7 @@ async function handleOrchestratorSendMsgOnce(
           broadcastToOrchestratorSession(sessionName, JSON.stringify({
             channel: 'orchestrator',
             event: 'status',
-            data: { status: 'ready', repoPath, threadId, sessionId: event.sessionId, cost: event.cost, usage: event.usage, backend: turnBackend.id, model: effectiveTurnModel, agent: turnAgentTag },
+            data: { status: 'ready', repoPath, threadId, sessionId: event.sessionId, cost: event.cost, usage: event.usage, receipt: activeAssistantReceipt, backend: turnBackend.id, model: effectiveTurnModel, agent: turnAgentTag },
           }));
         }
       };
@@ -5458,6 +5705,21 @@ async function handleOrchestratorSendMsgOnce(
         let wsMsg: string | null = null;
 
         switch (event.type) {
+          case 'turn_receipt': {
+            const mode = resolveTurnReceiptMode(turnBackend.id, msg.orchestrationMode);
+            const pickedMode = isComposerWireMode(msg.pickedMode) ? msg.pickedMode : undefined;
+            activeAssistantReceipt = {
+              leadModel: event.leadModel,
+              effort: event.effort,
+              mode,
+              ...(pickedMode ? { pickedMode } : {}),
+            };
+            // The effective settings are known before the backend can launch a
+            // worker. Create the durable turn row now; text fills it in later.
+            persistAssistantText(null, turnBackend.id, undefined, effectiveTurnModel, true);
+            break;
+          }
+
           case 'text':
             if (isThreadBacked) {
               assistantText.append(event.text);
@@ -5620,6 +5882,9 @@ async function handleOrchestratorSendMsgOnce(
                 console.warn('[ws-server][orchestrator] failed to drop discarded attempt text', trimErr);
               }
             }
+            // A retry reuses the same resolved settings and does not emit a
+            // second receipt, so restore the row removed with attempt one.
+            persistAssistantText(null, turnBackend.id, undefined, effectiveTurnModel, true);
             wsMsg = JSON.stringify({
               channel: 'orchestrator',
               event: 'retry',
@@ -5948,6 +6213,52 @@ function handleOrchestratorInterrupt(client: ClientState, msg: Record<string, un
   const repoPath = resolveOrchestratorMessageRepoPath(msg);
   if (!repoPath) return;
   const threadId = resolveMsgThreadId(msg);
+  const leadBinding = threadId ? findLeadThreadBinding(threadId) : null;
+  if (leadBinding) {
+    const correlationId = resolveOrchestratorCommandCorrelationId(msg);
+    try {
+      if (resolveLeadRepoPath(repoPath) !== leadBinding.repo_path) {
+        throw new Error('repoPath does not match the persistent lead binding.');
+      }
+    } catch (error) {
+      send(client, {
+        channel: 'orchestrator',
+        event: 'error',
+        data: {
+          error: error instanceof Error ? error.message : 'Persistent lead stop failed.',
+          repoPath,
+          threadId,
+          ...orchestratorCommandAckCorrelation(correlationId),
+        },
+      });
+      return;
+    }
+    const alreadyStopped = leadBinding.status === 'stopped';
+    const receipt = alreadyStopped
+      ? getLeadStatus(leadBinding.id)
+      : stopLead(leadBinding.id, 'Stopped from the orchestrator composer.');
+    sendOrchestratorInterruptAck(client, {
+      repoPath,
+      threadId,
+      backend: leadBinding.backend,
+      correlationId,
+      state: alreadyStopped ? 'already-interrupted' : 'accepted',
+      interrupted: !alreadyStopped,
+      duplicate: alreadyStopped,
+    });
+    send(client, {
+      channel: 'orchestrator',
+      event: 'status',
+      data: {
+        status: 'stopped',
+        repoPath,
+        threadId,
+        backend: leadBinding.backend,
+        lead: receipt.lead,
+      },
+    });
+    return;
+  }
   const requestedBackendId = resolveMsgBackendId(msg);
   const activeRoute = activeOrchestratorRoutes.resolve({ repoPath, threadId, requestedBackend: requestedBackendId });
   const backendId = activeRoute?.toBackend ?? requestedBackendId;
@@ -6465,7 +6776,7 @@ async function sendTerminalResync(
     getBatchBuffer: () => attachment.batchBuffer,
     getScrollbackChunks: () => attachment.scrollbackChunks,
     capture: () => attachment.snapshotSource === 'tmux'
-      ? captureTmuxPaneResult(attachment.sessionName)
+      ? captureTmuxPaneResult(attachment.sessionName, true)
       : { ok: true, data: attachment.scrollbackChunks.join('') },
     isCancelled: () => !terminalResyncIsCurrent(client, attachment, view, epoch),
     onUnsettled: (waitedMs) => {
@@ -6484,10 +6795,11 @@ async function sendTerminalResync(
   let snapshot = '';
   if (attachment.snapshotSource === 'tmux') {
     if (barrier.fallbackReason == null) {
-      // capture-pane separates display rows with LF. xterm's convertEol is
-      // intentionally off for live PTY fidelity, so replay rows need an
-      // explicit carriage return or each row resumes at the prior column.
-      snapshot = barrier.capture.data.replace(/\r?\n$/u, '').replace(/\r?\n/g, '\r\n');
+      snapshot = formatTmuxResyncSnapshot(
+        barrier.capture.data,
+        barrier.capture.cursor,
+        { cols: attachment.cols, rows: attachment.rows },
+      );
     } else {
       snapshotSource = 'scrollback';
       historyTruncated = true;
@@ -6559,9 +6871,9 @@ function handleTerminalVisibility(client: ClientState, msg: Record<string, unkno
 
   const cols = typeof msg.cols === 'number' ? msg.cols : null;
   const rows = typeof msg.rows === 'number' ? msg.rows : null;
-  if (cols != null && rows != null) {
+  if (!view.readOnly && cols != null && rows != null) {
     try {
-      resizeTerminalIfChanged(attachment, cols, rows);
+      if (resizeTerminalIfChanged(attachment, cols, rows)) sendObserverDimensions(attachment);
     } catch { /* resize may fail if the PTY exited during reveal */ }
   }
 
@@ -6702,25 +7014,46 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
 
   const cols = typeof msg.cols === 'number' ? msg.cols : 120;
   const rows = typeof msg.rows === 'number' ? msg.rows : 30;
+  const readOnly = msg.readOnly === true;
 
   // Check if we already have a PTY for this tmux session
   let attachment = terminalAttachments.get(sessionName);
 
   if (attachment) {
+    if (attachment.observerOwned && !readOnly) {
+      try {
+        // The first viewer attached with tmux -r (read-only, ignore-size).
+        // Replace that client when a writer arrives so its later resize and
+        // input affect the session, while observers keep their own WS guard.
+        replaceTmuxAttachmentPty(attachment, cols, rows, false);
+      } catch (error) {
+        sendTerminal(client, 'error', {
+          sessionName,
+          error: error instanceof Error ? error.message : 'Failed to attach writable terminal',
+        });
+        return;
+      }
+    }
     // Add this client to existing attachment
     if (attachment.orphanTimer) {
       clearTimeout(attachment.orphanTimer);
       attachment.orphanTimer = null;
     }
     attachment.clientIds.add(client.id);
-    ensureTerminalClientView(attachment, client.id);
+    const view = ensureTerminalClientView(attachment, client.id);
+    view.readOnly ||= readOnly;
     terminalWorkloadStats?.recordAttach(sessionName, client.id);
     client.terminalSessions.add(sessionName);
-    sendTerminal(client, 'attached', { sessionName });
+    sendTerminal(client, 'attached', { sessionName, cols: attachment.cols, rows: attachment.rows });
     if (attachment.kind === 'dash-shell') {
       sendTerminalScrollback(client, attachment);
     }
     console.log(`[ws-server] Client ${client.id} attached to existing terminal ${sessionName}`);
+    return;
+  }
+
+  if (readOnly && pendingDashSessions.has(sessionName)) {
+    sendTerminal(client, 'error', { sessionName, error: 'Cannot observe a terminal that has not started.' });
     return;
   }
 
@@ -6734,7 +7067,8 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
   }
 
   if (attachment) {
-    sendTerminal(client, 'attached', { sessionName });
+    ensureTerminalClientView(attachment, client.id).readOnly ||= readOnly;
+    sendTerminal(client, 'attached', { sessionName, cols: attachment.cols, rows: attachment.rows });
     sendTerminalScrollback(client, attachment);
     console.log(`[ws-server] Client ${client.id} attached to lazily created terminal ${sessionName}`);
     return;
@@ -6751,7 +7085,8 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
     && tmuxSessionExists(sessionName, dashTmuxArgs())
   ) {
     try {
-      const ptyProcess = spawnTmuxAttachPty(sessionName, cols, rows);
+      const dimensions = readOnly ? tmuxSessionDimensions(sessionName) : { cols, rows };
+      const ptyProcess = spawnTmuxAttachPty(sessionName, dimensions.cols, dimensions.rows, readOnly);
       const now = Date.now();
       attachment = {
         id: randomUUID(),
@@ -6761,8 +7096,9 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
         clientIds: new Set([client.id]),
         clientViews: new Map(),
         snapshotSource: 'tmux',
-        cols,
-        rows,
+        observerOwned: readOnly,
+        cols: dimensions.cols,
+        rows: dimensions.rows,
         batchBuffer: '',
         batchTimer: null,
         lastOutputAt: now,
@@ -6777,19 +7113,20 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
       terminalAttachments.set(sessionName, attachment);
       client.terminalSessions.add(sessionName);
       registerTerminalAttachment(attachment);
+      ensureTerminalClientView(attachment, client.id).readOnly = readOnly;
       // Seed the ring with tmux's pane history, minus the trailing visible rows
       // (the `tmux attach` repaints those itself — trimming avoids a duplicated
       // current screen at the seam).
       const history = captureTmuxPane(sessionName);
       if (history) {
         const lines = history.replace(/\n+$/, '').split('\n');
-        const keep = lines.length > rows ? lines.slice(0, lines.length - rows) : [];
+        const keep = lines.length > dimensions.rows ? lines.slice(0, lines.length - dimensions.rows) : [];
         // capture-pane is line-oriented (LF), while xterm's production write
         // path does not enable convertEol. Replay CRLF so each captured row
         // starts at column zero instead of wrapping away every screenful.
         if (keep.length > 0) appendScrollback(attachment, `${keep.join('\r\n')}\r\n`);
       }
-      sendTerminal(client, 'attached', { sessionName });
+      sendTerminal(client, 'attached', { sessionName, cols: attachment.cols, rows: attachment.rows });
       sendTerminalScrollback(client, attachment);
       console.log(`[ws-server] [persistent-terminals] re-attached surviving dash session ${sessionName}`);
       return;
@@ -6806,7 +7143,8 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
 
   // Spawn a new PTY that attaches to the tmux session
   try {
-    const ptyProcess = spawnTmuxAttachPty(sessionName, cols, rows);
+    const dimensions = readOnly ? tmuxSessionDimensions(sessionName) : { cols, rows };
+    const ptyProcess = spawnTmuxAttachPty(sessionName, dimensions.cols, dimensions.rows, readOnly);
 
     const now = Date.now();
     attachment = {
@@ -6817,8 +7155,9 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
       clientIds: new Set([client.id]),
       clientViews: new Map(),
       snapshotSource: 'tmux',
-      cols,
-      rows,
+      observerOwned: readOnly,
+      cols: dimensions.cols,
+      rows: dimensions.rows,
       batchBuffer: '',
       batchTimer: null,
       lastOutputAt: now,
@@ -6834,8 +7173,9 @@ function handleTerminalAttach(client: ClientState, msg: Record<string, unknown>)
     terminalAttachments.set(sessionName, attachment);
     client.terminalSessions.add(sessionName);
     registerTerminalAttachment(attachment);
+    ensureTerminalClientView(attachment, client.id).readOnly = readOnly;
 
-    sendTerminal(client, 'attached', { sessionName });
+    sendTerminal(client, 'attached', { sessionName, cols: attachment.cols, rows: attachment.rows });
     console.log(`[ws-server] Client ${client.id} attached to new terminal ${sessionName}`);
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
@@ -6865,6 +7205,7 @@ function handleTerminalInput(client: ClientState, msg: Record<string, unknown>) 
     }
   }
   if (!attachment || !attachment.clientIds.has(client.id)) return;
+  if (attachment.clientViews.get(client.id)?.readOnly) return;
 
   try {
     attachment.ptyProcess.write(data);
@@ -6891,10 +7232,10 @@ function handleTerminalResize(client: ClientState, msg: Record<string, unknown>)
     return;
   }
 
+  if (!attachment.clientIds.has(client.id) || attachment.clientViews.get(client.id)?.readOnly) return;
+
   try {
-    attachment.ptyProcess.resize(cols, rows);
-    attachment.cols = cols;
-    attachment.rows = rows;
+    if (resizeTerminalIfChanged(attachment, cols, rows)) sendObserverDimensions(attachment);
   } catch { /* resize may fail if PTY exited */ }
 }
 
@@ -6971,6 +7312,17 @@ function removeClientFromTerminal(clientId: string, sessionName: string) {
   terminalWorkloadStats?.recordDetach(sessionName, clientId);
   const c = clients.get(clientId);
   if (c) c.terminalSessions.delete(sessionName);
+
+  if (attachment.clientIds.size > 0 && !attachment.observerOwned
+    && attachment.snapshotSource === 'tmux'
+    && [...attachment.clientViews.values()].every((remaining) => remaining.readOnly)) {
+    try {
+      const dimensions = tmuxSessionDimensions(sessionName);
+      replaceTmuxAttachmentPty(attachment, dimensions.cols, dimensions.rows, true);
+    } catch (error) {
+      console.warn(`[ws-server] Could not restore ignore-size observer for ${sessionName}:`, error);
+    }
+  }
 
   // If no more clients, destroy the PTY handle and clean up the tmux session
   if (attachment.clientIds.size === 0) {
@@ -7638,15 +7990,61 @@ const httpServer = createServer((req, res) => {
           res.end(JSON.stringify({ ok: false, error: 'surfaceId and repoPath required' }));
           return;
         }
-        registerWatchedAgent(
-          body.surfaceId,
-          body.repoPath,
-          body.name ?? 'Unnamed agent',
-          body.prompt ?? '',
-          body.launchContext,
-        );
+        const surfaceId = body.surfaceId;
+        const repoPath = body.repoPath;
+        const priorWatch = getWatchedAgents().find((agent) => agent.surfaceId === surfaceId);
+        if (!priorWatch) {
+          registerWatchedAgent(
+            surfaceId,
+            repoPath,
+            body.name ?? 'Unnamed agent',
+            body.prompt ?? '',
+            body.launchContext,
+          );
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, watching: body.surfaceId }));
+        res.end(JSON.stringify({ ok: true, watching: surfaceId }));
+        void (async () => {
+          const [{ findLaneBySession }, { hasCurrentCleanWorkerExit, newestWorkerProcessExit, workerExitAttemptId }, { lookupOwnedActiveRunFresh }] = await Promise.all([
+            import('@/lib/lane/registry'),
+            import('@/lib/lane/worker-session-state'),
+            import('@/lib/runtimes/shared/owned-session-index'),
+          ]);
+          // A completed watch can remain through cleanup. Re-arm only for a
+          // different durable exit receipt or a proven newer active run.
+          const lane = findLaneBySession(surfaceId);
+          const attemptId = lane ? newestWorkerProcessExit(lane) : null;
+          const currentAttemptId = attemptId ? workerExitAttemptId(attemptId) : null;
+          const activeRun = priorWatch?.completionReported
+            ? await lookupOwnedActiveRunFresh(surfaceId)
+            : null;
+          const hasNewerExit = Boolean(currentAttemptId && currentAttemptId !== (priorWatch ? watchedAttemptIds.get(priorWatch) : undefined));
+          if (priorWatch && getWatchedAgents().find((agent) => agent.surfaceId === surfaceId) !== priorWatch) return;
+          if (priorWatch?.completionReported && (hasNewerExit || (activeRun && Object.keys(activeRun).length > 0))) {
+            registerWatchedAgent(
+              surfaceId,
+              repoPath,
+              body.name ?? priorWatch.name,
+              body.prompt ?? priorWatch.prompt,
+              body.launchContext ?? priorWatch.launchContext,
+            );
+          }
+          const currentWatch = getWatchedAgents().find((agent) => agent.surfaceId === surfaceId);
+          if (currentWatch && currentAttemptId) watchedAttemptIds.set(currentWatch, currentAttemptId);
+          if (
+            currentWatch
+            && getWatchedAgents().find((agent) => agent.surfaceId === surfaceId) === currentWatch
+            && lane
+            && await hasCurrentCleanWorkerExit(lane)
+            && getWatchedAgents().find((agent) => agent.surfaceId === surfaceId) === currentWatch
+            && (() => {
+              const currentExit = newestWorkerProcessExit(lane);
+              return currentExit && workerExitAttemptId(currentExit) === watchedAttemptIds.get(currentWatch);
+            })()
+          ) {
+            await ingestAgentCompletionSignal(surfaceId);
+          }
+        })().catch((error) => console.warn('[supervisor] post-watch completion reconciliation failed:', error));
       } catch {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
@@ -7681,12 +8079,20 @@ const httpServer = createServer((req, res) => {
             return;
           }
 
+          const { findLaneBySession } = await import('@/lib/lane/registry');
+          const lane = findLaneBySession(surfaceId);
+          const { newestWorkerProcessExit, workerExitAttemptId } = await import('@/lib/lane/worker-session-state');
+          const stampAttempt = () => {
+            const exit = lane ? newestWorkerProcessExit(lane) : null;
+            const watched = getWatchedAgents().find((agent) => agent.surfaceId === surfaceId);
+            if (exit && watched) watchedAttemptIds.set(watched, workerExitAttemptId(exit));
+          };
+          stampAttempt();
           let ingested = await ingestAgentCompletionSignal(surfaceId);
           if (!ingested) {
-            const { findLaneBySession } = await import('@/lib/lane/registry');
-            const lane = findLaneBySession(surfaceId);
             if (lane && !isTerminalLaneStatus(lane.status)) {
               registerWatchedAgent(surfaceId, lane.repoPath, lane.label || lane.branch, '');
+              stampAttempt();
               ingested = await ingestAgentCompletionSignal(surfaceId);
             }
           }
@@ -9144,10 +9550,26 @@ async function bootstrapWsServer() {
       },
       async onAgentCompletion(surfaceId, outcome) {
         const { handleAgentCompletion } = await import('@/lib/supervisor/agent-completion');
-        return handleAgentCompletion(surfaceId, outcome, {
+        const decision = await handleAgentCompletion(surfaceId, outcome, {
           enqueueAutoReview, triggerHeadlessSprintTick,
           queueReviewContinuation, enqueueVerificationFailureInboxItem,
         });
+        const { findLaneBySession } = await import('@/lib/lane/registry');
+        const lane = findLaneBySession(surfaceId);
+        if (lane?.packetId && (outcome === 'failed'
+          || lane.status === 'failed'
+          || lane.status === 'awaiting_input'
+          || lane.status === 'awaiting_orchestrator')) {
+          queueLeadWorkerReturn({
+            repoPath: lane.repoPath,
+            packetId: lane.packetId,
+            laneId: lane.id,
+            label: lane.label,
+            returnKind: outcome === 'failed' || lane.status === 'failed' ? 'failed' : 'needs_context',
+            detail: decision?.detail ?? lane.lastEventLabel ?? `Worker ${outcome}.`,
+          });
+        }
+        return decision;
       },
       onAgentRetry(oldSurfaceId, newSurfaceId) {
         // Update the lane's session binding so the new agent is tracked

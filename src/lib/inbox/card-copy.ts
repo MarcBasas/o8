@@ -132,6 +132,11 @@ export function composeSupervisorInboxCardCopy(item: SupervisorInboxItem): Inbox
           item.errorExcerpt,
         ]),
       };
+    case 'possible_loop':
+      return {
+        headline: 'Advisory: the worker may be repeating the same tool call without progress. Nothing was stopped.',
+        subline: supervisorMetadata(item, [item.errorExcerpt]),
+      };
     default:
       return {
         headline: itemPacketLabel(item) ?? item.errorExcerpt,
@@ -206,7 +211,9 @@ export function composeApprovalCardCopy(approval: ApprovalRecord): InboxCardCopy
   if (approval.continuation?.kind === 'lane') {
     if (approval.continuation.verb === 'merge') {
       return {
-        headline: 'A worker is ready to merge; review the files and approve or reject.',
+        headline: approval.title === 'Review required before merge'
+          ? 'Merge paused: review these changes before approving.'
+          : 'Merge ready for review: approve or reject the changes.',
         subline: approvalMetadata(approval, [approval.title]),
       };
     }

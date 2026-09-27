@@ -29,6 +29,7 @@ export interface PersistedTab {
   repoName?: string;
   repoPath?: string;
   tmuxSession?: string; // last known tmux session name (may still be alive)
+  readOnly?: boolean; // live run view: never send input to an attached PTY
   chatRuntime?: OrchestratorRuntime; // for kind='chat' (CLI Session)
   chatSessionKey?: string; // for kind='chat' (CLI Session)
   /** Stable lane identity behind a dispatched chat tab (#1553) — survives the
@@ -59,6 +60,8 @@ export interface PersistedTab {
    * collapsing every orchestrator tab onto the global last-active thread.
    */
   orchestratorThreadId?: string;
+  /** An explicitly started unsent orchestrator tab must stay fresh after reload. */
+  freshSpawn?: boolean;
   /** Transient host for externally-dispatched worker transcripts. */
   outsideWorkerHost?: boolean;
   linkedIssue?: {

@@ -42,8 +42,9 @@ import { ProjectCard } from './projects/ProjectCard';
 import { ProjectForm, emptyFormState, formStateFromProject } from './projects/ProjectForm';
 import { UnassignedReposGroup } from './projects/ProjectRepoRows';
 import { useProjectsData } from './projects/useProjectsData';
+import { WorkspacePageHeader } from '../WorkspacePageHeader';
 
-export function ProjectsPanel() {
+export function ProjectsPanel({ library = false, opening = false, initialProjectId = null, onOpenWorkspace, onBackToWorkspace }: { library?: boolean; initialProjectId?: string | null; opening?: boolean; onOpenWorkspace?: (projectId: string, repoId: string, repoPath: string) => Promise<void>; onBackToWorkspace?: () => void }) {
   const data = useProjectsData();
   const {
     projects,
@@ -67,10 +68,15 @@ export function ProjectsPanel() {
   } = data;
 
   const [creating, setCreating] = useState(false);
+  const [query, setQuery] = useState('');
+  const [requestedProjectId, setOpenedProjectId] = useState<string | null>(initialProjectId);
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ConfirmKind>(null);
 
   const isAnythingOpen = creating || editingProjectId !== null;
+  const openedProject = projects.find((project) => project.id === requestedProjectId);
+  const openedProjectId = openedProject?.id ?? null;
+  const mainRepo = reposById.get(openedProject?.mainRepoId ?? openedProject?.repos[0]?.repoId ?? '');
 
   // Repos connected but not in any project — their home is the quiet group at
   // the bottom now that the repo list left the Connectors surface.
@@ -81,23 +87,39 @@ export function ProjectsPanel() {
 
   return (
     <div style={{
-      paddingTop: 8,
-      paddingLeft: 8,
-      paddingRight: 32,
+      paddingTop: library ? 0 : 8,
+      paddingLeft: library ? 0 : 8,
+      paddingRight: library ? 0 : 8,
       paddingBottom: 40,
-      maxWidth: SETTINGS_CONTENT_MAX_WIDTH,
+      maxWidth: library ? undefined : SETTINGS_CONTENT_MAX_WIDTH,
       fontFamily: APP_FONT_STACK,
     }}>
-      <div style={{
+      {library ? <WorkspacePageHeader
+        title="Projects"
+        subtitle="Group repositories and shared instructions so agents have the right context for your project."
+        onClose={onBackToWorkspace}
+      >
+        {!isAnythingOpen ? <RamsButton
+          onClick={() => {
+            setEditingProjectId(null);
+            setCreating(true);
+          }}
+          icon={<PlusGlyph size={11} />}
+        >
+          New project
+        </RamsButton> : null}
+      </WorkspacePageHeader> : <div style={{
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'space-between',
-        gap: 24,
+        gap: 16,
+        flexWrap: 'wrap',
+        marginBottom: 16,
       }}>
-        <div style={{ minWidth: 0 }}>
+        <div style={{ minWidth: 0, flex: '1 1 320px' }}>
           <TabHeading
-            title="projects"
-            subtitle="A project is the shared context for a product: multiple repositories, standing instructions, and attached files."
+            title="Projects"
+            subtitle="Group repositories and shared instructions so agents have the right context for your project."
           />
         </div>
 
@@ -112,13 +134,13 @@ export function ProjectsPanel() {
             New project
           </RamsButton>
         ) : null}
-      </div>
+      </div>}
 
-      <section>
-        <SettingsGroup header="Overview">
+      {!library ? <section>
+        <SettingsGroup header="Overview" maxWidth={SETTINGS_CONTENT_MAX_WIDTH}>
           <div style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 140px), 1fr))',
             gap: 10,
             paddingTop: 14,
             paddingRight: 14,
@@ -134,13 +156,13 @@ export function ProjectsPanel() {
             />
           </div>
         </SettingsGroup>
-      </section>
+      </section> : null}
 
-      <section style={{ marginTop: 28 }}>
-        <SettingsGroup header="Runtime context">
+      {!library ? <section style={{ marginTop: 28 }}>
+        <SettingsGroup header="Active project context" maxWidth={SETTINGS_CONTENT_MAX_WIDTH}>
           <RuntimeContextPanel context={runtimeContext} locks={projectLocks} />
         </SettingsGroup>
-      </section>
+      </section> : null}
 
       {topError ? (
         <div style={{
@@ -163,6 +185,23 @@ export function ProjectsPanel() {
         </div>
       ) : null}
 
+      {library && !creating ? <>
+        <input aria-label="Search projects" placeholder="Search projects" value={query} onChange={(event) => setQuery(event.target.value)} style={{ width: '100%', boxSizing: 'border-box', minHeight: 42, borderRadius: 12, border: '1px solid var(--t-divider)', background: 'var(--t-input-bg)', color: 'var(--t-text)', paddingLeft: 16, paddingRight: 16, font: 'inherit', marginBottom: 24 }} />
+        {openedProjectId ? <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}>
+          <RamsButton variant="ghost" onClick={() => { setOpenedProjectId(null); setEditingProjectId(null); }}>All projects</RamsButton>
+          {mainRepo && onOpenWorkspace ? <RamsButton disabled={opening || isAnythingOpen} onClick={() => { void onOpenWorkspace(openedProjectId, mainRepo.id, mainRepo.localPath); }}>{opening ? 'Opening…' : 'Open workspace'}</RamsButton> : null}
+        </div> : null}
+        {!openedProjectId ? <div aria-label="Saved projects">
+          {projects.filter((project) => `${project.name} ${project.description ?? ''}`.toLowerCase().includes(query.toLowerCase())).map((project) => <div key={project.id} style={{ display: 'flex', alignItems: 'center', gap: 20, borderBottom: '1px solid var(--t-divider-subtle)', minHeight: 84 }}>
+            <button type="button" onClick={() => setOpenedProjectId(project.id)} style={{ flex: 1, minWidth: 0, textAlign: 'left', border: 0, background: 'transparent', color: 'var(--t-text)', font: 'inherit', cursor: 'pointer', paddingTop: 20, paddingBottom: 20 }}>
+              <span style={{ display: 'block', fontSize: 15 }}>{project.name}</span>
+              <span style={{ display: 'block', marginTop: 7, fontSize: 12, color: 'var(--t-text-muted)' }}>{project.repos.length} {project.repos.length === 1 ? 'repository' : 'repositories'}{project.description ? ` · ${project.description}` : ''}</span>
+            </button>
+            <RamsButton variant="ghost" onClick={() => { setOpenedProjectId(project.id); setEditingProjectId(project.id); }}>Edit</RamsButton>
+          </div>)}
+          {!loading && projects.length > 0 && !projects.some((project) => `${project.name} ${project.description ?? ''}`.toLowerCase().includes(query.toLowerCase())) ? <p style={{ color: 'var(--t-text-muted)' }}>No projects match your search.</p> : null}
+        </div> : null}
+      </> : null}
       <section style={{ marginTop: 28 }}>
         {loading ? (
           <div style={{ paddingTop: 20, paddingBottom: 20, color: RAMS_INK_QUIET, fontSize: 13 }}>
@@ -170,7 +209,7 @@ export function ProjectsPanel() {
           </div>
         ) : (
           <>
-            {orgSuggestions.length > 0 ? (
+            {!library && orgSuggestions.length > 0 ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
                 {orgSuggestions.map((suggestion) => (
                   <OrgSuggestionStrip
@@ -195,6 +234,7 @@ export function ProjectsPanel() {
                   onSubmit={async (state) => {
                     await submitCreate(state, 'manual');
                     setCreating(false);
+                    setOpenedProjectId(null);
                   }}
                 />
               </div>
@@ -206,7 +246,7 @@ export function ProjectsPanel() {
 
             {projects.length > 0 ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                {projects.map((project) => {
+                {projects.filter((project) => !library || project.id === openedProjectId).map((project) => {
                   const isEditing = editingProjectId === project.id;
                   const isDeleting = busyKey === `delete:${project.id}`;
                   const pendingConfirm = confirm?.kind === 'delete' && confirm.projectId === project.id;
@@ -262,7 +302,7 @@ export function ProjectsPanel() {
         )}
       </section>
 
-      {!loading ? (
+      {!loading && (!library || openedProjectId) ? (
         <UnassignedReposGroup
           repos={unassignedRepos}
           projects={projects}

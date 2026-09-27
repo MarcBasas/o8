@@ -11,6 +11,7 @@ import {
   getOperatorDefaults,
   getOperatorDefaultsTomlState,
   isCollideAggregator,
+  isBrainRoutingMode,
   isOrchestratorBackendSetting,
   isPrLinkDestination,
   isRequireApproval,
@@ -28,6 +29,10 @@ import {
   isBroadcastVoiceQuietHoursMode,
 } from '@/lib/operator/broadcast-commentary-defaults';
 import { isReviewReadyNotifications } from '@/lib/operator/presentation-defaults';
+import { isJudgmentProvider, JUDGMENT_PROVIDER_VALUES_MESSAGE } from '@/lib/operator/judgment-default';
+import { isJudgmentAllowance, isJudgmentBetaEndDate, JUDGMENT_ALLOWANCE_EXPECTED, JUDGMENT_BETA_END_DATE_EXPECTED } from '@/lib/operator/judgment-allowance-default';
+import { resolveJudgmentPath } from '@/lib/judgment/route';
+import { getEntitlementSync } from '@/lib/entitlement/store';
 import { isDispatchRuntime } from '@/lib/operator/defaults-env';
 import { isWorkerStartMode } from '@/lib/operator/worker-start-mode';
 import { isExecutionCarrierId } from '@/lib/runtimes/shared/execution-carrier';
@@ -44,13 +49,15 @@ import { resolveApfsDependencyImagesOverride } from '@/lib/workspace/dependency-
 import {
   getDispatchableRuntimeAvailability,
   getRuntimeAuthSnapshot,
+  invalidateRuntimeAuthCache,
 } from '@/lib/runtimes/shared/auth-detect';
+import { assertThreecodeWorkerModelAvailable } from '@/lib/runtimes/threecode-model-catalogue';
+import { parseOperatorDefaultsToml } from '@/lib/settings/toml';
+import { readRuntimeSetupRecommendation } from '@/lib/setup/runtime-setup-server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
 const NO_STORE_HEADERS = { 'Cache-Control': 'no-store, max-age=0' };
-
 function effectiveOverride() {
   return {
     apfsDependencyImages: resolveApfsDependencyImagesOverride(),
@@ -83,6 +90,7 @@ function operatorDefaultsPayload(
       values: data.values,
       sources: data.sources,
       dispatchableRuntimes,
+      managedBrainEligible: getEntitlementSync().flags['proxy.inference'] === true,
     }),
   };
 }
@@ -93,6 +101,7 @@ function operatorDefaultsValuesPayload(
 ) {
   return {
     ...data,
+    judgmentPath: resolveJudgmentPath(data.values.judgmentProvider),
     effectiveOverride: effectiveOverride(),
     settingsToml,
     recentRoleReceipts: listRoleRoutingReceipts({ limit: 60 }),
@@ -297,6 +306,12 @@ function normalizeUpdate(body: Record<string, unknown>): Partial<OperatorDefault
     }
     update.promptCachingEnabled = body.promptCachingEnabled;
   }
+  if (body.autoTitleInferenceEnabled !== undefined) {
+    if (typeof body.autoTitleInferenceEnabled !== 'boolean') {
+      throw new Error('autoTitleInferenceEnabled must be boolean.');
+    }
+    update.autoTitleInferenceEnabled = body.autoTitleInferenceEnabled;
+  }
 
   if (body.requireApproval !== undefined) {
     if (!isRequireApproval(body.requireApproval)) {
@@ -319,7 +334,7 @@ function normalizeUpdate(body: Record<string, unknown>): Partial<OperatorDefault
   // save 400'd with "No supported fields" while the TOML path worked — the
   // reachability trap: the setting existed everywhere except the path the UI
   // actually posts through (live-hit on the shipped build, 2026-08-05).
-  for (const key of ['opencodeOrchestratorModel', 'opencodeWorkerModel'] as const) {
+  for (const key of ['opencodeOrchestratorModel', 'opencodeWorkerModel', 'threecodeWorkerModel'] as const) {
     if (body[key] === undefined) continue;
     if (body[key] !== null && typeof body[key] !== 'string') {
       throw new Error(`${key} must be a model id string or null.`);
@@ -382,6 +397,13 @@ function normalizeUpdate(body: Record<string, unknown>): Partial<OperatorDefault
       throw new Error('brainCodexEffort must be a valid effort level.');
     }
     update.brainCodexEffort = body.brainCodexEffort;
+  }
+
+  if (body.brainRoutingMode !== undefined) {
+    if (!isBrainRoutingMode(body.brainRoutingMode)) {
+      throw new Error('brainRoutingMode must be "auto" or "subscription".');
+    }
+    update.brainRoutingMode = body.brainRoutingMode;
   }
 
   if (body.defaultDispatchModel !== undefined) {
@@ -463,12 +485,47 @@ function normalizeUpdate(body: Record<string, unknown>): Partial<OperatorDefault
     update.brainUseClaudeCli = body.brainUseClaudeCli;
   }
 
+  if (body.brainWarmupEnabled !== undefined) {
+    if (typeof body.brainWarmupEnabled !== 'boolean') {
+      throw new Error('brainWarmupEnabled must be boolean.');
+    }
+    update.brainWarmupEnabled = body.brainWarmupEnabled;
+  }
+
   if (body.workersUseBrain !== undefined) {
     const raw = body.workersUseBrain;
     if (raw !== 'off' && raw !== 'auto' && raw !== 'all') {
       throw new Error('workersUseBrain must be one of "off", "auto", "all".');
     }
     update.workersUseBrain = raw;
+  }
+
+  if (body.judgmentProvider !== undefined) {
+    if (!isJudgmentProvider(body.judgmentProvider)) {
+      throw new Error(`judgmentProvider must be ${JUDGMENT_PROVIDER_VALUES_MESSAGE}.`);
+    }
+    update.judgmentProvider = body.judgmentProvider;
+  }
+
+  if (body.judgmentManagedDailyAllowance !== undefined) {
+    if (body.judgmentManagedDailyAllowance !== null && !isJudgmentAllowance(body.judgmentManagedDailyAllowance)) {
+      throw new Error(`judgmentManagedDailyAllowance must be ${JUDGMENT_ALLOWANCE_EXPECTED}.`);
+    }
+    update.judgmentManagedDailyAllowance = body.judgmentManagedDailyAllowance;
+  }
+
+  if (body.judgmentBetaEndDate !== undefined) {
+    if (body.judgmentBetaEndDate !== null && !isJudgmentBetaEndDate(body.judgmentBetaEndDate)) {
+      throw new Error(`judgmentBetaEndDate must be ${JUDGMENT_BETA_END_DATE_EXPECTED}.`);
+    }
+    update.judgmentBetaEndDate = body.judgmentBetaEndDate;
+  }
+
+  if (body.judgmentManagedOptionVisible !== undefined) {
+    if (typeof body.judgmentManagedOptionVisible !== 'boolean') {
+      throw new Error('judgmentManagedOptionVisible must be boolean.');
+    }
+    update.judgmentManagedOptionVisible = body.judgmentManagedOptionVisible;
   }
 
   if (body.workspaceManifestPolicy !== undefined) {
@@ -658,6 +715,7 @@ function normalizeUpdate(body: Record<string, unknown>): Partial<OperatorDefault
 
 export async function GET(request: Request) {
   try {
+    if (new URL(request.url).searchParams.get('refresh') === 'runtime') invalidateRuntimeAuthCache();
     const valuesOnly = new URL(request.url).searchParams.get('include') === 'values';
     if (valuesOnly) {
       const [data, settingsToml] = await Promise.all([
@@ -672,6 +730,10 @@ export async function GET(request: Request) {
       getRuntimeAuthSnapshot(),
     ]);
     const dispatchableRuntimes = await getDispatchableRuntimeAvailability(cliAuth);
+    if (new URL(request.url).searchParams.get('include') === 'setup') {
+      const setupRecommendation = await readRuntimeSetupRecommendation(data, dispatchableRuntimes);
+      return response({ ...operatorDefaultsPayload(data, settingsToml, cliAuth, dispatchableRuntimes), setupRecommendation });
+    }
     return response(operatorDefaultsPayload(data, settingsToml, cliAuth, dispatchableRuntimes));
   } catch (error) {
     console.error('[panel-operator-defaults] Failed to load operator defaults:', error);
@@ -693,6 +755,10 @@ export async function POST(request: Request) {
         return response({ error: 'settingsTomlRevision is required to save settings.toml.' }, 400);
       }
       assertRoutingTomlCompatibility(body.settingsToml, OPERATOR_DEFAULTS_FALLBACK);
+      const tomlModel = parseOperatorDefaultsToml(body.settingsToml).threecodeWorkerModel;
+      if (tomlModel) {
+        await assertThreecodeWorkerModelAvailable(tomlModel);
+      }
       const [updated, cliAuth] = await Promise.all([
         withStoragePressurePolicyLock(() => (
           applyOperatorDefaultsToml(body.settingsToml as string, body.settingsTomlRevision as string)
@@ -715,6 +781,7 @@ export async function POST(request: Request) {
     if (Object.keys(update).length === 0) {
       return response({ error: 'No supported fields in request body.' }, 400);
     }
+    if (update.threecodeWorkerModel) await assertThreecodeWorkerModelAvailable(update.threecodeWorkerModel);
     const [updated, cliAuth] = await Promise.all([
       withStoragePressurePolicyLock(() => updateOperatorDefaults(update)),
       getRuntimeAuthSnapshot(),

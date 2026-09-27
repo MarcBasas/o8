@@ -1,12 +1,10 @@
 'use client';
 
 /**
- * GeneralTab — the General settings page (Cursor-parity pass).
+ * GeneralTab is the General settings page.
  *
- * Collects the app-level, non-domain-specific settings that don't belong to
- * Dispatch, Voice, or Account: launch-at-login (native autostart) and the
- * crash/error-report privacy toggles. Both surfaces already had a real
- * backend elsewhere; this tab is where an operator expects to find them.
+ * Collects app-level settings that don't belong to Dispatch, Voice, or
+ * Account: startup, conversation titles, and privacy choices.
  *
  * - Launch at login persists through the Tauri bridge (autostart_set), so the
  *   Startup group only renders in the desktop shell.
@@ -19,12 +17,14 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   APP_FONT_STACK,
   RamsButton,
+  RAMS_CONTROL_BORDER,
   SettingsSelect,
   TabHeading,
   SETTINGS_CONTENT_MAX_WIDTH,
   type SettingsTab,
 } from './shared';
 import { SettingsGroup, SettingsRow, ValuePill } from './grouped';
+import { RAMS_BUTTON_GEOMETRY } from './control-geometry';
 import { fetchOperatorDefaults } from './operator-defaults-client';
 import {
   autostartIsEnabled,
@@ -45,6 +45,7 @@ import {
 } from './dispatch-shared';
 
 const FOUNDERS_URL = 'https://o8.run/pricing';
+const PLAN_CONTROL_WIDTH = 88;
 
 // ── Minimal raw-SVG glyphs for row icon tiles (React icon libs don't render
 //    inside the Tauri webview — raw <svg> only, per repo rules). ──
@@ -64,6 +65,15 @@ function PresentIcon() {
       <rect x="3" y="4" width="18" height="12" rx="2" />
       <path d="M12 16v4" />
       <path d="M8 20h8" />
+    </svg>
+  );
+}
+
+function ChatIcon() {
+  return (
+    <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block', flexShrink: 0 }}>
+      <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H5l-2 2v-8.5A8.5 8.5 0 0 1 11.5 5H13" />
+      <path d="M17 2v6M14 5h6" />
     </svg>
   );
 }
@@ -243,14 +253,14 @@ export function GeneralTab({ onNavigateTab }: { onNavigateTab?: (tab: SettingsTa
     <div style={{
       paddingTop: 8,
       paddingLeft: 8,
-      paddingRight: 32,
+      paddingRight: 8,
       paddingBottom: 40,
       maxWidth: SETTINGS_CONTENT_MAX_WIDTH,
       fontFamily: APP_FONT_STACK,
     }}>
       <TabHeading
         title="general"
-        subtitle="App-level basics: whether o8 launches with your machine, and what leaves it when something breaks."
+        subtitle="Startup, conversation titles, and what o8 shares when something breaks."
       />
 
       {notice ? (
@@ -280,21 +290,21 @@ export function GeneralTab({ onNavigateTab }: { onNavigateTab?: (tab: SettingsTa
       <section style={{ marginBottom: 28 }}>
         <SettingsGroup
           header="Plan"
-          footnote="Your plan. GitHub identity, repo access, and automation now live together in Git & PRs. License keys activate in Plan & Billing."
+          footnote="The local workspace and connected models are free to use in o8. Your model providers may charge for usage. Manage your license in Plan & Billing."
         >
           <SettingsRow
             icon={<StarIcon />}
             label="Plan"
-            accessory={<ValuePill tone={isFounder ? 'success' : 'default'}>{planLabel}</ValuePill>}
-            divider={!isFounder}
+            accessory={<ValuePill tone={isFounder ? 'success' : 'default'} style={{ ...RAMS_BUTTON_GEOMETRY, width: PLAN_CONTROL_WIDTH, borderColor: RAMS_CONTROL_BORDER }}>{planLabel}</ValuePill>}
+            divider={!isFounder && !isPaid}
           />
           {!isFounder && !isPaid ? (
             <SettingsRow
               icon={<ArrowUpIcon />}
               label="Upgrade to Pro"
-              subtitle="o8 is free forever — founders fund the build and get managed inference for life, early access to everything new, and the founder theme. One-time, the first 250."
+              subtitle="Pro adds o8 High and Brain assistance on o8 infrastructure, subject to plan limits. Fully hosted mobile and cloud execution are planned."
               accessory={
-                <RamsButton variant="primary" onClick={() => openExternalUrl(FOUNDERS_URL)}>
+                <RamsButton variant="primary" width={PLAN_CONTROL_WIDTH} onClick={() => openExternalUrl(FOUNDERS_URL)}>
                   Upgrade
                 </RamsButton>
               }
@@ -344,6 +354,22 @@ export function GeneralTab({ onNavigateTab }: { onNavigateTab?: (tab: SettingsTa
         </section>
       ) : null}
 
+      <section style={{ marginTop: 28 }}>
+        <SettingsGroup
+          header="Conversations"
+          footnote="On by default. When this is off, o8 still makes a short title from your first message."
+        >
+          <SettingsRow
+            icon={<ChatIcon />}
+            label="Model-generated titles"
+            subtitle="Allow a background model call to give new conversations a more useful title"
+            checked={values?.autoTitleInferenceEnabled !== false}
+            disabled={!values || busyField === 'autoTitleInferenceEnabled'}
+            onToggle={(next) => { void updateField('autoTitleInferenceEnabled', next); }}
+          />
+        </SettingsGroup>
+      </section>
+
       <section style={{ marginTop: tauri ? 28 : 0 }}>
         <SettingsGroup
           header="Presentation"
@@ -379,12 +405,12 @@ export function GeneralTab({ onNavigateTab }: { onNavigateTab?: (tab: SettingsTa
       <section style={{ marginTop: 28 }}>
         <SettingsGroup
           header="Privacy"
-          footnote="Product usage sends only the allowlisted event name and coarse booleans or runtime enum shown in the privacy documentation. Crash reports are a separate control and can contain scrubbed error context. All sharing is optional and off by default."
+          footnote="Choose what to share. Usage analytics, error reports, and local crash logs are separate choices. All sharing is optional and off by default."
         >
           <SettingsRow
             icon={<ShieldIcon />}
             label="Share usage data"
-            subtitle="Send allowlisted product events to help improve o8"
+            subtitle="Share basic feature-use events to help improve o8. Does not include prompts, code, or file paths."
             checked={shareUsage}
             disabled={!values || busyField === 'productTelemetryEnabled'}
             onToggle={(next) => { void updateField('productTelemetryEnabled', next); }}
@@ -394,8 +420,8 @@ export function GeneralTab({ onNavigateTab }: { onNavigateTab?: (tab: SettingsTa
             <>
               <SettingsRow
                 icon={<ShieldIcon />}
-                label="Share crash & error data — also required to send bug reports"
-                subtitle={lockedSub('crashReportsEnabled', 'Send scrubbed error messages and stack traces. These may include repo-relative paths or nearby runtime context.')}
+                label="Share crash reports"
+                subtitle={lockedSub('crashReportsEnabled', 'Share scrubbed errors and stack traces, which may include project-relative paths and runtime context. Required to submit bug reports.')}
                 checked={values.crashReportsEnabled}
                 disabled={envLocked('crashReportsEnabled') || busyField === 'crashReportsEnabled'}
                 onToggle={(next) => { void updateField('crashReportsEnabled', next); }}
@@ -403,8 +429,8 @@ export function GeneralTab({ onNavigateTab }: { onNavigateTab?: (tab: SettingsTa
               />
               <SettingsRow
                 icon={<ShieldIcon />}
-                label="Send local crash log to the o8 team"
-                subtitle={lockedSub('telemetryOptIn', 'Upload the local ~/.o8/telemetry crash log, including stored error messages and stack traces')}
+                label="Automatically upload local crash logs"
+                subtitle={lockedSub('telemetryOptIn', 'Periodically upload saved crash logs, including error messages and stack traces, when an upload destination is configured. Local logging continues when this is off.')}
                 checked={values.telemetryOptIn}
                 disabled={envLocked('telemetryOptIn') || busyField === 'telemetryOptIn'}
                 onToggle={(next) => { void updateField('telemetryOptIn', next); }}

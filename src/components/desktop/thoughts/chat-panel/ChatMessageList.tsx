@@ -77,6 +77,7 @@ interface ChatMessageListProps {
   thoughtsElevatedShadow: string;
   emptyStateOverride?: React.ReactNode;
   emptyStateFallback: React.ReactNode;
+  composeFirst?: boolean;
   topContent?: React.ReactNode;
   /** Rendered at the live edge of the transcript — after the last message,
    *  before the thinking indicator. Used for the inline swarm crew card. */
@@ -122,6 +123,7 @@ export const ChatMessageList = forwardRef<HTMLDivElement, ChatMessageListProps>(
   thoughtsElevatedShadow,
   emptyStateOverride,
   emptyStateFallback,
+  composeFirst = false,
   topContent,
   bottomContent,
   isOrchestratorMode = false,
@@ -184,6 +186,10 @@ export const ChatMessageList = forwardRef<HTMLDivElement, ChatMessageListProps>(
       break;
     }
   }
+  const turnSummaryReceiptEntry = turnSummary
+    ? displayMessages.find((entry) => entry.id === turnSummary.assistantMessageId && entry.receipt)
+      ?? displayMessages.find((entry) => entry.id === turnSummary.firstAssistantMessageId && entry.receipt)
+    : undefined;
   const showEmptyWithOverride = displayMessages.length === 0 && !displayWaiting && emptyStateOverride;
   const showEmptyWithFallback = displayMessages.length === 0 && !displayWaiting && !emptyStateOverride;
   const isCompacting = displayWaiting && displayMessages.length > 0 &&
@@ -197,7 +203,7 @@ export const ChatMessageList = forwardRef<HTMLDivElement, ChatMessageListProps>(
       onTouchMove={noteUserScroll}
       onScroll={onScroll}
       style={{
-      flex: 1,
+      flex: composeFirst ? '0 1 auto' : 1,
       overflowY: 'auto',
       // THE body-scroll trigger (hunted since 0.1.608, closed 2026-07-16 via
       // frame-by-frame video forensics): without containment, trackpad
@@ -213,7 +219,7 @@ export const ChatMessageList = forwardRef<HTMLDivElement, ChatMessageListProps>(
       // mask below — so scrolled all the way down, the last item (e.g. the
       // Mission complete card) sits fully in the sharp region above the fade and
       // never dissolves; only the empty padding fades into the composer.
-      paddingBottom: 36,
+      paddingBottom: composeFirst ? 12 : 36,
       paddingLeft: 'var(--cortex-chat-gutter)',
       display: 'flex',
       flexDirection: 'column',
@@ -223,7 +229,7 @@ export const ChatMessageList = forwardRef<HTMLDivElement, ChatMessageListProps>(
       <div style={{
         width: '100%',
         maxWidth: 'var(--cortex-chat-column-max)',
-        minHeight: '100%',
+        minHeight: composeFirst ? 'auto' : '100%',
         marginRight: 'auto',
         marginLeft: 'auto',
         display: 'flex',
@@ -233,7 +239,7 @@ export const ChatMessageList = forwardRef<HTMLDivElement, ChatMessageListProps>(
         {showEmptyWithOverride ? (
           <div style={{
             display: 'flex',
-            flex: 1,
+            flex: composeFirst ? 'none' : 1,
             minHeight: 0,
           }}>
             {emptyStateOverride}
@@ -283,10 +289,16 @@ export const ChatMessageList = forwardRef<HTMLDivElement, ChatMessageListProps>(
           const summaryAnchorsAfter = turnSummary && !turnSummary.firstAssistantMessageId
             ? msg.id === turnSummary.assistantMessageId
             : false;
+          const belongsToCurrentSummary = Boolean(turnSummary && (
+            msg.id === turnSummary.assistantMessageId
+            || msg.id === turnSummary.firstAssistantMessageId
+          ));
+          const showsPersistedReceipt = msg.role === 'assistant' && Boolean(msg.receipt) && !belongsToCurrentSummary;
           return (
             <Fragment key={msg.id}>
+              {showsPersistedReceipt ? <TurnSummaryCard persistedEntry={msg} /> : null}
               {summaryAnchorsBefore && turnSummary ? (
-                <TurnSummaryCard summary={turnSummary} />
+                <TurnSummaryCard summary={turnSummary} persistedEntry={turnSummaryReceiptEntry} />
               ) : null}
               <DesktopAgentMessage
                 entry={msg}
@@ -296,7 +308,7 @@ export const ChatMessageList = forwardRef<HTMLDivElement, ChatMessageListProps>(
                 onRetryDelivery={onRetryDelivery}
               />
               {summaryAnchorsAfter && turnSummary ? (
-                <TurnSummaryCard summary={turnSummary} />
+                <TurnSummaryCard summary={turnSummary} persistedEntry={turnSummaryReceiptEntry} />
               ) : null}
               {renderTaskArtifacts(index)}
               {showChipsHere ? (

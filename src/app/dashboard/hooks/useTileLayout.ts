@@ -16,14 +16,17 @@ import type { RepoRegistryEntry } from '@/lib/repos/types';
 import {
   closeTile,
   collectLeafContentKinds,
+  collectLeafNodes,
+  computeTileLayout,
   countLeaves,
-  createDefaultTileLayout,
   createTileContent,
-  deserializeTileLayout,
   findLeafByContentKind,
   findSiblingLeaf,
   findTile,
   getFirstLeaf,
+  hasUserArrangedSplit,
+  insertBalancedTerminalTile,
+  rebalanceTerminalTiles,
   replaceTileContent,
   resizeTile,
   serializeTileLayout,
@@ -42,11 +45,7 @@ import {
   findUnscopedCanvasLeaf,
   repoSlugFromRemote,
 } from '../utils';
-import {
-  collectPersistedRepoTileIds,
-  loadValidatedRestorePaths,
-  validatePersistedLayoutRepos,
-} from './tileLayoutRestore';
+import { useRestoredTileLayout } from './useRestoredTileLayout';
 
 export const TILE_LAYOUT_STORAGE_KEY = 'o8:dashboard-tiles:v1';
 const ACTIVE_TILE_STORAGE_KEY = 'o8:dashboard-active-tile:v1';
@@ -64,6 +63,8 @@ interface UseTileLayoutArgs {
   findWorkspaceTarget: () => TileLeafNode | null;
   globalRepoEntries: RepoRegistryEntry[];
   globalRepoEntry: RepoRegistryEntry | null;
+  refreshRestoredRepoState: (validatedPaths: readonly string[], signal?: AbortSignal) => Promise<boolean>;
+  repoInventoryRevision?: number;
   setActiveTileId: Dispatch<SetStateAction<string | null>>;
   setTileLayout: Dispatch<SetStateAction<TileLayout>>;
   tileLayout: TileLayout;
@@ -88,6 +89,8 @@ export function useTileLayout({
   findWorkspaceTarget,
   globalRepoEntries,
   globalRepoEntry,
+  refreshRestoredRepoState,
+  repoInventoryRevision,
   setActiveTileId,
   setTileLayout,
   tileLayout,
@@ -99,11 +102,25 @@ export function useTileLayout({
   waitForWorkspaceTerminalTarget,
 }: UseTileLayoutArgs) {
   const [workspacePreviews, setWorkspacePreviews] = useState<DetectedLocalhostPreview[]>([]);
-  const [tileLayoutHydrated, setTileLayoutHydrated] = useState(false);
-  const [unverifiedRestoredRepoTileIds, setUnverifiedRestoredRepoTileIds] = useState<ReadonlySet<string>>(() => new Set());
   const skipNextTileLayoutPersistenceRef = useRef(false);
   const canvasStateByTileIdRef = useRef<Record<string, CanvasTileState>>({});
   const [canvasStateByTileId, setCanvasStateByTileId] = useState<Record<string, CanvasTileState>>({});
+  const {
+    retryRestoredRepoValidation,
+    restoredRepoValidationState,
+    setTileLayoutHydrated,
+    tileLayoutHydrated,
+    unverifiedRestoredRepoTileIds,
+  } = useRestoredTileLayout({
+    activeTileStorageKey: ACTIVE_TILE_STORAGE_KEY,
+    setActiveTileId,
+    setTileLayout,
+    skipNextTileLayoutPersistenceRef,
+    storageKey: TILE_LAYOUT_STORAGE_KEY,
+    tileLayout,
+    refreshRestoredRepoState,
+    repoInventoryRevision,
+  });
 
   const registerContextualPanelHandle = useCallback((tileId: string, handle: ContextualPanelHandle | null) => {
     if (handle) {
@@ -270,38 +287,6 @@ export function useTileLayout({
   }, [findInsertionTarget, findPreferredCanvasTileId, findWorkspaceTarget, setActiveTileId, setCanvasTileRepoScope, setTileLayout, tileLayout.root]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    let cancelled = false;
-    skipNextTileLayoutPersistenceRef.current = false;
-    const restoreTimer = window.setTimeout(() => {
-      void (async () => {
-        const restored = deserializeTileLayout(window.localStorage.getItem(TILE_LAYOUT_STORAGE_KEY));
-        const validation = restored ? await loadValidatedRestorePaths(restored) : { ok: true, paths: [] };
-        const nextLayout = restored && validation.ok
-          ? validatePersistedLayoutRepos(restored, validation.paths)
-          : restored ?? createDefaultTileLayout();
-        if (cancelled) return;
-        setUnverifiedRestoredRepoTileIds(restored && !validation.ok
-          ? collectPersistedRepoTileIds(restored)
-          : new Set());
-        skipNextTileLayoutPersistenceRef.current = !validation.ok;
-        const storedActiveTileId = window.localStorage.getItem(ACTIVE_TILE_STORAGE_KEY);
-        const restoredActiveTileId = storedActiveTileId && findTile(nextLayout.root, storedActiveTileId)
-          ? storedActiveTileId
-          : getFirstLeaf(nextLayout.root).id;
-        setTileLayout(nextLayout);
-        setActiveTileId(restoredActiveTileId);
-        setTileLayoutHydrated(true);
-      })();
-    }, 0);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(restoreTimer);
-    };
-  }, [setActiveTileId, setTileLayout]);
-
-  useEffect(() => {
     if (!tileLayoutHydrated || typeof window === 'undefined') return;
     if (skipNextTileLayoutPersistenceRef.current) {
       skipNextTileLayoutPersistenceRef.current = false;
@@ -354,9 +339,12 @@ export function useTileLayout({
     if (!result.closed) {
       return;
     }
+    const allTerminalPanes = collectLeafNodes(tileLayout.root).every((leaf) => leaf.content.kind === 'terminal');
     setTileLayout({
       ...tileLayout,
-      root: result.root,
+      root: allTerminalPanes && !hasUserArrangedSplit(tileLayout.root)
+        ? rebalanceTerminalTiles(result.root, tileLayout.root.type === 'split' ? tileLayout.root.direction : 'vertical')
+        : result.root,
     });
     if (tile?.type === 'leaf' && tile.content.kind === 'canvas') {
       setCanvasStateByTileId((prev) => {
@@ -380,7 +368,7 @@ export function useTileLayout({
     });
   }, [setTileLayout, tileLayout]);
 
-  const handleSplitTile = useCallback((tileId: string, direction: 'horizontal' | 'vertical') => {
+  const handleSplitTile = useCallback((tileId: string, direction: 'horizontal' | 'vertical', initialTab?: 'chat' | 'terminal', placeBefore = false, exactPlacement = false) => {
     const ratio = direction === 'vertical' ? 0.55 : 0.62;
     // Split creates the same type: workspace splits → new terminal (chat), contextual splits → new contextual (shell)
     const sourceTile = findTile(tileLayout.root, tileId);
@@ -393,16 +381,34 @@ export function useTileLayout({
           kind: 'terminal' as const,
           repoPath: null,
           createdFromSplit: true,
+          initialTab: initialTab ?? 'terminal',
         }
       : createTileContent(newKind);
-    const result = splitTile(tileLayout.root, tileId, direction, nextContent, ratio);
+    const allTerminalPanes = collectLeafNodes(tileLayout.root).every((leaf) => leaf.content.kind === 'terminal');
+    const userArranged = hasUserArrangedSplit(tileLayout.root);
+    const largestPane = allTerminalPanes && userArranged && !exactPlacement
+      ? Array.from(computeTileLayout(tileLayout.root).leafRects.entries())
+          .sort((first, second) => second[1].width * second[1].height - first[1].width * first[1].height)[0]
+      : null;
+    const result = allTerminalPanes && newKind === 'terminal' && !exactPlacement && !userArranged
+      ? insertBalancedTerminalTile(tileLayout.root, tileId, direction, nextContent, placeBefore)
+      : splitTile(
+          tileLayout.root,
+          largestPane?.[0] ?? tileId,
+          largestPane ? (largestPane[1].width >= largestPane[1].height ? 'vertical' : 'horizontal') : direction,
+          nextContent,
+          exactPlacement || largestPane ? 0.5 : ratio,
+          placeBefore,
+          exactPlacement || Boolean(largestPane),
+        );
     if (!result.newTileId) {
       return;
     }
-    setTileLayout({
+    const nextLayout = {
       ...tileLayout,
       root: result.root,
-    });
+    };
+    setTileLayout(nextLayout);
     setActiveTileId(result.newTileId);
   }, [setActiveTileId, setTileLayout, tileLayout]);
 
@@ -728,6 +734,8 @@ export function useTileLayout({
     handleSplitTile,
     openCanvasTab,
     registerContextualPanelHandle,
+    restoredRepoValidationState,
+    retryRestoredRepoValidation,
     selectCanvasTab,
     setCanvasStateByTileId,
     setTileLayoutHydrated,

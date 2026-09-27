@@ -5,6 +5,7 @@ import path from 'node:path';
 import { parse, stringify } from 'smol-toml';
 
 import { isPlausibleAcpModelId } from '@/lib/orchestrator/acp-model-id';
+import { isPlausibleThreecodeModelId } from '@/lib/runtimes/threecode-model-catalogue';
 
 import {
   CODEX_MODEL_IDS,
@@ -16,6 +17,7 @@ import type { OperatorDefaults } from '@/lib/operator/defaults';
 import { isBroadcastVoiceClockTime } from '@/lib/operator/broadcast-commentary-defaults';
 import {
   isClassAComposer,
+  isBrainRoutingMode,
   isCollideAggregator,
   isDispatchRuntime,
   isOrchestratorBackendSetting,
@@ -25,6 +27,8 @@ import {
   isWorkspaceManifestPolicy,
   sanitizeBranchPrefix,
 } from '@/lib/operator/defaults-env';
+import { isJudgmentProvider, JUDGMENT_PROVIDER_VALUES_MESSAGE } from '@/lib/operator/judgment-default';
+import { isJudgmentAllowance, isJudgmentBetaEndDate, JUDGMENT_ALLOWANCE_EXPECTED, JUDGMENT_BETA_END_DATE_EXPECTED } from '@/lib/operator/judgment-allowance-default';
 import { isSubscriptionProfile } from '@/lib/operator/subscription-profile';
 import { isTargetingTier } from '@/lib/operator/targeting-tier';
 import { isWorkerStartMode } from '@/lib/operator/worker-start-mode';
@@ -35,7 +39,7 @@ import { isExecutionCarrierId } from '@/lib/runtimes/shared/execution-carrier';
 type TomlRecord = Record<string, unknown>;
 
 interface TomlField<T> {
-  path: readonly [string, string];
+  path: readonly [string, ...string[]];
   parse: (value: unknown, key: string) => T;
   /**
    * How the value is written back to TOML, when that differs from `parse`.
@@ -50,9 +54,9 @@ function invalid(key: string, expected: string): never {
   throw new SettingsTomlValidationError(key, expected);
 }
 
-function booleanField(section: string, key: string): TomlField<boolean> {
+function booleanField(...path: [string, ...string[]]): TomlField<boolean> {
   return {
-    path: [section, key],
+    path,
     parse: (value, tomlKey) => typeof value === 'boolean' ? value : invalid(tomlKey, 'a boolean'),
   };
 }
@@ -127,6 +131,22 @@ function acpModelIdField(section: string, key: string): TomlField<string | null>
   };
 }
 
+function threecodeModelIdField(section: string, key: string): TomlField<string | null> {
+  return {
+    path: [section, key],
+    serialize: (value) => value ?? '',
+    parse: (value, tomlKey) => {
+      if (value === null) return null;
+      if (typeof value !== 'string') return invalid(tomlKey, 'a configured 3code model id string');
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      return isPlausibleThreecodeModelId(trimmed)
+        ? trimmed
+        : invalid(tomlKey, 'a configured 3code model id string');
+    },
+  };
+}
+
 function executionCarrierField(section: string, key: string): TomlField<OperatorDefaults['workerExecutionCarrier']> {
   return {
     path: [section, key],
@@ -163,6 +183,22 @@ function numberField(
     parse: (value, tomlKey) => typeof value === 'number' && Number.isFinite(value) && accept(value)
       ? normalize(value)
       : invalid(tomlKey, expected),
+  };
+}
+
+/** A nullable field whose null is written as "" (TOML has no null). */
+function nullableField<T>(
+  section: string,
+  key: string,
+  expected: string,
+  predicate: (value: unknown) => value is T,
+): TomlField<T | null> {
+  return {
+    path: [section, key],
+    serialize: (value) => value ?? '',
+    parse: (value, tomlKey) => value === '' || value === null
+      ? null
+      : predicate(value) ? value : invalid(tomlKey, `${expected} (write "" for null)`),
   };
 }
 
@@ -251,11 +287,13 @@ export const OPERATOR_DEFAULTS_TOML_MAPPING = {
   apfsDependencyImages: booleanField('git', 'apfs_dependency_images'),
   thinkingEffort: enumField('models', 'thinking_effort', 'a valid thinking effort', isThinkingEffort),
   promptCachingEnabled: booleanField('models', 'prompt_caching_enabled'),
+  autoTitleInferenceEnabled: booleanField('chat', 'auto_title_inference_enabled'),
   mergeTestReplayEnabled: booleanField('review', 'merge_test_replay_enabled'),
   requireApproval: enumField('review', 'require_approval', 'one of "high-risk", "surface", "always", or "never"', (value): value is OperatorDefaults['requireApproval'] => value === 'high-risk' || value === 'surface' || value === 'always' || value === 'never'),
   orchestratorModel: orchestratorModelField('models', 'orchestrator_model'),
   opencodeOrchestratorModel: acpModelIdField('models', 'opencode_orchestrator_model'),
   opencodeWorkerModel: acpModelIdField('models', 'opencode_worker_model'),
+  threecodeWorkerModel: threecodeModelIdField('models', 'threecode_worker_model'),
   defaultDispatchRuntime: enumField('models', 'default_dispatch_runtime', 'a dispatchable runtime name', isDispatchRuntime),
   workerExecutionCarrier: executionCarrierField('models', 'worker_execution_carrier'),
   workerStartMode: enumField('operator', 'worker_start_mode', 'one of "autonomous", "huddle", or "adaptive"', isWorkerStartMode),
@@ -274,9 +312,16 @@ export const OPERATOR_DEFAULTS_TOML_MAPPING = {
   experimentalCanvas: booleanField('experimental', 'canvas_enabled'),
   nativeBrowserView: booleanField('experimental', 'native_browser_view'),
   classAComposer: enumField('brain', 'class_a_composer', 'one of "auto", "haiku-cli", "sonnet-cli", or "fastest"', isClassAComposer),
+  brainRoutingMode: enumField('brain', 'routing_mode', 'one of "auto" or "subscription"', isBrainRoutingMode),
   inAppOrchestratorEnabled: booleanField('orchestrator', 'legacy_claude_enabled'),
+  symonVoiceSubscriptionOnly: booleanField('symon', 'voice', 'subscriptionOnly'),
   brainUseClaudeCli: booleanField('brain', 'use_claude_cli'),
+  brainWarmupEnabled: booleanField('brain', 'warmup_enabled'),
   workersUseBrain: enumField('brain', 'workers_use_brain', 'one of "off", "auto", or "all"', isWorkersUseBrain),
+  judgmentProvider: enumField('judgment', 'provider', JUDGMENT_PROVIDER_VALUES_MESSAGE, isJudgmentProvider),
+  judgmentManagedDailyAllowance: nullableField('judgment', 'managed_daily_allowance', JUDGMENT_ALLOWANCE_EXPECTED, isJudgmentAllowance),
+  judgmentBetaEndDate: nullableField('judgment', 'beta_end_date', JUDGMENT_BETA_END_DATE_EXPECTED, isJudgmentBetaEndDate),
+  judgmentManagedOptionVisible: booleanField('judgment', 'managed_option_visible'),
   workspaceManifestPolicy: enumField('operator', 'workspace_manifest_policy', 'one of "disabled", "one-approval", or "auto"', isWorkspaceManifestPolicy),
   crossHouseWorkerFallback: booleanField('models', 'cross_house_worker_fallback'),
   orchestratorBackend: enumField('orchestrator', 'backend', 'a supported orchestrator backend', isOrchestratorBackendSetting),
@@ -364,23 +409,32 @@ function parseDocument(raw: string): TomlRecord {
 }
 
 function readPath(document: TomlRecord, field: TomlField<unknown>): unknown {
-  const [section, key] = field.path;
-  const table = document[section];
-  if (table === undefined) return undefined;
-  if (!isRecord(table)) invalid(section, 'a table');
-  return table[key];
+  let value: unknown = document;
+  for (let index = 0; index < field.path.length; index += 1) {
+    if (!isRecord(value)) invalid(field.path.slice(0, index).join('.'), 'a table');
+    value = value[field.path[index]];
+    if (value === undefined) return undefined;
+  }
+  return value;
 }
 
 function writePath(document: TomlRecord, field: TomlField<unknown>, value: unknown): void {
-  const [section, key] = field.path;
-  const current = document[section];
-  if (current !== undefined && !isRecord(current)) invalid(section, 'a table');
-  const table = current ?? {};
-  const existingValue = (table as TomlRecord)[key];
-  (table as TomlRecord)[key] = isRecord(existingValue) && isRecord(value)
+  let table = document;
+  for (let index = 0; index < field.path.length - 1; index += 1) {
+    const segment = field.path[index];
+    const current = table[segment];
+    if (current !== undefined && !isRecord(current)) {
+      invalid(field.path.slice(0, index + 1).join('.'), 'a table');
+    }
+    const child = current ?? {};
+    table[segment] = child;
+    table = child as TomlRecord;
+  }
+  const key = field.path[field.path.length - 1];
+  const existingValue = table[key];
+  table[key] = isRecord(existingValue) && isRecord(value)
     ? { ...existingValue, ...value }
     : value;
-  document[section] = table;
 }
 
 export function parseOperatorDefaultsToml(raw: string): Partial<OperatorDefaults> {

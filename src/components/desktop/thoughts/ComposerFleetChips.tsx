@@ -15,61 +15,32 @@
  * dispatch truth stays server-side.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
+import { useRuntimeInventory } from '../onboarding/useRuntimeInventory';
+import { RuntimeToolsPanel } from '../onboarding/RuntimeToolsPanel';
+import { visibleRuntimeInventory } from '@/lib/setup/runtime-recommendation';
 
 import { COMPOSER_MODES, type ComposerMode } from './composer-mode';
+import { composerRuntimeLabel } from './composer-selector/state';
 import { AcpModelPicker } from './AcpModelPicker';
 import { ComposerPopover } from './chat-panel/ComposerPopover';
 import {
   getRuntimeCapability,
-  listDispatchableRuntimes,
   type OrchestratorRuntime,
 } from '@/lib/orchestrator/runtime-capabilities';
-import { fetchOperatorDefaultsValues } from '@/lib/operator/operator-defaults-values-client';
-import type { WorkerStartMode } from '@/lib/operator/worker-start-mode';
+import { WORKER_START_OPTIONS, type WorkerStartMode } from '@/lib/operator/worker-start-mode';
+import {
+  FALLBACK_COMPOSER_WORKER_DEFAULTS,
+  shortWorkerModelLabel,
+  workerModelForDisplay,
+  type ComposerWorkerDefaults,
+} from './composer-selector/worker-settings';
 
-interface DispatchDefaults {
-  defaultDispatchRuntime: OrchestratorRuntime;
-  defaultDispatchModel: string;
-  opencodeWorkerModel: string | null;
-  workerStartMode: WorkerStartMode;
-}
+type FleetPickerView = 'runtimes' | 'opencode-model' | 'threecode-model';
 
-type FleetPickerView = 'runtimes' | 'opencode-model';
-
-const FALLBACK_DEFAULTS: DispatchDefaults = {
-  defaultDispatchRuntime: 'codex',
-  defaultDispatchModel: '',
-  opencodeWorkerModel: null,
-  workerStartMode: 'autonomous',
-};
-
-const WORKER_START_OPTIONS: Array<{
-  value: WorkerStartMode;
-  label: string;
-  shortLabel: string;
-  detail: string;
-}> = [
-  { value: 'autonomous', label: 'Run now', shortLabel: 'Run', detail: 'The worker implements immediately inside its worktree.' },
-  { value: 'huddle', label: 'Ask first', shortLabel: 'Ask', detail: 'The worker reads the task, shares a plan, and waits before editing.' },
-  { value: 'adaptive', label: 'Adaptive', shortLabel: 'Adaptive', detail: 'Lower-cost subscription workers ask first; other workers run immediately.' },
-];
-
-/** Last path segment of a provider-qualified model id, for chip width. */
-function shortModelLabel(model: string): string {
-  const cut = model.lastIndexOf('/');
-  return cut >= 0 ? model.slice(cut + 1) : model;
-}
-
-function workerModelForDisplay(runtime: OrchestratorRuntime, defaults: DispatchDefaults): string {
-  if (runtime === 'opencode' && defaults.opencodeWorkerModel) {
-    return defaults.opencodeWorkerModel;
-  }
-  if (defaults.defaultDispatchModel && runtime === defaults.defaultDispatchRuntime) {
-    return defaults.defaultDispatchModel;
-  }
-  return getRuntimeCapability(runtime).defaultModel ?? '';
-}
+export type DispatchDefaults = ComposerWorkerDefaults;
+export const FALLBACK_DISPATCH_DEFAULTS = FALLBACK_COMPOSER_WORKER_DEFAULTS;
+export { shortWorkerModelLabel, workerModelForDisplay };
 
 function LayersGlyph({ size = 11 }: { size?: number }) {
   return (
@@ -122,7 +93,7 @@ export function ComposerModeChip({
         ref={triggerRef}
         type="button"
         title={activeSpec.sublabel}
-        aria-label={`Mode: ${activeSpec.label}`}
+        aria-label={`Mode: ${activeSpec.long}`}
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
         style={{
@@ -146,7 +117,7 @@ export function ComposerModeChip({
         onMouseEnter={(event) => { if (mode === 'solo') event.currentTarget.style.color = 'var(--t-text)'; }}
         onMouseLeave={(event) => { if (mode === 'solo') event.currentTarget.style.color = 'var(--t-text-faint)'; }}
       >
-        {activeSpec.chip}
+        {activeSpec.short}
       </button>
 
       <ComposerPopover anchorRef={triggerRef} open={open} onClose={() => setOpen(false)} align="end">
@@ -156,7 +127,7 @@ export function ComposerModeChip({
             maxWidth: 'min(240px, calc(100vw - 32px))',
             borderRadius: 14,
             border: '1px solid var(--t-panel-border)',
-            background: 'var(--t-panel-solid, var(--t-panel))',
+            background: 'var(--t-popover-surface)',
             boxShadow: 'var(--t-panel-shadow)',
             overflow: 'hidden',
             paddingTop: 6,
@@ -196,7 +167,7 @@ export function ComposerModeChip({
                   letterSpacing: '-0.1px',
                 }}
               >
-                <span style={{ flex: 1, minWidth: 0 }}>{spec.label}</span>
+                <span style={{ flex: 1, minWidth: 0 }}>{spec.long}</span>
                 <span style={{ width: 13, flexShrink: 0, color: 'var(--t-accent)', visibility: active ? 'visible' : 'hidden' }}>
                   <CheckGlyph />
                 </span>
@@ -229,88 +200,43 @@ export function ComposerModeChip({
  * runtime + the model the fleet rides right now; the popover selects the
  * dispatch runtime (persisted as the operator's `defaultDispatchRuntime`).
  */
-export function FleetWorkerChip({ compact = false }: { compact?: boolean }) {
+export function FleetWorkerChip({
+  compact = false,
+  defaults = FALLBACK_COMPOSER_WORKER_DEFAULTS,
+  workerModelLocked = false,
+  saving = false,
+  onRuntimeChange,
+  onWorkerModelChange,
+  onWorkerStartModeChange,
+}: {
+  compact?: boolean;
+  defaults?: ComposerWorkerDefaults;
+  workerModelLocked?: boolean;
+  saving?: boolean;
+  onRuntimeChange?: (runtime: OrchestratorRuntime) => void;
+  onWorkerModelChange?: (model: string | null, runtime?: OrchestratorRuntime) => void;
+  onWorkerStartModeChange?: (mode: WorkerStartMode) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<FleetPickerView>('runtimes');
-  const [defaults, setDefaults] = useState<DispatchDefaults>(FALLBACK_DEFAULTS);
-  const [workerModelLocked, setWorkerModelLocked] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const tools = useRuntimeInventory(open);
+  const visibleRuntimes = visibleRuntimeInventory(tools.inventory ?? [], [defaults.defaultDispatchRuntime]);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-
-  const refetch = useCallback(async () => {
-    try {
-      const res = await fetchOperatorDefaultsValues();
-      if (!res.ok) return;
-      const payload = await res.json() as {
-        values?: Partial<DispatchDefaults>;
-        sources?: Partial<Record<keyof DispatchDefaults, string>>;
-      };
-      const values = payload.values ?? {};
-      setDefaults({
-        defaultDispatchRuntime: (values.defaultDispatchRuntime as OrchestratorRuntime) || 'codex',
-        defaultDispatchModel: typeof values.defaultDispatchModel === 'string' ? values.defaultDispatchModel : '',
-        opencodeWorkerModel: typeof values.opencodeWorkerModel === 'string' && values.opencodeWorkerModel
-          ? values.opencodeWorkerModel
-          : null,
-        workerStartMode: values.workerStartMode === 'huddle' || values.workerStartMode === 'adaptive'
-          ? values.workerStartMode
-          : 'autonomous',
-      });
-      setWorkerModelLocked(payload.sources?.opencodeWorkerModel === 'env');
-    } catch { /* chip keeps last known values */ }
-  }, []);
-
-  useEffect(() => { void refetch(); }, [refetch]);
-  useEffect(() => { if (open) void refetch(); }, [open, refetch]);
-
-  const selectRuntime = useCallback(async (runtime: OrchestratorRuntime) => {
-    setDefaults((current) => ({ ...current, defaultDispatchRuntime: runtime }));
+  const selectRuntime = (runtime: OrchestratorRuntime) => {
+    onRuntimeChange?.(runtime);
     if (runtime === 'opencode') setView('opencode-model');
+    else if (runtime === '3code') setView('threecode-model');
     else setOpen(false);
-    setSaving(true);
-    try {
-      await fetch('/api/panel/operator-defaults', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ defaultDispatchRuntime: runtime }),
-      });
-    } catch { /* next refetch restores truth */ } finally {
-      setSaving(false);
-      void refetch();
-    }
-  }, [refetch]);
-
-  const selectWorkerModel = useCallback(async (modelId: string | null) => {
+  };
+  const selectWorkerModel = (modelId: string | null) => {
     if (workerModelLocked) return;
-    setDefaults((current) => ({ ...current, opencodeWorkerModel: modelId }));
+    if (view === 'threecode-model') onWorkerModelChange?.(modelId, '3code');
+    else onWorkerModelChange?.(modelId);
     setOpen(false);
-    setSaving(true);
-    try {
-      await fetch('/api/panel/operator-defaults', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ opencodeWorkerModel: modelId }),
-      });
-    } catch { /* next refetch restores truth */ } finally {
-      setSaving(false);
-      void refetch();
-    }
-  }, [refetch, workerModelLocked]);
-
-  const selectWorkerStartMode = useCallback(async (workerStartMode: WorkerStartMode) => {
-    setDefaults((current) => ({ ...current, workerStartMode }));
-    setSaving(true);
-    try {
-      await fetch('/api/panel/operator-defaults', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workerStartMode }),
-      });
-    } catch { /* next refetch restores truth */ } finally {
-      setSaving(false);
-      void refetch();
-    }
-  }, [refetch]);
+  };
+  const selectWorkerStartMode = (workerStartMode: WorkerStartMode) => {
+    onWorkerStartModeChange?.(workerStartMode);
+  };
 
   const runtime = defaults.defaultDispatchRuntime;
   const runtimeLabel = getRuntimeCapability(runtime).label;
@@ -318,16 +244,16 @@ export function FleetWorkerChip({ compact = false }: { compact?: boolean }) {
   const startOption = WORKER_START_OPTIONS.find((option) => option.value === defaults.workerStartMode)
     ?? WORKER_START_OPTIONS[0];
   const chipText = compact
-    ? `${runtimeLabel} · ${startOption.shortLabel}`
-    : `${model ? `${runtimeLabel} · ${shortModelLabel(model)}` : runtimeLabel} · ${startOption.shortLabel}`;
+    ? `${runtimeLabel} · ${startOption.short}`
+    : `${model ? `${runtimeLabel} · ${shortWorkerModelLabel(model)}` : runtimeLabel} · ${startOption.short}`;
 
   return (
     <>
       <button
         ref={triggerRef}
         type="button"
-        title={`Fleet worker: ${runtimeLabel}${model ? ` — ${model}` : ''}. Starts: ${startOption.label}.`}
-        aria-label={`Fleet worker: ${runtimeLabel}. Starts: ${startOption.label}`}
+        title={`Fleet worker: ${runtimeLabel}${model ? ` — ${model}` : ''}. Starts: ${startOption.long}.`}
+        aria-label={`Fleet worker: ${runtimeLabel}${model ? `, model ${model}` : ', runtime default'}. Starts: ${startOption.long}`}
         aria-expanded={open}
         onClick={() => {
           setView('runtimes');
@@ -371,7 +297,7 @@ export function FleetWorkerChip({ compact = false }: { compact?: boolean }) {
             maxWidth: 'min(268px, calc(100vw - 32px))',
             borderRadius: 14,
             border: '1px solid var(--t-panel-border)',
-            background: 'var(--t-panel-solid, var(--t-panel))',
+            background: 'var(--t-popover-surface)',
             boxShadow: 'var(--t-panel-shadow)',
             overflow: 'hidden',
             paddingTop: 6,
@@ -421,7 +347,7 @@ export function FleetWorkerChip({ compact = false }: { compact?: boolean }) {
                         whiteSpace: 'nowrap',
                       }}
                     >
-                      {option.label}
+                      {option.long}
                     </button>
                   );
                 })}
@@ -451,14 +377,17 @@ export function FleetWorkerChip({ compact = false }: { compact?: boolean }) {
               }}>
                 Fleet worker
               </div>
-              {listDispatchableRuntimes().map((id) => {
+              {visibleRuntimes.map((item) => {
+                const id = item.id;
                 const active = id === runtime;
                 const rowModel = workerModelForDisplay(id, defaults);
                 return (
                   <button
                     key={id}
                     type="button"
-                    onClick={() => { void selectRuntime(id); }}
+                    disabled={!item.available || saving}
+                    title={item.available ? item.detail : item.fix}
+                    onClick={() => { if (item.available && !saving) void selectRuntime(id); }}
                     onMouseEnter={(event) => { event.currentTarget.style.background = 'var(--t-hover)'; }}
                     onMouseLeave={(event) => { event.currentTarget.style.background = active ? 'var(--t-hover)' : 'transparent'; }}
                     style={{
@@ -483,7 +412,7 @@ export function FleetWorkerChip({ compact = false }: { compact?: boolean }) {
                       letterSpacing: '-0.1px',
                     }}
                   >
-                    <span style={{ flexShrink: 0 }}>{getRuntimeCapability(id).label}</span>
+                    <span style={{ flexShrink: 0 }}>{composerRuntimeLabel(id)}</span>
                     <span style={{
                       flex: 1,
                       minWidth: 0,
@@ -494,7 +423,7 @@ export function FleetWorkerChip({ compact = false }: { compact?: boolean }) {
                       color: 'var(--t-text-faint)',
                       textAlign: 'right',
                     }}>
-                      {rowModel ? shortModelLabel(rowModel) : ''}
+                      {item.available ? (rowModel ? shortWorkerModelLabel(rowModel) : 'Configured model') : 'Needs setup'}
                     </span>
                     <span style={{ width: 13, flexShrink: 0, color: 'var(--t-accent)', visibility: active ? 'visible' : 'hidden' }}>
                       <CheckGlyph />
@@ -502,6 +431,7 @@ export function FleetWorkerChip({ compact = false }: { compact?: boolean }) {
                   </button>
                 );
               })}
+              <RuntimeToolsPanel inventory={tools.inventory} loading={tools.loading} error={tools.error} onRefresh={tools.refresh} />
               <div style={{
                 minHeight: 15,
                 paddingTop: 3,
@@ -512,7 +442,7 @@ export function FleetWorkerChip({ compact = false }: { compact?: boolean }) {
                 color: 'var(--t-text-faint)',
                 fontFamily: 'var(--font-sans-system)',
               }}>
-                Multitask packets dispatch to this runtime. Choose OpenCode 2 to set its worker model here.
+                Multitask packets dispatch to this runtime. Choose OpenCode to set its worker model here.
               </div>
             </>
           ) : (
@@ -540,9 +470,9 @@ export function FleetWorkerChip({ compact = false }: { compact?: boolean }) {
                   <BackGlyph />
                 </button>
                 <div style={{ flex: 1, minWidth: 0, fontFamily: 'var(--font-sans-system)', fontSize: 11.5, color: 'var(--t-text)' }}>
-                  OpenCode 2 worker model
+                  {view === 'threecode-model' ? '3code worker model' : 'OpenCode worker model'}
                 </div>
-                {defaults.opencodeWorkerModel ? (
+                {(view === 'threecode-model' ? defaults.threecodeWorkerModel : defaults.opencodeWorkerModel) ? (
                   <button
                     type="button"
                     disabled={workerModelLocked || saving}
@@ -570,8 +500,9 @@ export function FleetWorkerChip({ compact = false }: { compact?: boolean }) {
                 </div>
               ) : (
                 <AcpModelPicker
-                  backend="opencode"
-                  value={defaults.opencodeWorkerModel}
+                  backend={view === 'threecode-model' ? '3code' : 'opencode'}
+                  catalogueUrl={view === 'threecode-model' ? '/api/runtime/threecode-models' : undefined}
+                  value={view === 'threecode-model' ? defaults.threecodeWorkerModel : defaults.opencodeWorkerModel}
                   width={258}
                   onSelect={(modelId) => { void selectWorkerModel(modelId); }}
                 />

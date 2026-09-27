@@ -1,8 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { createPortal } from 'react-dom';
 import { isTauri } from '@/lib/tauri/bridge';
+import { SIDEBAR_FOOTER_HIT_SIZE } from '../chrome/ChromeButton';
 import {
   DEFAULT_SYMON_MACHINE,
   parseSymonMachineIdentity,
@@ -15,9 +17,8 @@ interface ListedMachine extends SymonMachineIdentity {
 }
 
 /**
- * Minimized state (Q 2026-08-05): the orb can collapse into a thin line in
- * the status bar near the "?" — persisted so it survives reloads, synced
- * across the orb and the status-bar line via a window event.
+ * Minimized state: the footer controls can collapse into a thin line in the
+ * sidebar footer. It survives reloads and stays in sync across both controls.
  */
 const ORB_MINIMIZED_KEY = 'o8:symon-orb:minimized';
 const ORB_MINIMIZED_EVENT = 'o8:symon-orb-minimized';
@@ -46,9 +47,8 @@ export function useSymonOrbMinimized(): boolean {
 }
 
 /**
- * The thin status-bar line the orb collapses into — mounted by
- * DesktopStatusBar beside the "?" button. Renders nothing while the orb is
- * expanded. Click restores the orb to his seat by the composer.
+ * The thin line the footer controls collapse into. Click restores voice and
+ * the machine selector in that same footer.
  */
 export function SymonOrbStatusLine() {
   const minimized = useSymonOrbMinimized();
@@ -57,7 +57,7 @@ export function SymonOrbStatusLine() {
   return (
     <button
       type="button"
-      aria-label="Restore Symon"
+      aria-label="Restore Symon voice"
       title="Symon is minimized — click to restore"
       onClick={() => setSymonOrbMinimized(false)}
       onMouseEnter={() => setHovered(true)}
@@ -66,11 +66,11 @@ export function SymonOrbStatusLine() {
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        width: 22,
-        height: 22,
+        width: SIDEBAR_FOOTER_HIT_SIZE,
+        height: SIDEBAR_FOOTER_HIT_SIZE,
         borderRadius: 6,
         borderWidth: 0,
-        background: hovered ? 'var(--t-hover)' : 'transparent',
+        background: 'transparent',
         cursor: 'pointer',
         padding: 0,
         transition: 'background 120ms ease',
@@ -79,19 +79,22 @@ export function SymonOrbStatusLine() {
       <span
         aria-hidden
         style={{
-          width: 14,
-          height: 3,
-          borderRadius: 999,
-          background: 'conic-gradient(from 210deg at 50% 50%, #88d1f1, #b1b4e5 32%, #f5b8c4 62%, #f4c977 82%, #88d1f1)',
-          opacity: hovered ? 1 : 0.75,
-          transition: 'opacity 120ms ease',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 22,
+          height: 22,
+          borderRadius: 6,
+          background: hovered ? 'var(--t-hover)' : 'transparent',
         }}
-      />
+      >
+        <span style={{ width: 14, height: 3, borderRadius: 999, background: 'conic-gradient(from 210deg at 50% 50%, #88d1f1, #b1b4e5 32%, #f5b8c4 62%, #f4c977 82%, #88d1f1)', opacity: hovered ? 1 : 0.75, transition: 'opacity 120ms ease' }} />
+      </span>
     </button>
   );
 }
 
-export function SymonMachineControl() {
+export function SymonMachineControl({ placement = 'floating' }: { placement?: 'floating' | 'sidebar' }) {
   // Keep the server render and the client's hydration render identical. Tauri
   // globals only exist in the webview, so reading isTauri() during render made
   // the client insert this control where the server had rendered the voice
@@ -107,8 +110,10 @@ export function SymonMachineControl() {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<'machine' | 'capabilities'>('machine');
   const [rightOffset, setRightOffset] = useState(16);
+  const [popoverLeft, setPopoverLeft] = useState(12);
   const minimized = useSymonOrbMinimized();
   const rootRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setInTauri(isTauri());
@@ -119,6 +124,7 @@ export function SymonMachineControl() {
   // opens/closes/resizes. ResizeObserver catches panel drags; the re-query on
   // each pass survives the pane element being rebuilt across layout changes.
   useEffect(() => {
+    if (placement === 'sidebar') return;
     let observer: ResizeObserver | null = null;
     let observed: Element | null = null;
     const compute = () => {
@@ -142,7 +148,7 @@ export function SymonMachineControl() {
       observer?.disconnect();
       observer = null;
     };
-  }, []);
+  }, [placement]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -178,10 +184,35 @@ export function SymonMachineControl() {
     };
   }, []);
 
+  useLayoutEffect(() => {
+    if (!open) return;
+    if (placement === 'sidebar') {
+      const position = () => {
+        const trigger = rootRef.current?.getBoundingClientRect();
+        const popup = popoverRef.current;
+        if (!trigger || !popup) return;
+        const sidebar = rootRef.current?.closest('[data-o8-agent-panel], [data-mcp-scope="agent-panel"]');
+        const sidebarRight = sidebar?.getBoundingClientRect().right ?? trigger.right;
+        const width = popup.getBoundingClientRect().width;
+        const left = window.innerWidth - sidebarRight - 24 >= width
+          ? sidebarRight + 8
+          : Math.max(12, Math.min(trigger.left - width - 12, window.innerWidth - width - 12));
+        setPopoverLeft((current) => current === left ? current : left);
+      };
+      position();
+      window.addEventListener('resize', position);
+      window.addEventListener('scroll', position, true);
+      return () => {
+        window.removeEventListener('resize', position);
+        window.removeEventListener('scroll', position, true);
+      };
+    }
+  }, [open, placement, view]);
+
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
+      if (!rootRef.current?.contains(event.target as Node) && !popoverRef.current?.contains(event.target as Node)) {
         setOpen(false);
         setView('machine');
       }
@@ -203,205 +234,226 @@ export function SymonMachineControl() {
   if (!inTauri) return null;
   if (minimized) return null;
 
+  const popover = (
+    <AnimatePresence>
+      {open ? (
+        <motion.div
+          ref={popoverRef}
+          data-o8-symon-scroll
+          role="dialog"
+          aria-label={view === 'capabilities' ? 'Symon capabilities' : 'Symon machine control'}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+          style={{
+            position: placement === 'sidebar' ? 'fixed' : 'absolute',
+            left: placement === 'sidebar' ? popoverLeft : undefined,
+            right: placement === 'sidebar' ? undefined : 0,
+            bottom: placement === 'sidebar' ? 12 : 44,
+            zIndex: placement === 'sidebar' ? 120 : undefined,
+            width: view === 'capabilities' ? (placement === 'sidebar' ? 'min(360px, calc(100vw - 24px))' : 360) : (placement === 'sidebar' ? 'min(220px, calc(100vw - 24px))' : 220),
+            maxHeight: placement === 'sidebar' ? 'min(70vh, 520px)' : undefined,
+            overflowY: placement === 'sidebar' ? 'auto' : undefined,
+            scrollbarWidth: placement === 'sidebar' ? 'none' : undefined,
+            paddingTop: 10,
+            paddingRight: 11,
+            paddingBottom: 10,
+            paddingLeft: 11,
+            borderWidth: 1,
+            borderStyle: 'solid',
+            borderColor: error ? 'var(--t-danger)' : 'var(--t-border)',
+            borderRadius: 14,
+            background: 'var(--t-popover-surface)',
+            backdropFilter: 'blur(28px) saturate(1.2)',
+            WebkitBackdropFilter: 'blur(28px) saturate(1.2)',
+            color: 'var(--t-text)',
+            boxShadow: '0 12px 34px rgba(0, 0, 0, 0.2)',
+            fontFamily: 'var(--font-sans-system)',
+          }}
+        >
+          {view === 'capabilities' ? (
+            <SymonCapabilitiesPanel
+              machineDisplayName={active.displayName}
+              onBack={() => setView('machine')}
+              onStarted={() => { setOpen(false); setView('machine'); }}
+              scrollWithinCatalog={placement !== 'sidebar'}
+            />
+          ) : (
+            <>
+              <div style={{ color: error ? 'var(--t-danger)' : 'var(--t-text-muted)', fontSize: 10, lineHeight: 1.2, marginBottom: 5 }}>
+                {error || 'Symon on'}
+              </div>
+              <select
+                aria-label="Active Symon machine"
+                value={active.id}
+                disabled={switching}
+                onChange={(event) => {
+                  const machineId = event.target.value;
+                  setSwitching(true);
+                  setError('');
+                  void import('@tauri-apps/api/core')
+                    .then(({ invoke }) => invoke<unknown>('symon_machine_switch', {
+                      sessionId: 'desktop',
+                      machineId,
+                    }))
+                    .then((value) => {
+                      const identity = parseSymonMachineIdentity(value);
+                      if (identity) setActive(identity);
+                    })
+                    .catch((reason) => setError(reason instanceof Error ? reason.message : 'Machine switch refused'))
+                    .finally(() => setSwitching(false));
+                }}
+                style={{
+                  width: '100%',
+                  borderWidth: 0,
+                  outline: 0,
+                  background: 'transparent',
+                  color: 'var(--t-text)',
+                  font: 'inherit',
+                  fontSize: 12,
+                  fontWeight: 300,
+                  cursor: switching ? 'wait' : 'pointer',
+                }}
+              >
+                {machines.map((machine) => (
+                  <option key={machine.id} value={machine.id} disabled={!machine.available && machine.id !== active.id}>
+                    {machine.displayName}{machine.available ? '' : ' (offline)'}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                aria-label="What Symon can do"
+                onClick={() => setView('capabilities')}
+                onMouseEnter={(event) => { event.currentTarget.style.background = 'var(--t-hover)'; event.currentTarget.style.color = 'var(--t-text)'; }}
+                onMouseLeave={(event) => { event.currentTarget.style.background = 'transparent'; event.currentTarget.style.color = 'var(--t-text-muted)'; }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  width: '100%',
+                  minHeight: 44,
+                  marginTop: 7,
+                  paddingTop: 0,
+                  paddingRight: 8,
+                  paddingBottom: 0,
+                  paddingLeft: 8,
+                  borderRadius: 7,
+                  borderWidth: 0,
+                  background: 'transparent',
+                  color: 'var(--t-text-muted)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontFamily: 'var(--font-sans-system)',
+                  fontSize: 11.5,
+                  fontWeight: 300,
+                  letterSpacing: '-0.1px',
+                  transition: 'background 120ms ease, color 120ms ease',
+                }}
+              >
+                What Symon can do
+                <span aria-hidden style={{ marginLeft: 'auto', color: 'var(--t-text-faint)', fontSize: 16 }}>›</span>
+              </button>
+              <button
+                type="button"
+                aria-label="Minimize Symon voice in the sidebar footer"
+                onClick={() => { setOpen(false); setSymonOrbMinimized(true); }}
+                onMouseEnter={(event) => { event.currentTarget.style.background = 'var(--t-hover)'; event.currentTarget.style.color = 'var(--t-text)'; }}
+                onMouseLeave={(event) => { event.currentTarget.style.background = 'transparent'; event.currentTarget.style.color = 'var(--t-text-muted)'; }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 7,
+                  width: '100%',
+                  minHeight: 24,
+                  marginTop: 7,
+                  paddingTop: 0,
+                  paddingRight: 6,
+                  paddingBottom: 0,
+                  paddingLeft: 6,
+                  borderRadius: 7,
+                  borderWidth: 0,
+                  background: 'transparent',
+                  color: 'var(--t-text-muted)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontFamily: 'var(--font-sans-system)',
+                  fontSize: 11.5,
+                  fontWeight: 300,
+                  letterSpacing: '-0.1px',
+                  transition: 'background 120ms ease, color 120ms ease',
+                }}
+              >
+                <span aria-hidden style={{ display: 'inline-flex', width: 12, height: 2.5, borderRadius: 999, background: 'currentColor', opacity: 0.7, flexShrink: 0 }} />
+                Minimize
+              </button>
+            </>
+          )}
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+
   return (
     <div
       ref={rootRef}
       style={{
-        position: 'fixed',
-        bottom: 120,
+        position: placement === 'sidebar' ? 'relative' : 'fixed',
+        bottom: placement === 'sidebar' ? undefined : 120,
         // Anchored to the CENTER pane's right edge, not the viewport — with
         // the right panel open, a viewport anchor floated the orb over the
         // panel instead of his usual seat beside the composer (Q 2026-08-05).
-        right: rightOffset,
+        right: placement === 'sidebar' ? undefined : rightOffset,
         zIndex: 50,
-        transition: 'right 220ms cubic-bezier(0.22, 1, 0.36, 1)',
+        transition: placement === 'sidebar' ? undefined : 'right 220ms cubic-bezier(0.22, 1, 0.36, 1)',
       }}
     >
-      <AnimatePresence>
-        {open ? (
-          <motion.div
-            role="dialog"
-            aria-label={view === 'capabilities' ? 'Symon capabilities' : 'Symon machine control'}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ type: 'spring', stiffness: 420, damping: 34 }}
-            style={{
-              position: 'absolute',
-              right: 0,
-              bottom: 44,
-              width: view === 'capabilities' ? 360 : 220,
-              paddingTop: 10,
-              paddingRight: 11,
-              paddingBottom: 10,
-              paddingLeft: 11,
-              borderWidth: 1,
-              borderStyle: 'solid',
-              borderColor: error ? 'var(--t-danger)' : 'var(--t-border)',
-              borderRadius: 14,
-              background: 'color-mix(in srgb, var(--t-input-bg) 88%, transparent)',
-              backdropFilter: 'blur(28px) saturate(1.2)',
-              WebkitBackdropFilter: 'blur(28px) saturate(1.2)',
-              color: 'var(--t-text)',
-              boxShadow: '0 12px 34px rgba(0, 0, 0, 0.2)',
-              fontFamily: 'var(--font-sans-system)',
-            }}
-          >
-            {view === 'capabilities' ? (
-              <SymonCapabilitiesPanel
-                machineDisplayName={active.displayName}
-                onBack={() => setView('machine')}
-                onStarted={() => { setOpen(false); setView('machine'); }}
-              />
-            ) : (
-              <>
-                <div style={{ color: error ? 'var(--t-danger)' : 'var(--t-text-muted)', fontSize: 10, lineHeight: 1.2, marginBottom: 5 }}>
-                  {error || 'Symon on'}
-                </div>
-                <select
-                  aria-label="Active Symon machine"
-                  value={active.id}
-                  disabled={switching}
-                  onChange={(event) => {
-                    const machineId = event.target.value;
-                    setSwitching(true);
-                    setError('');
-                    void import('@tauri-apps/api/core')
-                      .then(({ invoke }) => invoke<unknown>('symon_machine_switch', {
-                        sessionId: 'desktop',
-                        machineId,
-                      }))
-                      .then((value) => {
-                        const identity = parseSymonMachineIdentity(value);
-                        if (identity) setActive(identity);
-                      })
-                      .catch((reason) => setError(reason instanceof Error ? reason.message : 'Machine switch refused'))
-                      .finally(() => setSwitching(false));
-                  }}
-                  style={{
-                    width: '100%',
-                    borderWidth: 0,
-                    outline: 0,
-                    background: 'transparent',
-                    color: 'var(--t-text)',
-                    font: 'inherit',
-                    fontSize: 12,
-                    fontWeight: 300,
-                    cursor: switching ? 'wait' : 'pointer',
-                  }}
-                >
-                  {machines.map((machine) => (
-                    <option key={machine.id} value={machine.id} disabled={!machine.available && machine.id !== active.id}>
-                      {machine.displayName}{machine.available ? '' : ' (offline)'}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  aria-label="What Symon can do"
-                  onClick={() => setView('capabilities')}
-                  onMouseEnter={(event) => { event.currentTarget.style.background = 'var(--t-hover)'; event.currentTarget.style.color = 'var(--t-text)'; }}
-                  onMouseLeave={(event) => { event.currentTarget.style.background = 'transparent'; event.currentTarget.style.color = 'var(--t-text-muted)'; }}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    width: '100%',
-                    minHeight: 44,
-                    marginTop: 7,
-                    paddingTop: 0,
-                    paddingRight: 8,
-                    paddingBottom: 0,
-                    paddingLeft: 8,
-                    borderRadius: 7,
-                    borderWidth: 0,
-                    background: 'transparent',
-                    color: 'var(--t-text-muted)',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    fontFamily: 'var(--font-sans-system)',
-                    fontSize: 11.5,
-                    fontWeight: 300,
-                    letterSpacing: '-0.1px',
-                    transition: 'background 120ms ease, color 120ms ease',
-                  }}
-                >
-                  What Symon can do
-                  <span aria-hidden style={{ marginLeft: 'auto', color: 'var(--t-text-faint)', fontSize: 16 }}>›</span>
-                </button>
-                <button
-                  type="button"
-                  aria-label="Minimize Symon to the status bar"
-                  onClick={() => { setOpen(false); setSymonOrbMinimized(true); }}
-                  onMouseEnter={(event) => { event.currentTarget.style.background = 'var(--t-hover)'; event.currentTarget.style.color = 'var(--t-text)'; }}
-                  onMouseLeave={(event) => { event.currentTarget.style.background = 'transparent'; event.currentTarget.style.color = 'var(--t-text-muted)'; }}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 7,
-                    width: '100%',
-                    minHeight: 24,
-                    marginTop: 7,
-                    paddingTop: 0,
-                    paddingRight: 6,
-                    paddingBottom: 0,
-                    paddingLeft: 6,
-                    borderRadius: 7,
-                    borderWidth: 0,
-                    background: 'transparent',
-                    color: 'var(--t-text-muted)',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    fontFamily: 'var(--font-sans-system)',
-                    fontSize: 11.5,
-                    fontWeight: 300,
-                    letterSpacing: '-0.1px',
-                    transition: 'background 120ms ease, color 120ms ease',
-                  }}
-                >
-                  <span aria-hidden style={{ display: 'inline-flex', width: 12, height: 2.5, borderRadius: 999, background: 'currentColor', opacity: 0.7, flexShrink: 0 }} />
-                  Minimize to status bar
-                </button>
-              </>
-            )}
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
+      {placement === 'sidebar' && typeof document !== 'undefined' ? createPortal(popover, document.body) : popover}
       <button
         type="button"
-        aria-label={`Symon machine: ${active.displayName}`}
+        aria-label={`Symon options: ${active.displayName}`}
         aria-expanded={open}
         aria-haspopup="dialog"
-        title={error || `${active.displayName} has the Symon session`}
+        title={error || `Symon options · ${active.displayName}`}
         onClick={() => setOpen((value) => !value)}
         style={{
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
-          width: 34,
-          height: 34,
+          width: placement === 'sidebar' ? SIDEBAR_FOOTER_HIT_SIZE : 34,
+          height: placement === 'sidebar' ? SIDEBAR_FOOTER_HIT_SIZE : 34,
           paddingTop: 0,
           paddingRight: 0,
           paddingBottom: 0,
           paddingLeft: 0,
-          borderWidth: 1,
+          borderWidth: placement === 'sidebar' ? 0 : 1,
           borderStyle: 'solid',
           borderColor: error ? 'var(--t-danger)' : 'var(--t-border)',
-          borderRadius: 17,
-          background: 'var(--t-bg-card)',
-          boxShadow: '0 6px 20px rgba(0, 0, 0, 0.16)',
+          borderRadius: placement === 'sidebar' ? 12 : 17,
+          background: placement === 'sidebar' ? 'transparent' : 'var(--t-bg-card)',
+          color: 'var(--t-text-muted)',
+          boxShadow: placement === 'sidebar' ? 'none' : '0 6px 20px rgba(0, 0, 0, 0.16)',
           cursor: 'pointer',
         }}
       >
-        <span
-          aria-hidden
-          style={{
-            width: 17,
-            height: 17,
-            borderRadius: '50%',
-            background: 'radial-gradient(circle at 64% 28%, color-mix(in srgb, var(--t-text) 90%, transparent), transparent 30%), conic-gradient(from 210deg at 50% 50%, #88d1f1, #b1b4e5 32%, #f5b8c4 62%, #f4c977 82%, #88d1f1)',
-            boxShadow: error ? '0 0 0 2px var(--t-danger)' : '0 0 9px rgba(136, 209, 241, 0.45)',
-          }}
-        />
+        {placement === 'sidebar' ? (
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M4 7h16M4 17h16" />
+            <circle cx="9" cy="7" r="2" fill="var(--t-popover-surface)" />
+            <circle cx="15" cy="17" r="2" fill="var(--t-popover-surface)" />
+          </svg>
+        ) : (
+          <span
+            aria-hidden
+            style={{
+              width: 17,
+              height: 17,
+              borderRadius: '50%',
+              background: 'radial-gradient(circle at 64% 28%, color-mix(in srgb, var(--t-text) 90%, transparent), transparent 30%), conic-gradient(from 210deg at 50% 50%, #88d1f1, #b1b4e5 32%, #f5b8c4 62%, #f4c977 82%, #88d1f1)',
+              boxShadow: error ? '0 0 0 2px var(--t-danger)' : '0 0 9px rgba(136, 209, 241, 0.45)',
+            }}
+          />
+        )}
       </button>
     </div>
   );

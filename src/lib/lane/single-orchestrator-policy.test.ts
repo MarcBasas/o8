@@ -1,14 +1,17 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { SANDBOX_EXEC_PATH } from '@/lib/runtimes/shared/owned-session/sandbox';
+import { codexComposerImagePaths, persistComposerImages } from '@/lib/mobile/orchestrator-image-media';
 import { prepareSingleOrchestratorLaunch, singleOrchestratorEnvironment } from './single-orchestrator-policy';
 
 const tempRoots: string[] = [];
 const originalDataDir = process.env.CORTEX_IDE_DATA_DIR;
+const originalMediaRoot = process.env.CORTEX_IDE_MEDIA_ROOT;
 const bundledCodex = '/Applications/ChatGPT.app/Contents/Resources/codex';
+const bundledCodeModeHost = '/Applications/ChatGPT.app/Contents/Resources/codex-code-mode-host';
 const installedCodex = (process.env.PATH ?? '')
   .split(delimiter)
   .map((entry) => join(entry, 'codex'))
@@ -45,6 +48,8 @@ async function runPrepared(
 afterEach(() => {
   if (originalDataDir === undefined) delete process.env.CORTEX_IDE_DATA_DIR;
   else process.env.CORTEX_IDE_DATA_DIR = originalDataDir;
+  if (originalMediaRoot === undefined) delete process.env.CORTEX_IDE_MEDIA_ROOT;
+  else process.env.CORTEX_IDE_MEDIA_ROOT = originalMediaRoot;
   while (tempRoots.length) rmSync(tempRoots.pop()!, { recursive: true, force: true });
 });
 
@@ -146,6 +151,33 @@ describe('Single orchestrator process boundary', () => {
     prepared.cleanup();
   });
 
+  it.skipIf(process.platform !== 'darwin')('reads a persisted composer image from the actual Solo sandbox', async () => {
+    const repo = tempRoot('o8-single-image-repo-');
+    const dataDir = tempRoot('o8-single-image-data-');
+    const codexHome = join(dataDir, 'codex-runtime');
+    mkdirSync(codexHome, { recursive: true });
+    process.env.CORTEX_IDE_DATA_DIR = dataDir;
+    process.env.CORTEX_IDE_MEDIA_ROOT = join(dataDir, 'media');
+    const attachment = { dataUri: `data:image/png;base64,${Buffer.from('photo bytes').toString('base64')}`, name: 'photo.png' };
+    const [saved] = persistComposerImages([attachment]);
+    const [imagePath] = codexComposerImagePaths([attachment], codexHome);
+    expect(readFileSync(saved.path, 'utf8')).toBe('photo bytes');
+    const sourceLauncher = join(dataDir, 'codex-test-launcher');
+    writeFileSync(sourceLauncher, '#!/bin/sh\nexec /bin/sh "$@"\n', { mode: 0o700 });
+    const prepared = await prepareSingleOrchestratorLaunch({
+      repoPath: repo,
+      codexHome,
+      binary: sourceLauncher,
+      args: ['-c', 'cat "$1"', '--', imagePath],
+      env: process.env,
+    });
+    try {
+      expect(await runPrepared(prepared, repo)).toBe('photo bytes');
+    } finally {
+      prepared.cleanup();
+    }
+  });
+
   it.skipIf(process.platform !== 'darwin' || !installedCodex)('one-shot launches the real Codex binary while wrapper relaunches are OS-denied', async () => {
     const codexHome = tempRoot('o8-single-real-codex-');
     const prepared = await prepareSingleOrchestratorLaunch({
@@ -184,6 +216,54 @@ describe('Single orchestrator process boundary', () => {
       prepared.cleanup();
     }
   }, 30_000);
+
+  it.skipIf(process.platform !== 'darwin' || !installedCodex || !existsSync(bundledCodeModeHost))(
+    'allows the installed tool host while Codex CLI relaunch remains denied', async () => {
+      const codexHome = tempRoot('o8-single-tool-host-');
+      const prepared = await prepareSingleOrchestratorLaunch({
+        repoPath: process.cwd(),
+        codexHome,
+        binary: installedCodex!,
+        args: ['--version'],
+        env: process.env,
+      });
+      try {
+        const output = execFileSync(SANDBOX_EXEC_PATH, [
+          '-f', prepared.profilePath, bundledCodeModeHost, '--help',
+        ], { env: prepared.env, encoding: 'utf8' });
+        expect(output).toContain('codex-code-mode-host');
+        expect(() => execFileSync(SANDBOX_EXEC_PATH, [
+          '-f', prepared.profilePath, bundledCodex, '--version',
+        ], { env: prepared.env })).toThrow();
+      } finally {
+        prepared.cleanup();
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== 'darwin' || !installedCodex || !existsSync(bundledCodex))(
+    'does not allow a forged tool-host symlink to relaunch the protected CLI', async () => {
+      const fakeHome = tempRoot('o8-single-forged-home-');
+      const resources = join(fakeHome, 'Applications', 'ChatGPT.app', 'Contents', 'Resources');
+      mkdirSync(resources, { recursive: true });
+      const forgedHost = join(resources, 'codex-code-mode-host');
+      symlinkSync(bundledCodex, forgedHost);
+      const prepared = await prepareSingleOrchestratorLaunch({
+        repoPath: process.cwd(),
+        codexHome: tempRoot('o8-single-forged-codex-'),
+        binary: installedCodex!,
+        args: ['--version'],
+        env: { ...process.env, HOME: fakeHome },
+      });
+      try {
+        expect(() => execFileSync(SANDBOX_EXEC_PATH, [
+          '-f', prepared.profilePath, forgedHost, '--version',
+        ], { env: prepared.env })).toThrow();
+      } finally {
+        prepared.cleanup();
+      }
+    },
+  );
 
   it.skipIf(process.platform !== 'darwin')('kills an ignore-TERM grandchild after the supervisor exits', async () => {
     const repo = tempRoot('o8-single-group-repo-');

@@ -1,3 +1,4 @@
+import { runSetup } from './commands/setup.js';
 /**
  * o8 CLI — agent-first wrapper over the local HTTP API.
  *
@@ -38,6 +39,7 @@ import {
 } from './commands/harness.js';
 import { runInbox } from './commands/inbox.js';
 import { runHistory } from './commands/history.js';
+import { runLead } from './commands/lead.js';
 import { runLaneTouches } from './commands/lane.js';
 import { runArtifact } from './commands/artifact.js';
 import { runLease } from './commands/lease.js';
@@ -213,6 +215,12 @@ commands:
   doctor               verify port + token resolution, ping server; --repair reinstalls the o8 CLI symlink
   status               snapshot: running packets, lanes, merges, approvals
   history <thread-id>  continuous orchestrator transcript + audited handoff seams
+  lead start           create a persistent lead (--repo --backend --model --effort --brief --idempotency-key)
+  lead send            send a replay-safe turn to the same lead
+  lead report          record the active lead turn's structured outcome and evidence
+  lead status          read a compact persisted receipt without calling the model
+  lead wait            bounded wait for receipt updates or a terminal state
+  lead stop            durably stop the lead; recovery cannot auto-resume it
   connect [--status]   register this signed-in machine, or list connected machines
   disconnect           remove this machine from the operator's connected devices
   run [--detach] <cmd> run a process in an o8-owned terminal the operator can watch
@@ -248,7 +256,7 @@ commands:
   browser wait <sel>   poll until a selector resolves (--text, --timeout)
   browser close        end this scope's engine (headless Chrome) session
   broadcast say|automation-say|focus|post|token   speak on demand or from an automation, set focus, post narration, or manage spectator bearers
-  msg send|inbox       send a durable agent message or read this session's inbox
+  msg send|inbox       send a bounded agent message (--reply-to ID, --close) or read this session's inbox
   presence list|join   list live sessions or register an explicit external name
   cortex observe       propose a worker observation for the orchestrator
   lane touches         active lanes touching a path or packet diff
@@ -258,15 +266,19 @@ commands:
   lease release <resource>  release a resource held by this agent process
   lease status <resource>   read the holder and FIFO queue for one resource
   lease list           list active named resources
-  worker spawn         create + dispatch one governed worker from any Git repo (--title --body [--repo path] [--runtime id] [--caller label] [--read-only])
+  worker spawn         create + dispatch one governed worker from any Git repo (--title --body [--repo path] [--runtime id] [--model m] [--effort adaptive|low|medium|high|max|xhigh|ultra] [--caller label] [--read-only])
   worker login         connect an encrypted native worker token from an operator terminal (macOS; no source checkout needed)
-  mission create       create a mission from an inline task (--title --body [--dispatch] [--model m] [--carrier native|openrouter|codex-subscription] [--caller label] [--read-only] [--existingBranchPolicy auto|reset|continue|error] [--compare m1,m2] [--quality-search-contract file])
+  mission create       stage a mission from an inline task; --dispatch launches it (--title --body [--dispatch] [--model m] [--effort adaptive|low|medium|high|max|xhigh|ultra] [--carrier native|openrouter|codex-subscription] [--caller label] [--read-only] [--existingBranchPolicy auto|reset|continue|error] [--compare m1,m2] [--quality-search-contract file])
   mission dispatch     dispatch packets to workers (async; --wait blocks for launch; --watch blocks until review/terminal — the spawner's notification) [--mission <id>]
   mission status       mission + packet state [--mission <id>] [--cost]
   mission stop         interrupt and hold every packet in a mission [--mission <id>]
   mission wait         block until a packet hits a review/terminal state [--timeout <milliseconds|5m|90s> --poll]
   mission tail         stream packet status transitions until terminal [--timeout <milliseconds|5m|90s> --poll]
   mcp install          install/print the o8 MCP config (--claude-code | --cursor | --opencode | --print)
+  setup status         inspect first-run choices, readiness, and app handoffs
+  setup configure      --lead <runtime> --workers <list> [--lead-model <id>] [--worker-model <id>]
+  setup open <path>    open a project through visible onboarding without a folder dialog
+  setup cancel <id>    cancel a pending setup request; keep projects and settings
   repo list            list repositories registered in the running o8 app
   repo add <path>      register an existing local Git repository
   repo remove <target> unregister by id, name, or path; the local folder is preserved
@@ -364,6 +376,8 @@ async function dispatch(args: ParsedArgs): Promise<number> {
       return runStatus(args.mode);
     case 'history':
       return runHistory(args.mode, singleLevelArgs(secondary, args.rest, args.secondaryBeforeRest));
+    case 'lead':
+      return runLead(args.mode, secondary, args.rest);
     case 'connect':
       return runConnect(args.mode, 'connect', secondary ? [secondary, ...args.rest] : args.rest);
     case 'disconnect':
@@ -433,6 +447,7 @@ async function dispatch(args: ParsedArgs): Promise<number> {
     }
     case 'mcp':
       return runMcp(args.mode, secondary, args.rest);
+    case 'setup': return runSetup(args.mode, secondary, args.rest);
     case 'repo':
       return runRepo(args.mode, secondary, args.rest);
     case 'project':

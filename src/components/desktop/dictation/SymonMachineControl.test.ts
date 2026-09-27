@@ -87,25 +87,66 @@ describe('SymonMachineControl', () => {
     await act(async () => root.render(createElement(SymonMachineControl)));
     await act(async () => {});
 
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Symon machine: This Mac"]');
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Symon options: This Mac"]');
     expect(trigger).not.toBeNull();
     expect(trigger?.parentElement?.style.bottom).toBe('120px');
     expect(trigger?.parentElement?.style.zIndex).toBe('50');
     expect(trigger?.parentElement?.style.top).toBe('');
     // No center pane in jsdom — the anchor falls back to the viewport inset.
     expect(trigger?.parentElement?.style.right).toBe('16px');
-    expect(container.querySelector('select[aria-label="Active Symon machine"]')).toBeNull();
+    expect(trigger?.style.width).toBe('34px');
+    expect(trigger?.style.height).toBe('34px');
+    expect(document.querySelector('select[aria-label="Active Symon machine"]')).toBeNull();
 
     await act(async () => trigger?.click());
-    expect(container.querySelector('select[aria-label="Active Symon machine"]')).not.toBeNull();
+    expect(document.querySelector('select[aria-label="Active Symon machine"]')).not.toBeNull();
     expect(container.textContent).toContain('Symon on');
+  });
+
+  it('keeps the machine selector in the sidebar footer without a floating orb', async () => {
+    await act(async () => root.render(createElement(SymonMachineControl, { placement: 'sidebar' })));
+    await act(async () => {});
+
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Symon options: This Mac"]');
+    expect(trigger).not.toBeNull();
+    expect(trigger?.parentElement?.style.position).toBe('relative');
+    expect(trigger?.parentElement?.style.right).toBe('');
+    expect(trigger?.parentElement?.style.bottom).toBe('');
+    expect(trigger?.style.width).toBe('44px');
+    expect(trigger?.style.height).toBe('44px');
+
+    await act(async () => trigger?.click());
+    const dialog = document.querySelector<HTMLElement>('[aria-label="Symon machine control"]');
+    expect(dialog?.parentElement).toBe(document.body);
+    expect(dialog?.style.position).toBe('fixed');
+    expect(dialog?.style.bottom).toBe('12px');
+    expect(dialog?.style.top).toBe('');
+    expect(document.querySelector('select[aria-label="Active Symon machine"]')).not.toBeNull();
+    expect(document.querySelector('button[aria-label="Minimize Symon voice in the sidebar footer"]')).not.toBeNull();
+  });
+
+  it('uses one scroll area for the sidebar capability catalog', async () => {
+    await act(async () => root.render(createElement(SymonMachineControl, { placement: 'sidebar' })));
+    await act(async () => {});
+
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Symon options: This Mac"]');
+    await act(async () => trigger?.click());
+    await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="What Symon can do"]')?.click());
+    await act(async () => {});
+
+    const dialog = document.querySelector<HTMLElement>('[aria-label="Symon capabilities"]');
+    expect(dialog?.style.overflowY).toBe('auto');
+    expect(dialog?.style.scrollbarWidth).toBe('none');
+    const nestedScrollers = Array.from(dialog?.querySelectorAll<HTMLElement>('*') ?? [])
+      .filter((element) => ['auto', 'scroll'].includes(element.style.overflowY));
+    expect(nestedScrollers).toHaveLength(0);
   });
 
   it('opens the truthful capability catalog and starts a selected prompt', async () => {
     await act(async () => root.render(createElement(SymonMachineControl)));
     await act(async () => {});
 
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Symon machine: This Mac"]');
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Symon options: This Mac"]');
     await act(async () => trigger?.click());
     const discover = container.querySelector<HTMLButtonElement>('button[aria-label="What Symon can do"]');
     expect(discover).not.toBeNull();
@@ -135,18 +176,18 @@ describe('SymonMachineControl', () => {
     await act(async () => root.render(createElement(SymonMachineControl)));
     await act(async () => {});
 
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Symon machine: This Mac"]');
-    expect(trigger?.title).toBe('This Mac has the Symon session');
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Symon options: This Mac"]');
+    expect(trigger?.title).toBe('Symon options · This Mac');
     expect(trigger?.parentElement?.hasAttribute('title')).toBe(false);
 
     await act(async () => trigger?.click());
     const dialog = container.querySelector<HTMLElement>('[role="dialog"]');
     expect(dialog).not.toBeNull();
     expect(dialog?.closest('[title]')).toBeNull();
-    expect(dialog?.style.background).toBe('color-mix(in srgb, var(--t-input-bg) 88%, transparent)');
+    expect(dialog?.style.background).toBe('var(--t-popover-surface)');
     expect(dialog?.style.backdropFilter).toBe('blur(28px) saturate(1.2)');
     expect(motionState.latest?.style).toMatchObject({
-      background: 'color-mix(in srgb, var(--t-input-bg) 88%, transparent)',
+      background: 'var(--t-popover-surface)',
       backdropFilter: 'blur(28px) saturate(1.2)',
       WebkitBackdropFilter: 'blur(28px) saturate(1.2)',
     });
@@ -184,7 +225,7 @@ describe('SymonMachineControl', () => {
     try {
       await act(async () => root.render(createElement(SymonMachineControl)));
       await act(async () => {});
-      const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Symon machine: This Mac"]');
+      const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Symon options: This Mac"]');
       // innerWidth 1200 − pane.right 800 + 16 inset = 416: the orb sits beside
       // the composer, not over an open right panel.
       expect(trigger?.parentElement?.style.right).toBe('416px');
@@ -197,14 +238,14 @@ describe('SymonMachineControl', () => {
     await act(async () => root.render(createElement(SymonMachineControl)));
     await act(async () => {});
 
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Symon machine: This Mac"]');
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Symon options: This Mac"]');
     await act(async () => trigger?.click());
-    const minimize = container.querySelector<HTMLButtonElement>('button[aria-label="Minimize Symon to the status bar"]');
+    const minimize = container.querySelector<HTMLButtonElement>('button[aria-label="Minimize Symon voice in the sidebar footer"]');
     expect(minimize).not.toBeNull();
 
     await act(async () => minimize?.click());
     // The orb is gone…
-    expect(container.querySelector('button[aria-label^="Symon machine:"]')).toBeNull();
+    expect(container.querySelector('button[aria-label^="Symon options:"]')).toBeNull();
 
     // …and the status-bar line renders and restores him.
     const lineHost = document.createElement('div');
@@ -212,11 +253,13 @@ describe('SymonMachineControl', () => {
     const lineRoot = createRoot(lineHost);
     try {
       await act(async () => lineRoot.render(createElement(SymonOrbStatusLine)));
-      const restore = lineHost.querySelector<HTMLButtonElement>('button[aria-label="Restore Symon"]');
+      const restore = lineHost.querySelector<HTMLButtonElement>('button[aria-label="Restore Symon voice"]');
       expect(restore).not.toBeNull();
+      expect(restore?.style.width).toBe('44px');
+      expect(restore?.style.height).toBe('44px');
       await act(async () => restore?.click());
-      expect(container.querySelector('button[aria-label^="Symon machine:"]')).not.toBeNull();
-      expect(lineHost.querySelector('button[aria-label="Restore Symon"]')).toBeNull();
+      expect(container.querySelector('button[aria-label^="Symon options:"]')).not.toBeNull();
+      expect(lineHost.querySelector('button[aria-label="Restore Symon voice"]')).toBeNull();
     } finally {
       await act(async () => lineRoot.unmount());
       lineHost.remove();

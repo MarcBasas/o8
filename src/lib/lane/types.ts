@@ -303,12 +303,45 @@ export type LaneEventVerb =
   // typecheck_escalation — layer 2 promoted the lane to awaiting_orchestrator
   | 'typecheck_auto_retry'
   | 'typecheck_escalation'
+  // Advisory referee gate-failure risk for the packet's diff, recorded just
+  // before a layer-1 auto-rerun when judgment.provider is on (#2437). Nothing
+  // reads it; the rerun fires the same either way.
+  // Payload: { receiptId, packetId, risk, legend, confidence, abstain, truncated, hiddenText, diffFingerprint }
+  | 'gate_failure_warning'
+  // Advisory claim-versus-evidence check on the worker's final report (#2447),
+  // recorded after a completion writes its outcome row when judgment.provider
+  // is on and a claim is unbacked. Record-only: nothing reads it.
+  // Payload: { receiptId, packetId, claims: ('tests' | 'files')[], answers, verificationOutputPresent, reportFlags, outputFlags, reportTruncated, outputTruncated, changedFileCount, diffFingerprint, reportFingerprint }
+  | 'claim_unbacked'
+  // Advisory rule citations for the merge preview (#2446), recorded when the
+  // detached per-file calls settle with judgment.provider on. The merge gate
+  // never reads it. Payload: { diffFingerprint, recipe, rulesFound, rulesMissing, files, citations, receiptIds }
+  | 'directive_citations'
+  // Record-only push gate answer for an outgoing push (#2441). The push is sent
+  // either way; nothing reads this. Payload: { receiptId, kind, p, wouldSuppress, operatorGated }
+  | 'push_gate'
+  // Loop check on the supervisor tick (#2448), recorded every time the
+  // detached call answers with judgment.provider on. Record-only.
+  // Payload: { receiptId, packetId, p, window, counts }
+  | 'loop_check'
+  // Advisory: two consecutive loop checks at or above the PROVISIONAL band
+  // (0.6). Raised once per run; nothing is stopped. Payload: { receiptId,
+  // receiptIds, packetId, sessionKey, p, band, advisory, pattern: { toolName, argsHash, count, resultHead, failed } }
+  | 'possible_loop'
+  // Record-only triage of an orchestrator wake (#2467), recorded when the
+  // detached call settles with judgment.provider on. The wake runs unchanged;
+  // nothing reads this. Payload: { receiptId, source, choice, probabilities, confidence, abstain, factsHash }
+  | 'wake_triage'
   // A repo publication action exhausted its bounded resource-lease wait.
   // Payload: { resource, waitedMs, holder, retryCount, willRetry }
   | 'lease_wait_timeout'
   // Worker consulted the Engineering Brain via `o8 ask` (2026-06-11).
   // Payload: { question, class, cacheHit, sourcesConsidered, citedCount, topTitles }
   | 'brain_consulted'
+  // A typed judgment call ran with this lane in context (#2434). Payload is the
+  // receipt: { receiptId, provider, model, ok, questions, answers, inputTokens,
+  // outputTokens, latencyMs, attempts, truncated, error, packetId, approvalId, surface }
+  | 'judgment'
   // Reserved Broadcast event kind for future agent-to-agent communication.
   // No producer exists yet; this keeps the ledger schema forward-compatible.
   | 'message'
@@ -341,8 +374,17 @@ export type LaneEventVerb =
   // { code, reason, packetId, branch, ref, note, gcRisk }
   | 'branch_preservation_failed'
   // Packet dispatch refused to launch without a managed worktree.
-  // Payload: { code, runtime, packetId, laneId, repoPath, cause, note }
+  // Payload adds storageRelease: { decision, ownerGeneration,
+  // releasedReservations, releasedBytes, retainedOwnerIds, reason }.
   | 'worktree_provision_failed'
+  // Cleanup positively confirmed the tracked child directory was gone. This
+  // records observation only; it never claims retirement completed.
+  // Payload: { reason: 'confirmed-missing-directory', action, workspacePath }
+  | 'workspace_absence_observed'
+  // Cleanup finished retiring that observed-absent workspace and removed its
+  // durable metadata. Emitted only after removal, so a late failure leaves no
+  // completion claim behind. Payload: { reason, action, workspacePath }
+  | 'workspace_retirement_confirmed'
   // Dependency setup completed and its package-script binaries were checked
   // before a worker could start. The incomplete event is a launch blocker.
   | 'dependency_materialized'

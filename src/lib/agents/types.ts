@@ -13,6 +13,24 @@ export interface AgentPresence {
 export interface AgentMessageRefs {
   laneId: string | null;
   packetId: string | null;
+  /** Immutable identities recorded when the message was accepted. Older messages omit this. */
+  identities?: { from: AgentMessageIdentity | null; to: AgentMessageIdentity | null };
+}
+
+export interface AgentMessageIdentity {
+  runtime: string;
+  sessionKey: string | null;
+}
+
+export interface AgentConversationReceipt {
+  id: string;
+  replyToId: string | null;
+  turnIndex: number;
+  turnLimit: number;
+  remainingTurns: number;
+  status: 'open' | 'closed';
+  closedReason: string | null;
+  lastMessageId: string;
 }
 
 export interface AgentMessage {
@@ -25,6 +43,8 @@ export interface AgentMessage {
   repo: string;
   text: string;
   refs: AgentMessageRefs;
+  /** Missing on older, unthreaded messages. */
+  conversation?: AgentConversationReceipt | null;
   delivery: 'native' | 'poll' | 'failed';
   deliveryNote: string | null;
   timestamp: string;

@@ -63,6 +63,7 @@ import {
 } from '@/lib/workspace/exact-managed-directory-retirement';
 import { readExactWorkspaceClaim } from '@/lib/workspace/exact-workspace-claim-state';
 import {
+  confirmWorkspaceMaterializationRetirement,
   finishWorkspaceMaterializationRetirement,
   getWorkspaceRetirementAction,
   prepareWorkspaceMaterializationRetirement,
@@ -340,6 +341,7 @@ export class WorktreeManager {
           canonicalPath: capturedBase.canonicalPath,
           device: Number(capturedBase.device),
           inode: Number(capturedBase.inode),
+          volumeId,
         },
       }, () => withWorktreeMetaTransaction(this.repoRoot, async (transaction) => {
           const entry = (await transaction.readAll())[created.id];
@@ -1849,6 +1851,7 @@ export class WorktreeManager {
       ?? 'cleanup';
 
     let cleanupIdentity: Awaited<ReturnType<typeof captureWorktreeMaterializationIdentity>> | null = null;
+    let confirmedMissingRetirement = false;
 
     // Safety: preserve uncommitted agent work before removing. Every Git read
     // and preservation write stays on the same captured workspace inode that
@@ -1910,6 +1913,7 @@ export class WorktreeManager {
       try {
         retirementTruth = await prepareWorkspaceMaterializationRetirement(
           this.repoRoot, worktreePath, retirementAction,
+          retirementAction === 'cleanup' ? { allowConfirmedMissingDirectory: true } : {},
         );
       } catch (error) {
         console.error(
@@ -1965,6 +1969,7 @@ export class WorktreeManager {
       }
       if (await this.pathExists(worktreePath)) return false;
       await finishWorkspaceMaterializationRetirement(worktreePath, retirementAction);
+      confirmedMissingRetirement = retirementTruth === null && !pathInitiallyExists;
       if ((entry?.isolationKind ?? 'git-worktree') === 'git-worktree') {
         await execFileAsync('git', ['worktree', 'prune'], {
           windowsHide: true,
@@ -1974,8 +1979,10 @@ export class WorktreeManager {
       }
     }
 
-    // Optionally delete the branch
-    if (opts?.deleteBranch && entry) {
+    // A missing checkout with no verified snapshot has not passed committed-
+    // work preservation. Keep its branch: it may be the last named reference
+    // to work that survived the directory's removal.
+    if (opts?.deleteBranch && entry && !confirmedMissingRetirement) {
       const branchName = entry.branchName ?? `worktree/${entry.agentType}/${worktreeId}`;
       await execFileAsync('git', ['branch', '-D', branchName], {
         windowsHide: true,
@@ -1987,6 +1994,11 @@ export class WorktreeManager {
     // Remove our metadata
     await this.removeMeta(worktreeId);
     completeExactManagedDirectoryRetirement(this.repoRoot, worktreeId);
+    if (confirmedMissingRetirement) {
+      await confirmWorkspaceMaterializationRetirement(
+        this.repoRoot, worktreePath, retirementAction,
+      );
+    }
     return true;
   }
 

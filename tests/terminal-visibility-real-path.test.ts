@@ -14,12 +14,14 @@ type WireFrame = {
   event?: string;
   data?: {
     code?: string;
+    cols?: number;
     data?: string;
     epoch?: number;
     historyTruncated?: boolean;
     lastGoodOffset?: number;
     reason?: string;
     requestId?: string;
+    rows?: number;
     sessionName?: string;
     source?: string;
     waitedMs?: number;
@@ -32,6 +34,7 @@ const ownerKey = `workspace:terminal-visibility-real-path-${process.pid}`;
 const sessionName = dashSessionNameForOwnerKey(ownerKey)!;
 const duplicateOwnerKey = `workspace:terminal-visibility-duplicate-${process.pid}`;
 const duplicateSessionName = dashSessionNameForOwnerKey(duplicateOwnerKey)!;
+const observerSessionName = `cortex-observer-${process.pid}`;
 const plainSessionName = `cortex-plain-visibility-${process.pid}`;
 const OVERFLOW_TERMINAL = { cols: 120, rows: 30 } as const;
 const DUPLICATE_TERMINAL = { cols: 120, rows: 40 } as const;
@@ -141,7 +144,17 @@ function terminalText(received: ReceivedFrame[], startIndex = 0, targetSession =
 }
 
 function capturePane(targetSession = sessionName) {
-  return execFileSync('tmux', dashTmuxArgs('capture-pane', '-p', '-t', targetSession), { encoding: 'utf8' });
+  const args = ['capture-pane', '-p', '-t', targetSession];
+  return execFileSync('tmux', targetSession === observerSessionName ? args : dashTmuxArgs(...args), { encoding: 'utf8' });
+}
+
+function tmuxWindowDimensions(targetSession: string) {
+  const args = ['display-message', '-p', '-t', targetSession, '#{window_width} #{window_height}'];
+  return execFileSync('tmux', targetSession === observerSessionName ? args : dashTmuxArgs(...args), { encoding: 'utf8' }).trim();
+}
+
+function observerTmuxClientFlags() {
+  return execFileSync('tmux', ['list-clients', '-t', observerSessionName, '-F', '#{client_readonly}'], { encoding: 'utf8' }).trim().split('\n');
 }
 
 function normalizeTerminalLines(lines: string[]) {
@@ -249,10 +262,97 @@ afterAll(async () => {
   if (apiServer?.listening) await new Promise<void>((resolve) => apiServer.close(() => resolve()));
   try { execFileSync('tmux', dashTmuxArgs('kill-session', '-t', sessionName), { stdio: 'ignore' }); } catch { /* not created */ }
   try { execFileSync('tmux', dashTmuxArgs('kill-session', '-t', duplicateSessionName), { stdio: 'ignore' }); } catch { /* not created */ }
+  try { execFileSync('tmux', ['kill-session', '-t', observerSessionName], { stdio: 'ignore' }); } catch { /* not created */ }
   rmSync(dataDir, { recursive: true, force: true });
 });
 
 describe.runIf(tmuxAvailable)('terminal visibility through the real WebSocket and PTY path', () => {
+  it('observes the source grid without allowing input or resize, then keeps writable attachment interactive', async () => {
+    execFileSync('tmux', ['new-session', '-d', '-s', observerSessionName, '-x', '117', '-y', '31']);
+    expect(tmuxWindowDimensions(observerSessionName)).toBe('117 31');
+
+    const observer = await connectClient();
+    observer.socket.send(JSON.stringify({
+      type: 'terminal-attach', sessionName: observerSessionName, cols: 42, rows: 12, readOnly: true,
+    }));
+    await waitFor(() => observer.received.some(({ frame }) => (
+      frame.channel === 'terminal' && frame.event === 'attached' && frame.data?.sessionName === observerSessionName
+    )), 'read-only terminal attachment');
+    const attached = observer.received.find(({ frame }) => (
+      frame.event === 'attached' && frame.data?.sessionName === observerSessionName
+    ))?.frame.data;
+    expect([attached?.cols, attached?.rows]).toEqual([117, 32]);
+    expect(tmuxWindowDimensions(observerSessionName)).toBe('117 31');
+
+    observer.socket.send(JSON.stringify({
+      type: 'terminal-input', sessionName: observerSessionName, data: "printf 'O8_OBSERVER_WROTE\\n'\r",
+    }));
+    observer.socket.send(JSON.stringify({
+      type: 'terminal-resize', sessionName: observerSessionName, cols: 42, rows: 12,
+    }));
+    observer.socket.send(JSON.stringify({
+      type: 'terminal-visibility', sessionName: observerSessionName, visible: true,
+      epoch: 1, needsResync: true, cols: 42, rows: 12,
+    }));
+    await waitFor(() => observer.received.some(({ frame }) => (
+      frame.event === 'resync' && frame.data?.sessionName === observerSessionName && frame.data?.epoch === 1
+    )), 'read-only reveal');
+    expect(tmuxWindowDimensions(observerSessionName)).toBe('117 31');
+    expect(capturePane(observerSessionName)).not.toContain('O8_OBSERVER_WROTE');
+
+    const writer = await connectClient();
+    writer.socket.send(JSON.stringify({
+      type: 'terminal-attach', sessionName: observerSessionName, cols: 117, rows: 31,
+    }));
+    await waitFor(() => writer.received.some(({ frame }) => (
+      frame.event === 'attached' && frame.data?.sessionName === observerSessionName
+    )), 'writable terminal attachment');
+    writer.socket.send(JSON.stringify({
+      type: 'terminal-input', sessionName: observerSessionName, data: "printf 'O8_WRITER_WORKS\\n'\r",
+    }));
+    await waitFor(() => capturePane(observerSessionName).includes('O8_WRITER_WORKS'), 'writable terminal input');
+    writer.socket.send(JSON.stringify({
+      type: 'terminal-resize', sessionName: observerSessionName, cols: 100, rows: 27,
+    }));
+    await waitFor(() => observer.received.some(({ frame }) => (
+      frame.event === 'dimensions' && frame.data?.sessionName === observerSessionName
+      && frame.data?.cols === 100 && frame.data?.rows === 27
+    )), 'observer source dimensions update');
+    await waitFor(() => tmuxWindowDimensions(observerSessionName).startsWith('100 '), 'writable owner resize');
+
+    observer.socket.close();
+    await once(observer.socket, 'close');
+    const reconnected = await connectClient();
+    reconnected.socket.send(JSON.stringify({
+      type: 'terminal-attach', sessionName: observerSessionName, cols: 40, rows: 10, readOnly: true,
+    }));
+    await waitFor(() => reconnected.received.some(({ frame }) => (
+      frame.event === 'attached' && frame.data?.sessionName === observerSessionName
+    )), 'read-only reconnect');
+    const sourceDimensions = tmuxWindowDimensions(observerSessionName);
+    reconnected.socket.send(JSON.stringify({
+      type: 'terminal-input', sessionName: observerSessionName, data: "printf 'O8_RECONNECTED_WROTE\\n'\r",
+    }));
+    reconnected.socket.send(JSON.stringify({
+      type: 'terminal-resize', sessionName: observerSessionName, cols: 40, rows: 10,
+    }));
+    reconnected.socket.send(JSON.stringify({
+      type: 'terminal-visibility', sessionName: observerSessionName, visible: true,
+      epoch: 1, needsResync: true, cols: 40, rows: 10,
+    }));
+    await waitFor(() => reconnected.received.some(({ frame }) => (
+      frame.event === 'resync' && frame.data?.sessionName === observerSessionName && frame.data?.epoch === 1
+    )), 'read-only reconnect reveal');
+    expect(tmuxWindowDimensions(observerSessionName)).toBe(sourceDimensions);
+    expect(capturePane(observerSessionName)).not.toContain('O8_RECONNECTED_WROTE');
+
+    writer.socket.send(JSON.stringify({ type: 'terminal-detach', sessionName: observerSessionName }));
+    await waitFor(() => writer.received.some(({ frame }) => (
+      frame.event === 'detached' && frame.data?.sessionName === observerSessionName
+    )), 'writable owner detach');
+    await waitFor(() => observerTmuxClientFlags().join(',') === '1', 'observer ignore-size client restored');
+  }, 30_000);
+
   it('coalesces hidden delivery, resyncs from tmux after overflow, and keeps the PTY', async () => {
     const visible = await connectClient();
     const hidden = await connectClient();

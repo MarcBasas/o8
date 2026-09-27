@@ -135,6 +135,7 @@ const LIGHT_BASE: Record<string, string> = {
   '--t-settings-accent-glow': 'rgba(29, 78, 216, 0.28)',
   '--t-panel-border': 'rgba(15, 23, 42, 0.1)',
   '--t-panel-shadow': '0 24px 60px rgba(40, 30, 20, 0.12), 0 6px 16px rgba(40, 30, 20, 0.06)',
+  '--t-popover-surface': '#FAF9F4',
   '--t-panel-hover': 'rgba(15, 23, 42, 0.04)',
   '--t-panel-active': 'rgba(37, 99, 235, 0.1)',
   '--t-input-border': 'rgba(15, 23, 42, 0.12)',
@@ -161,6 +162,8 @@ const LIGHT_BASE: Record<string, string> = {
   // Chat surface — pinned solid paper in both surface modes (always content,
   // never chrome). --t-canvas-bg is split per-surface below so the o8.md
   // editor and other canvas surfaces can be translucent in glass mode.
+  // Full-screen setup stacks above existing content, including all-glass mode.
+  '--t-onboarding-bg': '#F4F2ED',
   '--t-chat-surface-bg': '#F4F2ED',
   '--t-chat-surface-text': '#0f172a',
   '--t-chat-surface-text-secondary': '#475569',
@@ -220,6 +223,8 @@ const LIGHT_GLASS: Record<string, string> = {
   '--t-bg-subtle': 'rgba(244, 242, 237, 0.58)',
   '--t-panel': 'rgba(244, 242, 237, 0.58)',
   '--t-panel-translucent': 'rgba(244, 242, 237, 0.44)',
+  '--t-popover-surface':
+    'linear-gradient(180deg, rgba(244, 242, 237, 0.94) 0%, rgba(238, 235, 227, 0.92) 100%)',
   '--t-panel-solid':
     'linear-gradient(180deg, rgba(244, 242, 237, 0.92) 0%, rgba(238, 235, 227, 0.88) 100%)',
   '--t-input-bg': 'rgba(244, 242, 237, 0.7)',
@@ -341,6 +346,7 @@ const DARK_BASE: Record<string, string> = {
   '--t-settings-accent-glow': 'rgba(143, 180, 255, 0.3)',
   '--t-panel-border': 'rgba(255, 255, 255, 0.08)',
   '--t-panel-shadow': '0 24px 60px rgba(0, 0, 0, 0.36)',
+  '--t-popover-surface': '#262626',
   '--t-panel-hover': 'rgba(255, 255, 255, 0.06)',
   '--t-panel-active': 'rgba(143, 180, 255, 0.18)',
   '--t-input-border': 'rgba(255, 255, 255, 0.1)',
@@ -365,6 +371,7 @@ const DARK_BASE: Record<string, string> = {
   '--t-glass-border-strong': 'rgba(255, 255, 255, 0.08)',
   '--t-tab-active-text': '#f5f8fc',
   '--t-tab-text': '#8b95a3',
+  '--t-onboarding-bg': '#242424',
   '--t-chat-surface-bg': '#242424',
   '--t-chat-surface-text': '#e8ecf2',
   '--t-chat-surface-text-secondary': '#8b95a3',
@@ -421,6 +428,8 @@ const DARK_GLASS: Record<string, string> = {
   '--t-bg-subtle': 'rgba(56, 62, 72, 0.28)',
   '--t-panel': 'rgba(62, 68, 78, 0.36)',
   '--t-panel-translucent': 'rgba(72, 78, 88, 0.28)',
+  '--t-popover-surface':
+    'linear-gradient(180deg, rgba(27, 33, 42, 0.97) 0%, rgba(25, 30, 38, 0.95) 100%)',
   '--t-panel-solid':
     'linear-gradient(180deg, rgba(42, 42, 42, 0.98) 0%, rgba(34, 34, 34, 0.96) 100%)',
   '--t-input-bg': 'rgba(42, 42, 42, 0.5)',

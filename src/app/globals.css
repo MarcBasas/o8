@@ -1760,8 +1760,46 @@ button.workflow-file-item.workflow-file-item-active {
   }
 }
 
+/* Compact navigation keeps wheel/keyboard scrolling without native bars. */
+[data-mcp-scope="compact-navigation-rail"] *::-webkit-scrollbar,
+[data-mcp-scope="rail-usage-preview"] *::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 /* Hide scrollbar — AgentPanel */
 .hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Worker and terminal panes scroll without drawing a competing rail. */
+[data-session-worker-scroll],
+[data-session-tile-surface],
+[data-session-tile-surface] *,
+[data-o8-term-panel] * {
+  scrollbar-width: none;
+}
+
+[data-session-worker-scroll]::-webkit-scrollbar,
+[data-session-tile-surface]::-webkit-scrollbar,
+[data-session-tile-surface] *::-webkit-scrollbar,
+[data-o8-term-panel] *::-webkit-scrollbar {
+  display: none;
+}
+
+/* Setup keeps native scrolling without tracks on the page or nested lists. */
+[data-o8-onboarding],
+[data-o8-onboarding] * {
+  scrollbar-width: none;
+}
+
+[data-o8-onboarding]::-webkit-scrollbar,
+[data-o8-onboarding] *::-webkit-scrollbar {
+  display: none;
+}
+
+[data-o8-symon-scroll]::-webkit-scrollbar {
   display: none;
 }
 

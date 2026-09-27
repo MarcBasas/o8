@@ -123,10 +123,15 @@ async function renderPacketPane(
 }
 
 function stubPacketTranscript(events: () => TranscriptEvent[]) {
-  const fetchMock = vi.fn(async () => new Response(JSON.stringify({ events: events() }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  }));
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input).startsWith('/api/agents/presence?')) {
+      return Response.json({ agents: [] });
+    }
+    return new Response(JSON.stringify({ events: events() }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
   globalThis.fetch = fetchMock;
   return fetchMock;
 }
@@ -169,6 +174,26 @@ describe('AgentTilePane structured packet transcript delivery', () => {
     vi.unstubAllGlobals();
   });
 
+  it('labels a worker with the launched lane model when discovery metadata is stale', async () => {
+    stubPacketTranscript(() => []);
+    const packet = packetFixture('codex');
+    packet.model = 'gpt-5.6-sol';
+    packet.lane = { ...packet.lane!, model: 'gpt-5.6-terra' };
+    await act(async () => {
+      root.render(createElement(AgentTilePane, {
+        sessionKey: 'opencode-owned:worker-pane',
+        agent: { name: 'Worker', status: 'running', runtime: 'codex', model: 'gpt-6-sol' },
+        packet,
+        focused: true,
+        onClose: () => {},
+        onFocus: () => {},
+      }));
+    });
+    expect(host.querySelector('[data-worker-model]')?.textContent).toContain('gpt-5.6-terra');
+    expect(host.querySelector('[data-worker-model]')?.getAttribute('title')).toBe('OpenCode 2 · gpt-5.6-terra');
+    expect(host.textContent).not.toContain('gpt-6-sol');
+  });
+
   it('refreshes the mounted pane when a later route poll returns another persisted event', async () => {
     vi.useFakeTimers();
     Object.defineProperty(dom.window, 'setInterval', {
@@ -197,7 +222,7 @@ describe('AgentTilePane structured packet transcript delivery', () => {
     });
     await flushPaneEffects();
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).startsWith('/api/orchestrator/packet-transcript?'))).toHaveLength(2);
     expect(transcriptRenderMock.entries.some((entry) => entry.text === 'Second burst reached the pane.')).toBe(true);
   });
 
@@ -234,7 +259,7 @@ describe('AgentTilePane structured packet transcript delivery', () => {
     const unsupportedReason = 'runtime-transcript-not-supported-yet';
     await renderPacketPane('gemini', unsupportedReason);
 
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/api/orchestrator/packet-transcript?'))).toBe(false);
     expect(transcriptRenderMock.entries[0]).toMatchObject({
       role: 'system',
       text: expect.stringContaining(unsupportedReason),

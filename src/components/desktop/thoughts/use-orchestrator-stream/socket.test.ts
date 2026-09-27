@@ -285,6 +285,39 @@ describe('orchestrator socket — first-turn streaming race', () => {
     });
   });
 
+  it('attaches the terminal turn receipt to the completed assistant entry', () => {
+    const assistant: MobileTranscriptEntry = { id: 'a-receipt', role: 'assistant', text: 'done' };
+    const current: CurrentAssistantStreamState = { id: 'a-receipt', chunks: ['done'], thinkingChunks: [], epoch: 0 };
+    const h = makeHarness({ status: 'busy', current, messages: [userMsg, assistant] });
+
+    h.fire({
+      channel: 'orchestrator',
+      event: 'status',
+      data: {
+        status: 'ready',
+        receipt: {
+          leadModel: 'gpt-5.6-sol',
+          effort: 'high',
+          mode: 'fusion',
+          pickedMode: 'solo',
+        },
+      },
+    });
+
+    const messages = h.setMessages.mock.calls.reduce<MobileTranscriptEntry[]>(
+      (state, [updater]) => (typeof updater === 'function' ? updater(state) : updater),
+      [userMsg, assistant],
+    );
+    expect(messages.find((message) => message.id === 'a-receipt')).toMatchObject({
+      receipt: {
+        leadModel: 'gpt-5.6-sol',
+        effort: 'high',
+        mode: 'fusion',
+        pickedMode: 'solo',
+      },
+    });
+  });
+
   it('a snapshot "busy" resyncs an idle client up to busy (reload into an active turn)', () => {
     const h = makeHarness({ status: 'connecting' });
 
@@ -457,6 +490,30 @@ describe('orchestrator socket — server turn-truth reconcile', () => {
 });
 
 describe('orchestrator socket — replay seq cursor', () => {
+  it('renders a persistent lead terminal reply before accepting its compatible ready status', () => {
+    const h = makeHarness({ status: 'busy', messages: [userMsg], threadId: 'thoughts-lead-1' });
+
+    h.fire({
+      channel: 'orchestrator',
+      event: 'output',
+      data: {
+        text: 'The reviewed worker result is ready.',
+        threadId: 'thoughts-lead-1',
+        backend: 'codex',
+        assistantMessageId: 'lead-assistant-review-1',
+      },
+    });
+    h.fire({
+      channel: 'orchestrator',
+      event: 'status',
+      data: { status: 'ready', leadStatus: 'needs_approval', threadId: 'thoughts-lead-1' },
+    });
+
+    expect(h.statusRef.current).toBe('ready');
+    expect(h.currentAssistantRef.current).toBeNull();
+    expect(h.flushCurrentAssistant).toHaveBeenCalled();
+  });
+
   it('advances the cursor on a seq-stamped event and renders it', () => {
     const h = makeHarness({ status: 'busy', messages: [userMsg] });
 

@@ -1,11 +1,16 @@
 import { basename } from 'node:path';
 import { isOrchestratorBackendId } from '@/lib/lane/orchestrator-backends/types';
-import type { MobileOrchestratorBackend, MobileOrchestratorThread, MobileTranscriptEntry } from '@/lib/mobile/types';
+import type {
+  MobileOrchestratorBackend,
+  MobileOrchestratorThread,
+  MobilePendingTurnWorkers,
+  MobileTranscriptEntry,
+} from '@/lib/mobile/types';
 import {
   ORCHESTRATOR_RUNTIME_IDS,
   isOrchestratorRuntime,
 } from '@/lib/orchestrator/runtime-capabilities';
-import { stableOrchestratorThreadTitleForId } from '@/lib/orchestrator/thread-title';
+import { orchestratorDisplayTitle, stableOrchestratorThreadTitleForId } from '@/lib/orchestrator/thread-title';
 import { resolveRepoGithubIdentity } from '@/lib/repos/github-identity';
 
 const DEFAULT_MODEL = 'claude-code';
@@ -14,6 +19,7 @@ export type ChatHistoryMessage = {
   id?: string;
   role?: string;
   content?: string;
+  media?: MobileTranscriptEntry['media'];
   timestamp?: number;
   persistedVersion?: number;
   /**
@@ -31,6 +37,7 @@ export type ChatHistoryMessage = {
    */
   backend?: string;
   model?: string;
+  receipt?: MobileTranscriptEntry['receipt'];
   type?: MobileTranscriptEntry['type'];
   handoff?: MobileTranscriptEntry['handoff'];
   toolCalls?: MobileTranscriptEntry['toolCalls'];
@@ -51,6 +58,7 @@ export interface OrchestratorAssistantUpsertInput {
   agent?: string | null;
   sessionId?: string | null;
   model?: string | null;
+  receipt?: MobileTranscriptEntry['receipt'];
   tokens?: ChatHistoryMessage['tokens'];
   timestampMs?: number;
 }
@@ -80,6 +88,7 @@ export type OrchestratorHistoryRecord = {
   orchestratorTerminalAt?: string | null;
   orchestratorSessionIds?: Record<string, string | null>;
   orchestratorSessionUpdatedAt?: string | null;
+  pendingTurnWorkers?: MobilePendingTurnWorkers;
 };
 
 export function normalizeSessionIds(value: unknown): Record<string, string | null> {
@@ -182,12 +191,16 @@ export function projectOrchestratorThread(
 
   return {
     id: tabId,
-    title: trimTitle(record.title, fallbackTitle),
+    title: trimTitle(orchestratorDisplayTitle(record.title, fallbackTitle), fallbackTitle),
     lastMessageAt: lastSpokeMs > 0 ? new Date(lastSpokeMs).toISOString() : (record.savedAt || modifiedAt),
     runtime: inferRuntime(effectiveModel(tabId, record)),
     status: record.orchestratorTerminalStatus === 'failed'
       ? 'failed'
-      : messages.length === 0 ? 'idle' : lastMessage?.role === 'user' ? 'busy' : 'ready',
+      : messages.length === 0
+        ? 'idle'
+        : lastMessage?.role === 'user' || (lastMessage?.role === 'assistant' && !(lastMessage.content ?? '').trim())
+          ? 'busy'
+          : 'ready',
     messageCount: messages.length,
     projectId: typeof record.projectId === 'string' && record.projectId.trim()
       ? record.projectId.trim()

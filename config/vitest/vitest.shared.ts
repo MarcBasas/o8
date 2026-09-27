@@ -13,7 +13,10 @@ export const sharedVitestConfig = {
     setupFiles: ['tests/setup-isolated-data-dir.ts'],
     include: [
       'src/**/*.test.ts',
+      'src/components/desktop/thoughts/composer-selector/ComposerSelectorFooter.test.tsx',
+      'src/components/desktop/thoughts/chat-panel/ComposerContextRow.test.tsx',
       'src/components/desktop/file-viewer/RichMarkdownEditor.test.tsx',
+      'src/components/desktop/settings/SymonIMessageAccessSection.test.tsx',
       'tests/**/*.test.ts',
       'cli/**/*.test.ts',
     ],

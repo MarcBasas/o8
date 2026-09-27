@@ -80,6 +80,7 @@ import type {
   SubmitReviewInput,
 } from '@/lib/orchestrator/operator-mission-service';
 import type { OrchestratorRuntime, PacketTaskContract, WorkerIntent, WorkerProvider } from '@/lib/orchestrator/types';
+import type { ThinkingEffort } from '@/lib/orchestrator/thinking-effort';
 import type { ClaudeCodeModelSource } from '@/lib/claude-code/worker-profile-types';
 import { getDataDir } from '@/lib/data-dir-migration';
 
@@ -110,8 +111,10 @@ interface CreateMissionInput {
   requestedProvider?: WorkerProvider | null;
   requestedRuntime?: OrchestratorRuntime | null;
   requestedModel?: string | null;
+  requestedEffort?: ThinkingEffort | null;
   claudeCodeCarrier?: ClaudeCodeModelSource | null;
   constraints: string;
+  dispatchOnCreate?: boolean;
   sequential?: boolean;
   existingBranchPolicy?: ExistingBranchPolicy;
   useBrain?: boolean;
@@ -122,6 +125,8 @@ interface CreateMissionInput {
   qualitySearch?: { taskContract: PacketTaskContract };
   /** #1329 — the orchestrator's active thread id, so workers inherit its session rules. */
   orchestratorThreadId?: string;
+  /** Exact assistant transcript entry whose receipt owns launched workers. */
+  orchestratorTurnId?: string;
   parentWorkspaceId?: string;
   caller?: string;
   readOnly?: boolean;
@@ -142,8 +147,10 @@ interface CreateMissionInlineInput {
   requestedProvider?: WorkerProvider | null;
   requestedRuntime?: OrchestratorRuntime | null;
   requestedModel?: string | null;
+  requestedEffort?: ThinkingEffort | null;
   claudeCodeCarrier?: ClaudeCodeModelSource | null;
   constraints: string;
+  dispatchOnCreate?: boolean;
   sequential?: boolean;
   existingBranchPolicy?: ExistingBranchPolicy;
   useBrain?: boolean;
@@ -154,6 +161,8 @@ interface CreateMissionInlineInput {
   qualitySearch?: { taskContract: PacketTaskContract };
   /** #1329 — the orchestrator's active thread id, so workers inherit its session rules. */
   orchestratorThreadId?: string;
+  /** Exact assistant transcript entry whose receipt owns launched workers. */
+  orchestratorTurnId?: string;
   parentWorkspaceId?: string;
   caller?: string;
   readOnly?: boolean;
@@ -402,9 +411,11 @@ export async function createMission(input: CreateMissionInput) {
           requestedProvider: input.requestedProvider,
           requestedRuntime: input.requestedRuntime,
           requestedModel: input.requestedModel,
+          requestedEffort: input.requestedEffort,
           claudeCodeModel: input.requestedModel,
           claudeCodeCarrier: input.claudeCodeCarrier,
           constraints: input.constraints,
+          dispatchOnCreate: input.dispatchOnCreate,
           sequential: input.sequential,
           existingBranchPolicy: input.existingBranchPolicy,
           useBrain: input.useBrain,
@@ -413,6 +424,7 @@ export async function createMission(input: CreateMissionInput) {
           comparisonModels: input.comparisonModels,
           qualitySearch: input.qualitySearch,
           orchestratorThreadId: input.orchestratorThreadId,
+          orchestratorTurnId: input.orchestratorTurnId,
           dispatcher: { surface: 'orchestrator', id: input.orchestratorThreadId ?? 'operator-mcp' },
           launchContext: missionLaunchContext(input),
         } satisfies CreateMissionRequest,
@@ -450,9 +462,11 @@ export async function createMissionInline(input: CreateMissionInlineInput) {
           requestedProvider: input.requestedProvider,
           requestedRuntime: input.requestedRuntime,
           requestedModel: input.requestedModel,
+          requestedEffort: input.requestedEffort,
           claudeCodeModel: input.requestedModel,
           claudeCodeCarrier: input.claudeCodeCarrier,
           constraints: input.constraints,
+          dispatchOnCreate: input.dispatchOnCreate,
           sequential: input.sequential,
           existingBranchPolicy: input.existingBranchPolicy,
           useBrain: input.useBrain,
@@ -461,6 +475,7 @@ export async function createMissionInline(input: CreateMissionInlineInput) {
           comparisonModels: input.comparisonModels,
           qualitySearch: input.qualitySearch,
           orchestratorThreadId: input.orchestratorThreadId,
+          orchestratorTurnId: input.orchestratorTurnId,
           dispatcher: { surface: 'orchestrator', id: input.orchestratorThreadId ?? 'operator-mcp' },
           launchContext: missionLaunchContext(input),
         } satisfies CreateMissionRequest,

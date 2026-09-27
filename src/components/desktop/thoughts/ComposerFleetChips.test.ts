@@ -32,24 +32,11 @@ ACT_ENV.IS_REACT_ACT_ENVIRONMENT = true;
 describe('FleetWorkerChip', () => {
   let container: HTMLDivElement;
   let root: Root;
-  let requests: Array<{ method: string; body: Record<string, unknown> | null }>;
 
   beforeEach(() => {
-    requests = [];
-    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const method = init?.method ?? 'GET';
-      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : null;
-      requests.push({ method, body });
-      return new Response(JSON.stringify({
-        values: {
-          defaultDispatchRuntime: body?.defaultDispatchRuntime ?? 'codex',
-          defaultDispatchModel: '',
-          opencodeWorkerModel: body?.opencodeWorkerModel ?? null,
-          workerStartMode: body?.workerStartMode ?? 'autonomous',
-        },
-        sources: {},
-      }), { status: 200 });
-    }));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ dispatchableRuntimes: [
+      { id: 'opencode', label: 'OpenCode', available: true, unavailableReason: null, detail: 'Ready', fix: '' },
+    ] }))));
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -61,13 +48,14 @@ describe('FleetWorkerChip', () => {
     vi.unstubAllGlobals();
   });
 
-  it('sets the OpenCode 2 worker model from the fleet popover', async () => {
-    await act(async () => { root.render(createElement(FleetWorkerChip)); });
+  it('sets the OpenCode worker model from the fleet popover', async () => {
+    const onWorkerModelChange = vi.fn();
+    await act(async () => { root.render(createElement(FleetWorkerChip, { onWorkerModelChange })); });
     const trigger = container.querySelector<HTMLButtonElement>('button[aria-label^="Fleet worker"]');
-    act(() => trigger?.click());
+    await act(async () => trigger?.click());
 
     const opencode = [...container.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('OpenCode 2'));
+      .find((button) => button.textContent?.includes('OpenCode'));
     expect(opencode).toBeDefined();
     await act(async () => { opencode?.click(); await Promise.resolve(); });
 
@@ -76,25 +64,23 @@ describe('FleetWorkerChip', () => {
     expect(pick).toBeDefined();
     await act(async () => { pick?.click(); await Promise.resolve(); });
 
-    expect(requests).toContainEqual({
-      method: 'POST',
-      body: { opencodeWorkerModel: 'openrouter/deepseek/deepseek-v4-flash' },
-    });
+    expect(onWorkerModelChange).toHaveBeenCalledWith('openrouter/deepseek/deepseek-v4-flash');
   });
 
-  it('lets the operator choose whether workers run or ask first', async () => {
-    await act(async () => { root.render(createElement(FleetWorkerChip)); });
+  it('lets the operator choose whether workers run or plan first', async () => {
+    const onWorkerStartModeChange = vi.fn();
+    await act(async () => { root.render(createElement(FleetWorkerChip, { onWorkerStartModeChange })); });
     const trigger = container.querySelector<HTMLButtonElement>('button[aria-label^="Fleet worker"]');
-    act(() => trigger?.click());
+    await act(async () => trigger?.click());
 
-    const askFirst = [...container.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent === 'Ask first');
-    expect(askFirst).toBeDefined();
-    await act(async () => { askFirst?.click(); await Promise.resolve(); });
+    const plan = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Plan');
+    expect(plan).toBeDefined();
+    expect(plan?.title).toBe(
+      'The worker reads the task, shares a plan with the lead, then waits before editing.',
+    );
+    await act(async () => { plan?.click(); await Promise.resolve(); });
 
-    expect(requests).toContainEqual({
-      method: 'POST',
-      body: { workerStartMode: 'huddle' },
-    });
+    expect(onWorkerStartModeChange).toHaveBeenCalledWith('huddle');
   });
 });

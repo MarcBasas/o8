@@ -36,6 +36,7 @@ export interface RoleRoutingDefaults {
   codexWorkerEffort: ThinkingEffort;
   claudeWorkerEffort: ThinkingEffort;
   crossHouseWorkerFallback: boolean;
+  brainRoutingMode: 'auto' | 'subscription';
   classAComposer: 'auto' | 'haiku-cli' | 'sonnet-cli' | 'fastest';
   brainUseClaudeCli: boolean;
   brainCodexModel: string;
@@ -93,6 +94,8 @@ export interface ProjectAgentRoleRoutesInput {
   values: RoleRoutingDefaults;
   sources: RoleRoutingSources;
   dispatchableRuntimes: RuntimeRouteAvailability[];
+  /** Resolved at the API boundary so the projection does not promise managed use to free plans. */
+  managedBrainEligible?: boolean;
 }
 
 const ROLE_META: Record<RoleId, Pick<AgentRoleRoute, 'label' | 'description'>> = {
@@ -327,7 +330,7 @@ function orchestrateRoute(input: ProjectAgentRoleRoutesInput): AgentRoleRoute {
       ?? (values.orchestratorBackend === 'auto'
         ? `Auto resolves through the legacy orchestrator preference, currently ${autoReason}.`
         : `${backendLabel(effectiveBackend)} is pinned in operator settings.`),
-    changePath: 'Settings → Dispatch → Orchestrator',
+    changePath: 'Settings → Models & providers → Chat & code review',
     settingKeys: ['subscriptionProfile', 'orchestratorBackend', 'inAppOrchestratorEnabled', 'orchestratorModel', 'opencodeOrchestratorModel'],
   };
 }
@@ -369,7 +372,7 @@ function buildRoute(input: ProjectAgentRoleRoutesInput): AgentRoleRoute {
         ?? (configuredModel
           ? `The operator pinned ${configuredModel} for the default worker.`
           : `No worker model is pinned, so ${runtimeLabel(runtime)} uses its runtime default.`),
-    changePath: 'Settings → Dispatch → Dispatch runtime',
+    changePath: 'Settings → Models & providers → Default workers',
     settingKeys: [
       'subscriptionProfile',
       'defaultDispatchRuntime',
@@ -420,7 +423,7 @@ function reviewRoute(input: ProjectAgentRoleRoutesInput, orchestrate: AgentRoleR
       ?? (values.reviewerBackend === 'follow'
         ? `Review follows Orchestrate, currently ${backendLabel(backend)}.`
         : `${backendLabel(backend)} is pinned for review.`),
-    changePath: 'Settings → Dispatch → Orchestrator',
+    changePath: 'Settings → Models & providers → Chat & code review',
     settingKeys: ['subscriptionProfile', 'reviewerBackend', 'orchestratorBackend', 'inAppOrchestratorEnabled', 'orchestratorModel'],
   };
 }
@@ -428,19 +431,28 @@ function reviewRoute(input: ProjectAgentRoleRoutesInput, orchestrate: AgentRoleR
 function brainRoute(input: ProjectAgentRoleRoutesInput): AgentRoleRoute {
   const { values, sources, dispatchableRuntimes } = input;
   const configuredComposer = values.classAComposer;
+  const autoRouting = values.brainRoutingMode === 'auto';
+  const managedBrainEligible = input.managedBrainEligible === true;
   let backend = 'auto-cascade';
   let runtime: OrchestratorRuntime | null = null;
   let model: string | null = null;
-  let reason = 'Auto chooses a route per request from managed inference, local models, signed-in CLIs, BYOK, and the heuristic fallback.';
+  let reason = autoRouting && managedBrainEligible
+    ? 'Auto uses managed inference for this eligible plan. Availability or quota errors stay visible and do not spend another provider.'
+    : autoRouting
+      ? 'Auto keeps the existing free-plan Brain route behavior.'
+    : 'Subscription mode uses the connected subscription CLI cascade.';
   let modelSource: RoleRouteSource = 'request-time';
 
-  if (configuredComposer === 'haiku-cli' || configuredComposer === 'sonnet-cli') {
+  if (autoRouting && managedBrainEligible) {
+    backend = 'managed-inference';
+    model = 'managed';
+  } else if (!autoRouting && (configuredComposer === 'haiku-cli' || configuredComposer === 'sonnet-cli')) {
     backend = 'claude';
     runtime = 'claude-code';
     model = configuredComposer === 'haiku-cli' ? 'haiku' : 'sonnet';
     reason = `${model === 'haiku' ? 'Haiku' : 'Sonnet'} is pinned for Brain composition through the Claude CLI.`;
     modelSource = sources.classAComposer;
-  } else if (configuredComposer === 'fastest') {
+  } else if (!autoRouting && configuredComposer === 'fastest') {
     backend = 'managed-inference';
     model = 'fastest-available';
     reason = 'Brain composition is pinned to the fastest available managed route.';
@@ -451,21 +463,20 @@ function brainRoute(input: ProjectAgentRoleRoutesInput): AgentRoleRoute {
     ? `Local model ${values.localChatModel}`
     : 'Local inference is not configured';
   const fallbacks = [
-    'Managed inference when the signed-in plan includes it',
-    localFallback,
-    values.brainUseClaudeCli ? 'Signed-in Claude CLI' : 'Claude CLI is disabled for Brain',
-    `Signed-in Codex CLI (${values.brainCodexModel})`,
-    'BYOK provider route',
-    'Deterministic heuristic answer',
+    ...(autoRouting
+      ? managedBrainEligible
+        ? ['Managed inference, with a visible managed error rather than another payer.']
+        : ['Free-plan legacy route behavior.']
+      : [localFallback, values.brainUseClaudeCli ? 'Signed-in Claude CLI' : 'Claude CLI is disabled for Brain', `Signed-in Codex CLI (${values.brainCodexModel})`, 'BYOK provider route', 'Deterministic heuristic answer']),
   ];
   const effective = choice({ backend, runtime, model, effort: null });
   return {
     id: 'brain',
     ...ROLE_META.brain,
-    configured: choice({ backend: configuredComposer, runtime: null, model: null, effort: null }),
+    configured: choice({ backend: values.brainRoutingMode, runtime: null, model: null, effort: null }),
     effective,
     sources: {
-      backend: sources.classAComposer,
+      backend: sources.brainRoutingMode,
       runtime: runtime ? 'derived' : 'request-time',
       model: modelSource,
       effort: 'request-time',
@@ -477,8 +488,9 @@ function brainRoute(input: ProjectAgentRoleRoutesInput): AgentRoleRoute {
     ),
     fallbacks,
     reason,
-    changePath: 'Settings → Dispatch → Advanced routing',
+    changePath: 'Settings → Models & providers → Advanced routing',
     settingKeys: [
+      'brainRoutingMode',
       'classAComposer',
       'brainUseClaudeCli',
       'brainCodexModel',
@@ -515,7 +527,7 @@ function triageRoute(input: ProjectAgentRoleRoutesInput): AgentRoleRoute {
       : configuredModel
         ? `Triage is pinned to ${configuredModel}.`
         : `Triage uses the ${runtimeLabel(runtime)} runtime default.`,
-    changePath: 'Settings → Dispatch → Model tiers',
+    changePath: 'Settings → Models & providers → Thinking & task models',
     settingKeys: ['targetingTriage'],
   };
 }
@@ -535,7 +547,7 @@ function recoveryRoute(build: AgentRoleRoute): AgentRoleRoute {
     availability: { ...build.availability },
     fallbacks: ['Recovery reuses the packet\'s persisted worker routing before any quota fallback is considered.'],
     reason: 'Recovery follows the packet\'s persisted worker route, so a restart does not silently choose a different model.',
-    changePath: 'Packet override, then Settings → Dispatch → Dispatch runtime',
+    changePath: 'Packet override, then Settings → Models & providers → Default workers',
     settingKeys: [
       'defaultDispatchRuntime',
       'defaultDispatchModel',

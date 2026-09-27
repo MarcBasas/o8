@@ -325,7 +325,7 @@ export const codexRuntime: AgentRuntime = {
 
     return entries.map((entry) => ({
       id: entry.id,
-      role: entry.kind === 'message' ? 'assistant' as const
+      role: entry.kind === 'message' ? (entry.role === 'user' ? 'user' as const : 'assistant' as const)
         : entry.kind === 'tool' ? 'tool' as const
         : entry.kind === 'tool-output' ? 'system' as const
         : 'system' as const,
@@ -346,6 +346,7 @@ export const codexRuntime: AgentRuntime = {
     const result = await launchOwnedCodexSession({
       cwd: opts.cwd,
       prompt: opts.prompt,
+      taskName: opts.taskName,
       clientMutationId: opts.clientMutationId,
       model,
       effort,

@@ -2,14 +2,20 @@
 import { MODEL_IDS } from '@/lib/models';
 
 export type DeclarativeParserProfile =
+  | 'antigravity-stream-json'
   | 'text'
   | 'copilot-jsonl'
   | 'openhands-ndjson'
   | 'qwen-stream-json';
 
+type DeclarativeManifestArg = string | {
+  when: 'cwd' | 'prompt' | 'model' | 'effort' | 'threadId' | 'sessionPath';
+  args: string[];
+};
+
 export interface DeclarativeRuntimeManifest {
-  launchArgs: string[];
-  resumeArgs: string[] | null;
+  launchArgs: DeclarativeManifestArg[];
+  resumeArgs: DeclarativeManifestArg[] | null;
   /** Stable runtime-owned file used when a CLI persists resumable sessions itself. */
   sessionFileName?: string;
   parserProfile: DeclarativeParserProfile;
@@ -124,7 +130,7 @@ export const ORCHESTRATOR_RUNTIMES = {
     description: 'Claude Code CLI worker via interactive stream-json. Uses the existing Claude account by default or an explicitly selected API gateway model; never --print.',
   },
   gemini: {
-    label: 'Gemini',
+    label: 'Gemini CLI',
     shortLabel: 'Gemini',
     dispatchable: true,
     requiresModel: false,
@@ -141,21 +147,30 @@ export const ORCHESTRATOR_RUNTIMES = {
     modelIdPattern: /^(gemini|google\/)/i,
     reasoningEffort: false,
     tier: 'standard',
-    description: 'Google Gemini CLI worker via headless stream-json with owned-session resume and review support.',
+    description: 'Legacy Gemini CLI worker for enterprise or paid API access via headless stream-json, with owned-session resume and review support. Free and AI Pro/Ultra use Antigravity CLI.',
   },
   antigravity: {
     label: 'Antigravity',
     shortLabel: 'AGY',
-    dispatchable: false,
+    dispatchable: true,
     requiresModel: false,
-    defaultModel: 'antigravity-default',
+    defaultModel: 'gemini-3.8-flash-low',
     accentColor: '#0f9d58',
     binaryName: 'agy',
     workerProvider: 'antigravity',
-    authHouse: null,
+    authHouse: 'antigravity',
     reasoningEffort: false,
     tier: 'standard',
-    description: 'Google Antigravity CLI discovery skeleton. Launch stays disabled until a resumable JSON/event contract is documented.',
+    description: 'Google Antigravity CLI (agy) worker with streaming output and conversation resume. Uses existing permissions and quota settings.',
+    declarative: {
+      launchArgs: ['--print', 'Workspace directory: {{cwd}}\n\n{{prompt}}', '--add-dir', '{{cwd}}', '--output-format', 'stream-json', '--sandbox', '--print-timeout', '15m', { when: 'model', args: ['--model', '{{model}}'] }],
+      resumeArgs: ['--print', '{{prompt}}', '--output-format', 'stream-json', '--sandbox', '--print-timeout', '15m', '--conversation', '{{threadId}}', { when: 'model', args: ['--model', '{{model}}'] }],
+      parserProfile: 'antigravity-stream-json',
+      costFormat: 'structured',
+      authEnvVars: [],
+      authPaths: [],
+      authFix: 'Run agy and sign in with Google. Keep Use AI Credits off for quota-only use.',
+    },
   },
   magnitude: {
     label: 'Magnitude',
@@ -426,8 +441,8 @@ export const ORCHESTRATOR_RUNTIMES = {
     tier: 'standard',
     description: 'Local-first 3code CLI worker with runtime-owned session logs and deterministic resume.',
     declarative: {
-      launchArgs: ['--session', '{{sessionPath}}', '{{prompt}}'],
-      resumeArgs: ['--resume={{sessionPath}}', '{{prompt}}'],
+      launchArgs: ['--session', '{{sessionPath}}', { when: 'model', args: ['--model', '{{model}}'] }, '{{prompt}}'],
+      resumeArgs: ['--resume={{sessionPath}}', { when: 'model', args: ['--model', '{{model}}'] }, '{{prompt}}'],
       sessionFileName: 'session.3log',
       parserProfile: 'text',
       costFormat: 'text',

@@ -213,12 +213,18 @@ async function callSonnetCli(
 ): Promise<{ text: string; tier: SonnetTier } | { tokens: AsyncIterable<string>; tier: SonnetTier }> {
   const prompt = buildCliPrompt(opts.system, opts.messages);
   const timeoutMs = opts.timeoutMs ?? 300_000;
+  // Serve the explicit ask, but only pre-spawn the replacement proc while the
+  // live Brain policy still permits speculative warmup (#2521). Evaluated at
+  // the pool's refill moment, so a queued call sees the current opt-out.
+  const { resolveBrainSpeculativeWarmupAllowedSync } = await import('@/lib/operator/brain-routing');
+  const refillPolicy = resolveBrainSpeculativeWarmupAllowedSync;
 
   if (!opts.stream) {
     const text = await askClaudeWarm(prompt, {
       binary: claudeBin,
       model: SONNET_CLI_MODEL,
       timeoutMs,
+      refillPolicy,
     });
     if (isRuntimeQuotaLimitError(text)) {
       throw new Error(`[qa][sonnet] Claude subscription unavailable: ${text.trim()}`);
@@ -248,6 +254,7 @@ async function callSonnetCli(
     binary: claudeBin,
     model: SONNET_CLI_MODEL,
     timeoutMs,
+    refillPolicy,
     onDelta: (text) => {
       deltaLen += text.length;
       if (releasedDeltas) queue.push(text);
@@ -301,18 +308,24 @@ async function callSonnetCli(
 }
 
 /**
- * Fire-and-forget: pre-spawn a warm Sonnet REPL so an imminent Class B
- * composition skips the CLI bootstrap. Called as soon as the classifier
- * returns 'B' (ask.ts). No-ops unless the resolved tier is the CLI.
+ * Fire-and-forget: pre-spawn a warm Sonnet REPL so a later Class B
+ * composition can reuse it. Called as soon as the classifier returns 'B'
+ * (ask.ts). No-ops unless the resolved tier is the CLI, when the Brain CLI
+ * is disabled, or when the operator has disabled speculative warmup (#2521 —
+ * an explicit ask still launches its runtime when needed).
  */
 export async function prewarmSonnetCli(): Promise<void> {
   try {
-    const { resolveBrainUseClaudeCliSync } = await import('@/lib/operator/brain-routing');
-    if (!resolveBrainUseClaudeCliSync()) return;
+    const routing = await import('@/lib/operator/brain-routing');
+    if (!routing.resolveBrainUseClaudeCliSync()) return;
+    if (!routing.resolveBrainWarmupEnabledSync()) return;
     const tier = await detectTier();
-    if (tier.tier === 'cli' && tier.claudeBin) {
-      prewarmClaudeRepl(tier.claudeBin, SONNET_CLI_MODEL);
-    }
+    if (tier.tier !== 'cli' || !tier.claudeBin) return;
+    // Re-check AFTER async discovery: a concurrent opt-out or a managed-only
+    // route flip must win over a warmup that started under the old policy.
+    if (!routing.resolveBrainUseClaudeCliSync()) return;
+    if (!routing.resolveBrainWarmupEnabledSync()) return;
+    prewarmClaudeRepl(tier.claudeBin, SONNET_CLI_MODEL);
   } catch {
     // Pre-warm is best-effort — never let it surface into the pipeline.
   }

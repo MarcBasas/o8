@@ -58,10 +58,9 @@ function reviewFindingsAreResolved(approval: ApprovalRecord): boolean {
  * Resolve the sealed contract and the review's recorded evidence, then run the
  * deterministic gate.
  *
- * Fail-closed policy is deliberately narrow: explicit arming stays hard, while
- * a runtime-default arm without a captured contract records an audit event and
- * preserves the legacy approval path. If we cannot determine whether a bound
- * packet requires a contract, review still fails closed.
+ * A missing required contract blocks approval unless the current-HEAD review
+ * carries an explicit operator waiver for a runtime-default contract. An
+ * explicitly armed contract is never waivable through that path.
  */
 async function assessContractCoverage(
   lane: Pick<Lane, 'id' | 'packetId' | 'worktreePath' | 'repoPath' | 'baseBranch' | 'runtime'>,
@@ -72,11 +71,13 @@ async function assessContractCoverage(
 
   let contract: PacketTaskContract | null = null;
   let enforceCoverage = false;
+  let missingDefaultContract = false;
   try {
     const gate = await resolvePacketTaskContractGate({ lane });
     if (!gate.packetFound) return null;
     contract = gate.taskContract;
     enforceCoverage = gate.enforceCoverage;
+    missingDefaultContract = gate.missingDefaultContract;
   } catch (error) {
     // A packet binding exists but its contract requirement could not be read.
     // Treating that as legacy would let an unverifiable packet merge, so this
@@ -96,6 +97,34 @@ async function assessContractCoverage(
   }
   if (!enforceCoverage) return null;
 
+  if (missingDefaultContract) {
+    const waiverReason = approval.args?.missingContractWaiverReason;
+    const normalizedWaiverReason = typeof waiverReason === 'string' ? waiverReason.trim() : '';
+    const hasOperatorReceipt = normalizedWaiverReason.length > 0
+      && approval.audit.some((event) => event.type === 'updated'
+        && event.actor === 'desktop'
+        && event.reviewedHeadSha === reviewedHeadSha
+        && event.rawText === normalizedWaiverReason);
+    if (hasOperatorReceipt) {
+      return {
+        status: 'waived',
+        reason: `The runtime-default contract was missing. An operator explicitly waived requirement coverage for this reviewed HEAD: ${normalizedWaiverReason}`,
+        contractVersion: null,
+        reviewedHeadSha,
+        checks: [],
+        missingRequirementIds: [],
+      };
+    }
+    return {
+      status: 'failed',
+      reason: 'The runtime-default contract was missing. Requirement coverage is unproven; an operator must recover the contract or explicitly waive this state for the current HEAD.',
+      contractVersion: null,
+      reviewedHeadSha,
+      checks: [],
+      missingRequirementIds: [],
+    };
+  }
+
   try {
     const { evaluateContractCoverage, readCoverageEvidence } =
       await import('@/lib/orchestrator/task-contract-coverage');
@@ -108,7 +137,10 @@ async function assessContractCoverage(
         contractVersion: contract?.version ?? null,
         reviewedHeadSha,
         checks: [],
-        missingRequirementIds: contract?.requirements.map((requirement) => requirement.id) ?? [],
+        missingRequirementIds: [
+          ...(contract?.requirements.map((requirement) => requirement.id) ?? []),
+          ...(contract?.processConstraints?.map((constraint) => constraint.id) ?? []),
+        ],
       };
     }
     return evaluateContractCoverage({
@@ -128,7 +160,10 @@ async function assessContractCoverage(
       contractVersion: contract?.version ?? null,
       reviewedHeadSha,
       checks: [],
-      missingRequirementIds: contract?.requirements.map((requirement) => requirement.id) ?? [],
+      missingRequirementIds: [
+        ...(contract?.requirements.map((requirement) => requirement.id) ?? []),
+        ...(contract?.processConstraints?.map((constraint) => constraint.id) ?? []),
+      ],
     };
   }
 }
@@ -170,14 +205,50 @@ async function listChangedPathsForCoverage(
     comparisonRef = null;
   }
 
-  // Committed range across the whole packet, plus anything still in the tree.
+  // The reviewed commit range only. Uncommitted edits are not part of the
+  // commit the review is pinned to, so they cannot satisfy its evidence (#2254).
   const committed = comparisonRef ? await collect(['diff', '--name-only', `${comparisonRef}..${headSha}`]) : null;
-  const working = await collect(['diff', '--name-only', 'HEAD']);
 
   // If we could not establish the packet's range, say so rather than silently
   // grading against a narrower set of files than the packet really touched.
-  if (committed === null) return { paths: working ?? [], resolved: false };
-  return { paths: Array.from(new Set([...committed, ...(working ?? [])])), resolved: true };
+  if (committed === null) return { paths: [], resolved: false };
+  return { paths: committed, resolved: true };
+}
+
+const UNCOMMITTED_PATHS_SHOWN = 10;
+
+/**
+ * Paths with uncommitted changes (tracked or untracked, respecting ignores).
+ * Returns null when git cannot answer, so callers fail closed.
+ */
+async function listUncommittedPaths(cwd: string): Promise<string[] | null> {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  try {
+    const { stdout } = await promisify(execFile)(
+      'git',
+      ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
+      { windowsHide: true, cwd, maxBuffer: 8 * 1024 * 1024 },
+    );
+    const entries = stdout.split('\0');
+    const paths: string[] = [];
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
+      if (!entry || entry.length < 4) continue;
+      paths.push(entry.slice(3));
+      // Renames and copies carry their source path as the next entry.
+      if (entry[0] === 'R' || entry[0] === 'C') index += 1;
+    }
+    return paths;
+  } catch {
+    return null;
+  }
+}
+
+function formatUncommittedPaths(paths: string[]): string {
+  const shown = paths.slice(0, UNCOMMITTED_PATHS_SHOWN).join(', ');
+  const more = paths.length - UNCOMMITTED_PATHS_SHOWN;
+  return more > 0 ? `${shown} (+${more} more)` : shown;
 }
 
 // Durable approved-review reader. This is the only signal that authorizes a
@@ -265,6 +336,23 @@ export async function assessDurableApprovedReview(
       : undefined;
     if (!matching) {
       return { approved: false, diffBudgetWaived, highConfidence: false, approvalId: null, reason: 'The latest AI review does not authorize the current HEAD.' };
+    }
+
+    // The review approves the commit at its pinned HEAD and nothing else. Edits
+    // left in the worktree after that commit would be auto-committed into the
+    // publication, so they withhold authorization until committed and reviewed.
+    const uncommitted = await listUncommittedPaths(cwd);
+    if (uncommitted === null) {
+      return { approved: false, diffBudgetWaived, highConfidence: false, approvalId: null, reason: 'Uncommitted worktree changes could not be checked against the reviewed HEAD.' };
+    }
+    if (uncommitted.length > 0) {
+      return {
+        approved: false,
+        diffBudgetWaived,
+        highConfidence: false,
+        approvalId: null,
+        reason: `Uncommitted edits are not covered by the AI review of ${currentHead}: ${formatUncommittedPaths(uncommitted)}. Commit them and review again.`,
+      };
     }
 
     // Coverage gate: an approved-looking review cannot authorize a merge unless

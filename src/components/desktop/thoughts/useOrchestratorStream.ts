@@ -23,6 +23,7 @@ import {
   type PendingOrchestratorSend,
 } from './use-orchestrator-stream/delivery';
 import { useDurablePendingSend } from './use-orchestrator-stream/durable-pending-send';
+import { optimisticUserEntry } from './use-orchestrator-stream/optimistic-user-entry';
 import { archiveMissionThread as archiveCompletedMissionThread } from './use-orchestrator-stream/mission-history';
 import {
   primeCompactedOrchestratorSession,
@@ -901,7 +902,7 @@ export function useOrchestratorStream(
       }
       const {
         permissionMode, thinkingEffort, model, displayMessage, wireMessage,
-        localEntriesAfterUser, collideBaseBackend, backend, orchestrationMode,
+        localEntriesAfterUser, collideBaseBackend, backend, orchestrationMode, pickedMode,
       } = prepareOrchestratorTurn(message, turnOptions);
       activeTurnBackendRef.current = backend ?? null;
       sendHandle.backend = backend ?? null;
@@ -965,13 +966,11 @@ export function useOrchestratorStream(
           return;
         }
       }
-      const userEntry: MobileTranscriptEntry = {
-        id: sendHandle.userMessageId,
-        role: 'user',
-        text: displayMessage,
-        timestamp: sentAtMs,
-        timestampLabel: formatTimestampLabel(sentAtMs),
-      };
+      const userEntry = optimisticUserEntry({
+        id: sendHandle.userMessageId, text: displayMessage,
+        timestamp: sentAtMs, timestampLabel: formatTimestampLabel(sentAtMs),
+        attachments: turnOptions?.attachments,
+      });
       messagesRef.current = [...messagesRef.current, userEntry, ...localEntriesAfterUser];
       setMessages((prev) => [...prev, userEntry, ...localEntriesAfterUser]);
       currentAssistantRef.current = null;
@@ -996,7 +995,7 @@ export function useOrchestratorStream(
         // mode directives or resume prelude baked into the wire for the model.
         displayMessage,
         permissionMode,
-        orchestrationMode,
+        orchestrationMode, pickedMode,
         thinkingEffort,
         model,
         // Per-turn override stays truthful while the global default write settles.
@@ -1012,7 +1011,7 @@ export function useOrchestratorStream(
         threadId: sendHandle.threadId,
         clientMessageId,
         sentAtMs,
-        wirePayload: payload,
+        wirePayload: payload, attachmentsRequired: Boolean(turnOptions?.attachments?.length),
       };
       durablePendingSend.recordPending(pendingRecord);
       const delivered = await deliverOrchestratorPayload({

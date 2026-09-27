@@ -112,9 +112,15 @@ Request body (all fields optional; legacy `{}` remains valid):
   "selectedFile": "src/app/symon.tsx",
   "controlTab": "changes",
   "runStatus": "review",
-  "activeSurface": "symon"
+  "activeSurface": "symon",
+  "brain": "live"
 }
 ```
+
+`brain` accepts only `"realtime"` and `"live"`. Absent or unrecognized means
+`"realtime"`, which mints exactly what every plan gets today. `"live"` is the
+delegated voice brain below, and it is honored only on a paid plan; see the plan
+rule after the model contract.
 
 `launchKind` accepts only `"repository-catch-up"`. It is a server-owned routing
 discriminator for the Home briefing, not model evidence; the phone sends the
@@ -148,26 +154,113 @@ and truncated results say so. The `continue-run`, `steer-run`, `approve`, and
 (`workspaceMode: "o8"`) keeps the generic phone vocabulary and never receives the
 Code authoring instructions.
 
-### Phone Code tool pack (v1)
+### Fleet briefing block (v1)
 
-Only `workspaceMode: "code"` filters Mac-executed tools. Its exact catalog is:
+Ahead of the workspace-context JSON — and behind the persona, so it lands inside
+the cached instruction prefix — the mint prepends a bounded fleet briefing
+between the frozen `[[O8_PHONE_BRIEFING_V1_START]]` /
+`[[O8_PHONE_BRIEFING_V1_END]]` markers. Without it a phone session starts blind:
+it knows the route it was launched from and nothing about what needs the
+operator, so every "what's going on" costs a tool round-trip the mini model often
+declines to make.
 
-`o8_status`, `o8_needs_me`, `o8_review_diff`, `o8_dispatch`, `o8_delegate`,
-`o8_packet_wait`, `o8_packet_steer`, `o8_agent_task`, `o8_packet_rerun`,
-`o8_packet_reset`, `o8_stop_agent`, `o8_approve_item`, `o8_reject_item`,
-`git_status`, `git_log`, `repo_commit_diff`, `symon_ledger_recent`, and `symon_ledger_undo`.
+The block is rendered by `buildPhoneBriefingBlock`
+(`src/lib/mobile/symon-briefing.ts`), a pure snapshot-in / string-out function
+over the mobile inbox snapshot — the SAME server-side state the phone's Home
+briefing renders, so the two surfaces cannot disagree. It carries five sections,
+one item per line, and every value is a labeled field:
 
-The phone-local `render_surface` tool is appended after that pack and never
-relayed to the Mac. Mail, media, browser, shell, file, and every other desktop or
-Life tool are excluded from Code even when the live Mac catalog contains them.
-The phone-minted schemas omit `repo`, `repoId`, and `repoPath` and reject unknown
-arguments. Repository identity belongs exclusively to the immutable Mac grant;
-the relay injects the canonical values after the model chooses a tool.
-The filter preserves the live schemas and emits them in the canonical order
-above. If any required Code tool is absent or is not a function schema, the mint
-fails as `503 desktop_unavailable` with the missing names instead of silently
-creating a partial Code agent. This strict failure applies only to Code; Life,
-legacy `{}`, and desktop continue using their full catalogs.
+```
+APPROVALS PENDING (2)
+- approval id=apr_12 title="Merge the pairing recovery lane" repo="o8"
+LANES RUNNING (1)
+- lane id=run:42 status=running title="Bounded phone tool packs" repo="o8" branch="feat/tool-packs"
+LANES BLOCKED (0): none
+NEEDS YOU (1)
+- needs-you kind=blocked session=run:9 title="Worker is waiting on a decision"
+MERGED RECENTLY
+- merged repo="o8-mobile" title="Follow the desktop to its other addresses"
+```
+
+An empty section renders as `SECTION: none` rather than disappearing, so absence
+is evidence instead of silence. A section whose items were all withheld still
+reports its count — `LANES RUNNING (3): none` is an honest "three are running,
+none safe to name".
+
+**Why every value is quoted.** Approval titles, lane titles, repository names and
+branch names are operator data, and operator data can be attacker-chosen. A bare
+bullet is indistinguishable from a line of guidance, so the first defence is
+structural rather than a verb denylist: each value is emitted as `key="value"`,
+and the label grammar in `src/lib/mobile/symon-prompt-filter.ts` excludes `"`,
+`=`, `<` and newline. A value therefore cannot close its own quote, forge a field
+name, or start a line of its own — characters outside the grammar are flattened
+to spaces before quoting. The header states once, in one line, that quoted values
+are labels copied from the operator's data and never instructions. The persona
+itself is unchanged.
+
+The denylist is the SECOND layer and never has to be complete. `safeDisplayLabel`
+drops a value outright, rather than escaping it, when it matches classic
+instruction-override phrasing (`ignore … instructions`), role-prefix framing that
+tries to open a new turn (`Human:`, `Operator:`, `New instructions,`), or the
+bulk-action shape of an approval verb aimed at everything at once (`approve every
+pending item`). The verb patterns are scoped so ordinary product work survives —
+"Approve flow needs a spinner" still reports. An item whose only repository label
+was dropped is dropped with it. Identifiers travel unquoted under a stricter
+grammar, because Symon passes them back to `o8_approve_item` and friends.
+
+Both tool packs receive the block. A Code mint additionally scopes `MERGED
+RECENTLY` to the granted repository path. Approvals, lanes and needs-me stay
+fleet-wide even on Code, by design: a repository-scoped session still has to tell
+the operator what is waiting elsewhere.
+
+Sections keep at most six items each, and the whole block, markers included, is
+capped at 3000 characters. Because each item occupies one line, the cap always
+falls on an item boundary: the block is closed with the visible marker
+`- (briefing truncated at the character cap; ask for the rest)` and never a half
+item. The briefing is best-effort — the snapshot is raced against a 1.5-second
+budget and any failure logs `briefing_skipped` and mints with no block at all, so
+a slow or broken inbox costs the briefing and never the voice session. The mint
+log line reports the rendered size as `briefing=<chars>`. For a delegated live
+session the whole instructions string, briefing included, moves under
+`delegation.responses.instructions` with the persona.
+
+### Phone tool packs (v1)
+
+Every phone mint filters Mac-executed tools. `workspaceMode: "code"` and the
+`repository-catch-up` launch use the 21-entry Code pack:
+
+`symon_execute_plan`, `symon_machine_list`, `symon_machine_switch`, `o8_status`,
+`o8_needs_me`, `o8_review_diff`, `o8_dispatch`, `o8_delegate`, `o8_packet_wait`,
+`o8_packet_steer`, `o8_agent_task`, `o8_packet_rerun`, `o8_packet_reset`,
+`o8_stop_agent`, `o8_approve_item`, `o8_reject_item`, `git_status`, `git_log`,
+`repo_commit_diff`, `symon_ledger_recent`, and `symon_ledger_undo`.
+
+The default `workspaceMode: "o8"` launch uses a separate 28-entry pack:
+
+`symon_machine_list`, `symon_machine_switch`, `symon_execute_plan`, `o8_status`,
+`o8_team_inbox`, `o8_ask`, `o8_needs_me`, `o8_attention_why`, `o8_review_diff`,
+`o8_packet_wait`, `o8_recap`, `o8_usage`, `o8_panel_read`, `o8_dispatch`,
+`o8_delegate`, `escalate`, `agent_turn`, `terminal_list`, `terminal_send`,
+`gh_issue_create`, `gh_comment`, `gh_pr_list`, `gh_issue_list`, `gh_issue_view`,
+`gh_pr_view`, `gh_triage`, `symon_ledger_recent`, and `symon_ledger_undo`.
+
+The o8 pack also retains every live `mcp__*` tool because attaching that MCP
+server to Symon is an explicit operator opt-in. The phone-local `render_surface`
+tool is appended after each pack and never relayed to the Mac. A default o8 mint
+therefore carries 29 tools before optional MCP schemas, while Code and repository
+catch-up mints carry 22. Mail, media, browser, shell, file, screen, `mac_*`, and
+other desktop Life tools stay excluded even when the live Mac catalog contains
+them.
+
+The Code and repository catch-up schemas omit `repo`, `repoId`, and `repoPath`
+and reject unknown arguments. Repository identity belongs exclusively to the
+immutable Mac grant; the relay injects the canonical values after the model
+chooses a tool. Each selector emits its required tools in the canonical order
+above, and the o8 selector appends MCP schemas in bridge order. If any required
+tool for the selected pack is absent or is not a function schema, the mint fails
+as `503 desktop_unavailable` with the missing names instead of silently creating
+a partial phone agent. Desktop Symon does not pass through these phone selectors
+and keeps its full catalog.
 
 ### Spoken packet review
 
@@ -201,6 +294,8 @@ Success `200`:
     "expiresAt": 1783490000000,
     "model": "gpt-realtime-2.1-mini",
     "modelVariant": "mini",
+    "brain": "realtime",
+    "brains": ["realtime"],
     "billingSource": "chatgpt-subscription",
     "voice": "<same voice>",
     "baseUrl": "https://api.openai.com/v1/realtime",
@@ -218,26 +313,147 @@ Success `200`:
 
 Code requires an exact registered `repoPath`. The Mac resolves that path to its
 canonical registry pair and persists an immutable session grant containing the
-subject/device identity, workspace mode, `repoId`, `repoPath`, allowed tools,
-issue time, and scope version. The phone refuses to open WebRTC unless a Code
-mint returns version 1 and the exact requested path. Repo changes therefore
-tear down and remint the session instead of editing instructions in place.
+subject/device identity, workspace mode, selected tool pack, `repoId`,
+`repoPath`, allowed tools, issue time, and scope version. The registry applies
+the same immutable repository scope whenever the grant's selected tool pack is
+Code, including a repository-bound catch-up launch whose workspace mode remains
+o8. The cross-repository catch-up launch keeps its null repository identity so
+read tools can summarize every tracked repository; repository-mutating Code
+tools fail closed until a repository is selected. The phone refuses to open
+WebRTC unless a Code-workspace mint returns version 1 and the exact requested
+path. Repo changes therefore tear down and remint the session instead of editing
+instructions in place.
 
 The mint first reads the standard Codex ChatGPT-OAuth credential and uses its
 access token to request the short-lived Realtime client secret. This path is
 reported as `billingSource:"chatgpt-subscription"` and does not resolve or send a
 Platform API key. Ordinary sessions retain the existing BYOK fallback, reported
-as `billingSource:"openai-api-key"`, for users without ChatGPT OAuth. Repository
-catch-up fails closed when OAuth is unavailable so it can never spend Platform
-credits.
+as `billingSource:"openai-api-key"`, for users without ChatGPT OAuth. After each
+successful phone mint, the Mac records the billing source in the o8 data
+directory. If the previous mint used the subscription and the next mint would
+use BYOK, the route returns `billing_changed` without minting. The phone can
+retry once with `acknowledgeBillingChange:true`; that successful mint records
+the new source. Setting `symon.voice.subscriptionOnly = true` makes missing or
+expired ChatGPT OAuth fail with `subscription_unavailable` before the route
+reads the BYOK key. The setting defaults to `false`. Repository catch-up also
+fails closed when OAuth is unavailable so it can never spend Platform credits.
+
+The transition response is:
+
+```json
+{
+  "ok": false,
+  "error": "billing_changed",
+  "detail": "Symon voice would move from ChatGPT subscription billing to the metered OpenAI API key.",
+  "previous": "chatgpt-subscription",
+  "next": "openai-api-key"
+}
+```
+
+The setting is stored in `settings.toml`:
+
+```toml
+[symon.voice]
+subscriptionOnly = true
+```
 
 Ordinary Life uses `gpt-realtime-2.1-mini`; repository catch-up uses
 `gpt-realtime-2.1`. Code reads
-`O8_SYMON_CODE_REALTIME_EXPERIMENT=mini|flagship|ab`; `ab` assigns a stable
-subject-and-repo bucket. An authenticated operator-only test may override one
-Code mint with `x-o8-symon-code-model: mini|flagship`. The flagship is
+`O8_SYMON_CODE_REALTIME_EXPERIMENT=mini|flagship|ab|live`; `ab` assigns a stable
+subject-and-repo bucket across mini and flagship only. An authenticated
+operator-only test may override one Code mint with
+`x-o8-symon-code-model: mini|flagship|live`. The flagship is
 `gpt-realtime-2.1`; the response exposes `modelVariant` so eval reports cannot
-confuse the two cohorts.
+confuse the cohorts.
+
+#### Which brain a session runs on (#2423)
+
+The brain is the operator's per-session choice, resolved from the plan before any
+credential is read or any token is minted:
+
+| Plan | `brains` in the response | `brain: "live"` in the request |
+|---|---|---|
+| free | `["realtime"]` | `403 brain_locked`, nothing minted |
+| pro, team, founder | `["realtime","live"]` | honored — mints the delegated session |
+
+`session.brain` names what was minted and `session.brains` names what this plan
+may choose, so the phone shows a brain switch only when there is something to
+switch to. With no `brain` in the request every plan mints the standard model
+exactly as before, byte for byte. The gate has one name,
+`voice.liveBrain` in `src/lib/entitlement/flags.ts`, equal to `isPaidPlan`; it is
+a cost lever, not a capability gate, because the live layer bills per voice
+minute on top of its backend model's tokens. An explicit `brain` outranks the
+workspace mode, the catch-up experience, and the experiment switch. The mint log
+line records it: `[symon-agent] minted sym-… (model=… brain=live billing=… )`.
+
+`O8_SYMON_CODE_REALTIME_EXPERIMENT` and the operator-only
+`x-o8-symon-code-model` header remain developer overrides, and neither widens
+what the plan allows. On a free plan a `live` override is dropped, the mint
+continues on the standard model, and the Mac logs
+`[symon-agent] live_override_ignored: …`.
+
+#### The `live` variant (delegated voice, #2411 — TRIAL, unproven)
+
+`gpt-live-1` is a full-duplex voice layer that does not reason. It delegates
+reasoning and tool calls to a backend Responses model named at session creation,
+and bills $0.05 per minute for the voice layer plus that backend's tokens. That
+split — a cheap voice front, a bigger brain behind it — is the shape this
+product wants for Symon, which is why the id was admitted to
+`REALTIME_CAPABLE_MODELS`.
+
+| Env | Default | Effect |
+|---|---|---|
+| `O8_SYMON_CODE_REALTIME_EXPERIMENT=live` | unset | Code mints `gpt-live-1` instead of a realtime model, on a paid plan only |
+| `O8_SYMON_LIVE_BACKEND_MODEL` | `gpt-5.6-terra` | the backend Responses model that reasons and calls tools |
+
+Because the voice layer holds no brain, the `live` mint moves the persona and
+the whole tool pack into the delegation object rather than leaving them at the
+session top level, where a delegated session would never read them:
+
+```json
+{
+  "type": "realtime",
+  "model": "gpt-live-1",
+  "audio": { "output": { "voice": "cedar" }, "input": { "…": "near_field gate" } },
+  "delegation": {
+    "type": "responses",
+    "responses": {
+      "model": "gpt-5.6-terra",
+      "instructions": "You are Symon, …",
+      "tools": [ "…the phone pack + render_surface…" ],
+      "tool_choice": "auto"
+    }
+  }
+}
+```
+
+`delegation.responses.model` is required at creation and the docs name no
+default, so the constant above supplies the documented recommended starting
+point. When a backend model is set, the mint log line carries it:
+`[symon-agent] minted sym-… (model=gpt-live-1 backend=gpt-5.6-terra billing=… )`.
+
+**Leave the switch unset until the operator trial reports back.** Two things are
+unresolved, and only a real session answers them:
+
+1. **Which backend model the session actually used.** We send
+   `delegation.responses.model`, but nothing has yet confirmed the session honours
+   it rather than substituting its own default. The mint log records what we
+   asked for, not what answered.
+2. **Whether the backend's tokens billed to the subscription credential or
+   needed a metered key.** The voice minutes and the backend tokens are priced
+   separately. The phone mint prefers the ChatGPT OAuth credential, and it is
+   unknown whether that credential covers delegated Responses usage or whether
+   the delegated half falls through to a metered key.
+
+There is also a documented contradiction the trial settles. The model reference
+lists `v1/realtime` as **not supported** for `gpt-live-1` and points instead at
+`POST /v1/live/sessions` with a server-side SDP exchange, not a
+`client_secrets` ephemeral token. A client-secrets mint for the id nonetheless
+returned 200 on 2026-09-16 (mint only, no session opened) — which is exactly the
+failure mode `REALTIME_CAPABLE_MODELS` documents: the mint succeeds and the
+refusal lands later at the transport as `invalid_model`. If the trial session
+fails to connect, the fix is a separate Live-session transport path, not a
+change to this allowlist.
 
 Side effect: if a desk-mic session is live, it is **stopped cleanly before minting** (see mutual exclusion) and `preempted: "desk"` is set.
 
@@ -246,8 +462,10 @@ Errors (typed, structured, never thrown):
 |---|---|---|
 | 401 | `unauthorized` | missing/bad Bearer (middleware) |
 | 403 | `locked` | entitlement does not include S2S (same rule as the desk mint) |
+| 403 | `brain_locked` | the request asked for `brain:"live"` on a plan that does not include it; nothing is minted and no credential is read |
+| 409 | `billing_changed` | previous mint used ChatGPT subscription billing and this mint would use the metered API key; body includes `previous` and `next` |
 | 501 | `no_key` | BYOK OpenAI key absent (same rule as the desk mint — managed proxy does not carry realtime in v1) |
-| 501 | `subscription_unavailable` | repository catch-up requires a current Codex ChatGPT-OAuth login and will not fall through to BYOK |
+| 501 | `subscription_unavailable` | repository catch-up or `symon.voice.subscriptionOnly` requires a current Codex ChatGPT-OAuth login and will not fall through to BYOK |
 | 502 | `mint_failed` | upstream OpenAI session-mint failure (body includes `detail`) |
 | 503 | `desktop_unavailable` | webview/eval bridge unreachable, or the live catalog is missing a required Code tool |
 
@@ -354,6 +572,192 @@ file writes, and newly created Reminders, Calendar events, and Notes. File and
 resource inverses compare the current post-state before changing it; a later
 edit, symlink replacement, resource mutation, consumed token, or app restart
 for an in-memory edit makes the undo fail closed.
+
+## Watches — standing intents that outlive the turn
+
+Symon can act inside a turn and can run a short ordered plan, but until watches
+neither survived the conversation ending. A watch is a durable standing intent:
+"tell me when the checks on that pull request finish", "when that packet merges,
+take these steps". It survives the turn, the session, the phone locking, and a
+desktop restart.
+
+A watch is **not a second engine**. It is an ordinary row in o8's `automations`
+table with `triggerKind: 'watch'` and a Symon action kind, so it inherits the
+existing source-event checkpointing, fan-out rate limiting, and deadline
+handling in `src/lib/automations/`. Schema v62 adds three columns plus the park
+pointer: `symon_session_id`, `symon_then_json`, `symon_parked_at`, and
+`symon_parked_fire_id`.
+
+### The four tools
+
+| Tool | Class | What it does |
+|---|---|---|
+| `symon_watch(condition, then, deadline_minutes)` | Reversible | Registers one watch. `condition` names an observable o8 already tracks; `then` is `{kind:"report", say}` or `{kind:"plan", say, steps}`. |
+| `symon_watch_list` | ReadOnly | What Symon is still waiting on, for this session. |
+| `symon_watch_cancel(id)` | Reversible | Clears one watch. Never runs its saved plan. |
+| `symon_watch_run(id)` | Reversible | Runs the plan a fired watch saved, through the native plan executor. |
+
+All four are plan-control tools, so a plan can never nest one. Registering and
+cancelling both card, and the card reads the whole standing intent back: the
+condition in the operator's words, what will happen, the saved steps through the
+same read-back `execute_plan` uses, and when the watch gives up. A plan body that
+cannot be read back is refused at registration rather than at three in the
+morning.
+
+### The two action kinds
+
+`watch_action_kind` gains `symon_report` and `symon_plan` beside the existing
+`dispatch` / `notify` / `steer` / `approval`. Neither opens a lane:
+
+- **`symon_report`** pushes a spoken report through the same loopback bridge the
+  background brain uses — `POST /symon-task-complete` on the WS port, fanned out
+  as a `symon-task-complete` frame on the `symon` channel. `taskId` is the watch
+  id, `intentText` is the operator's own wording of the condition, `resultText`
+  is the model's `say` plus the observed event.
+- **`symon_plan`** pushes the same frame, naming the watch id and telling the
+  model to call `symon_watch_run`. The steps themselves never run from the fire.
+
+A Symon watch is **one-shot**: the question is answered once and the row closes.
+"Keep going until this is true" ends when the condition first holds. One-shot is
+enforced twice, because a loose condition can match several events at once: the
+row carries `watchMaxFiresPerTick: 1`, and the action closes the row *before* it
+delivers, so a second fire finds nothing to report.
+
+### Park and drain — the offline confirm rule
+
+`confirm_with_receipt` needs a live session and expires in 120 seconds, so a fire
+that lands while the phone is away cannot raise a card. When the push returns
+`delivered: 0`, the watch **parks**: `symon_parked_at` is stamped, the row is
+disabled so the shared materializer cannot fan out a second fire, and nothing
+else happens.
+
+The park drains when a Symon session **registers** — a new owner for the session,
+not every `connecting`/`live`/`acting` frame a phone sends inside one — and, as a
+safety net, once per scheduler tick after the ordinary automations have had
+theirs. Draining re-pushes the frame.
+
+A parked watch is announced **exactly once**. `symon_nudged_at` is both the
+record that the operator has been told and the claim that decides which of two
+overlapping drains speaks: the stamp is taken with a conditional UPDATE and only
+the writer that changed the row delivers. It is cleared by running or cancelling
+the watch, by nothing else. A failed delivery releases the claim so the next
+registration retries.
+
+A report is complete once it is spoken. A plan body stays parked until the model
+calls `symon_watch_run`, which takes the body with a second conditional UPDATE
+(so two calls cannot raise two cards for one body, and a claim older than fifteen
+minutes is reclaimable), then enters `plan::execute_plan` on the
+`PlanSurface::WatchRun` surface and shows the ordinary confirmation card carrying
+the condition that fired. The decision is written back to the watch row and to
+the ledger.
+
+**There is no new approval transport and nothing auto-approves.** A watch grants
+no execution authority; it only decides *when* to ask.
+
+A watch body may hold a single step, unlike a live plan's two-step floor: the
+operator already approved the standing intent, and the run still cards. The
+catalog is the narrower `enabled_tools()` set, so a Destructive tool can never
+appear in a saved body.
+
+### Deadline
+
+Every watch carries a deadline (default one day, maximum one week). A watch past
+its deadline is disabled with a `watch_expired` ledger entry and no fire. A
+**parked** watch expires too: a deadline the operator set is a deadline, and a
+watch that nobody came back for must not wait forever. Expiry runs before the
+shared materializer in a tick, because that engine also disables an expired row
+but cannot reach Symon's ledger.
+
+### Ledger
+
+Watch lifecycle events land in the same append-only `agent_plan_events` table as
+plan lifecycle events, with `source = 'symon_watch'` and `plan_id = task_id =` the
+watch id. Phases: `watch_registered`, `watch_fired`, `watch_parked`,
+`watch_drained`, `watch_ran`, `watch_cancelled`, `watch_expired`. The Node
+scheduler writes these directly because a watch fires long after the native turn
+that registered it ended; both sides create the table with identical
+`CREATE TABLE IF NOT EXISTS` DDL and only ever INSERT.
+
+Two surfaces read them. `symon_watch_list` carries each watch's latest ledger
+event, and `symon_ledger_recent` merges watch events with the action ledger, so
+"what did you just do?" cannot silently omit everything a watch did while the
+operator was away. A watch body may hold a single step, so the ledger's plan
+position check accepts a step count of one through five rather than two through
+five — without that, a one-step body failed its first checkpoint and never ran.
+
+### The phone's watch surface
+
+The tools' own routes (`/api/symon/watches` and `/api/symon/watches/[id]`) carry
+the operator bearer and are not on the device allowlist, so a paired phone could
+only learn about a standing intent by opening a voice session and asking Symon to
+call `symon_watch_list`. Two device-token routes make the same state readable and
+one watch clearable without a session:
+
+| Route | Method | Answer |
+|---|---|---|
+| `/api/mobile/symon/watches` | `GET` | `{ ok: true, watches: [...] }` |
+| `/api/mobile/symon/watches/[id]` | `DELETE` | `{ ok: true, watch }`, or `404 { ok: false, error: "not_found" }` |
+
+Each listed watch is the phone's narrower projection of `symonWatchRecord`
+(`src/lib/mobile/symon-watch-view.ts`), one object per standing intent:
+
+```jsonc
+{
+  "id": "watch_...",
+  "condition": "tell me when the release checks finish", // the operator's words
+  "then": "report",                                      // "report" | "plan" | null
+  "summary": "The release checks are done.",             // a plan appends "Then: <tool>, <tool>."
+  "deadline": 1757980000000,                             // epoch ms, or null
+  "state": "active",                                     // active|parked|fired|expired|cancelled
+  "parked": false,
+  "nudgedAt": null,                                      // epoch ms the park was announced
+  "lastLedgerEvent": { "phase": "watch_registered", "outcome": "watching", "summary": "…", "createdAt": 1757900000 }
+}
+```
+
+`state` is the operator's word for the row, not the engine's flags:
+`symonWatchRecord` collapses every settled watch to `closed`, and the ledger tail
+is what separates a watch that fired from one that was cancelled. Settled watches
+stay in the list, because a phone that was away when one fired needs the ledger
+entry to see what happened to it.
+
+The phone polls this list, so it is **bounded**: every live watch (active or
+parked) plus the **20 most recently created settled ones**
+(`SYMON_WATCH_SETTLED_LIMIT`). Nothing prunes a settled row, so an uncapped list
+would grow forever on a repeated request. The ledger tails come from one batched
+query per list rather than one per row. Watches are **install-wide** — not per
+device and not per session — so a second paired phone sees the same list and may
+cancel anything on it.
+
+The list is read-only — registering a watch stays inside a turn, where it cards —
+and the cancel runs `cancelSymonWatch`, the same call `symon_watch_cancel` makes:
+pending fires cleared, row closed, one `watch_cancelled` ledger entry, and a saved
+plan body never run. Cancelling an already-**settled** watch changes nothing and
+writes nothing: it answers 200 with the row as it stands, so a phone retrying a
+dropped request is neither told its watch vanished nor allowed to restamp a watch
+that fired as cancelled. The ledger is append-only, so that guard lives in
+`cancelSymonWatch` rather than in the route. A **parked** watch is still live and
+still cancels.
+
+Both accept the operator bearer or a paired device token and refuse a dispatched
+worker with 403. The device allowlist in `src/middleware.ts` grants exactly `GET`
+on the list and `DELETE` on one id; every other method on either path is 403.
+Real-path coverage: `src/app/api/mobile/symon/watches/route.test.ts` (both
+handlers against fixture watches with a registry-minted device token) and the
+device-capability cases in `tests/middleware-gate.test.ts`.
+
+### Cut from the first version
+
+- **Pull request mergeability.** Nothing emits an event when a PR becomes
+  mergeable, so there is no observable to checkpoint. Watching it would mean
+  polling GitHub, which is a separate decision.
+- **An approval appearing.** Approvals have no source-event producer feeding
+  `automation_source_events`.
+
+Both are additive: they need a producer, not a change to this design. What is
+observable today is packet state and lane/agent finish (`sourceKind: 'packet'`,
+from `ingestLaneAutomationSourceEvents`) and check runs, workflow runs, pull
+request state, and commits (`sourceKind: 'repository'`, from the GitHub webhook).
 
 ## Mutual exclusion — LAST-START-WINS (symmetric)
 

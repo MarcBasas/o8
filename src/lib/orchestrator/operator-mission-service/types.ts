@@ -52,6 +52,8 @@ export interface CreateMissionInput {
    *  today's behavior (runtime default). */
   requestedEffort?: ThinkingEffort | null;
   constraints: string;
+  /** Durable scheduler admission for callers that explicitly requested immediate dispatch. */
+  dispatchOnCreate?: boolean;
   /** Persisted only for exact post-crash receipt reconciliation. */
   clientMutationId?: string | null;
   /** When true, packets are chained sequentially (P2 after P1, etc.). Default: false (parallel). */
@@ -70,6 +72,8 @@ export interface CreateMissionInput {
    * dispatches (no session-rule inheritance).
    */
   orchestratorThreadId?: string | null;
+  /** Exact assistant transcript entry that receives successful worker launches. */
+  orchestratorTurnId?: string | null;
   /** Durable origin for routing review-worthy terminal work back to its caller. */
   dispatcher?: PacketDispatcherAttribution | null;
   /** Outside-launch provenance; transient repos are not written to Projects. */
@@ -116,6 +120,8 @@ export interface SubmitReviewInput {
   reviewedHeadSha?: string;
   /** Per-requirement evidence bound to the sealed contract and reviewed HEAD. */
   contractCoverageEvidence?: ReviewCoverageEvidence;
+  /** Operator-only, current-HEAD waiver when a runtime-default contract was never captured. */
+  missingContractWaiverReason?: string;
   /** #732 — Directives the review verified were respected by the diff. */
   directivesApplied?: string[];
   /** #732 — Directives the review found contradicted by the diff. */
@@ -162,6 +168,17 @@ export interface ResetPacketInput {
     laneIds: string[];
     skipHoldIfStateMoved?: boolean;
     expectedReleaseSource?: string;
+  };
+  /**
+   * Correlation for the accepted request that owns this reset (#2313). When
+   * present, the reset journals its intended generation, the salvage guard it
+   * stamps, and its terminal receipt against `requestKey`, so an owner that
+   * exits before the idempotency receipt is persisted still leaves the request
+   * a supported path to a final result. Callers without an idempotency
+   * identity (stop-packet cleanup, agent-control) omit it and journal nothing.
+   */
+  recovery?: {
+    requestKey: string;
   };
 }
 

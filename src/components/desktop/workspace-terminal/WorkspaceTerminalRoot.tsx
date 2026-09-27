@@ -73,6 +73,16 @@ export const WorkspaceTerminalRoot = forwardRef<TerminalTabHandle, WorkspaceTerm
       return repoName ? `${repoName} / ${kindLabel}` : kindLabel;
     })();
 
+    // Render-derived active identity for the MCP surface-state reader. Source
+    // is the same `activeTab` the header/broadcast use — never a parsed label
+    // or an arbitrary button — and the pane marks itself active so a split
+    // layout resolves the pane the operator is actually on.
+    const activeTabRepoName = activeTab?.repo?.name
+      ?? (activeTab?.repo?.localPath ? activeTab.repo.localPath.split('/').filter(Boolean).pop() ?? null : null);
+    const activeWorkspaceRepoName = activeTabRepoName
+      ?? controller.activeRepo?.name
+      ?? (controller.activeRepo?.localPath ? controller.activeRepo.localPath.split('/').filter(Boolean).pop() ?? null : null);
+
     useOutsideWorkerSplitMount({
       active: props.activeWorkspaceSurface === true,
       activeTabId: controller.activeTab?.id ?? null,
@@ -93,15 +103,21 @@ export const WorkspaceTerminalRoot = forwardRef<TerminalTabHandle, WorkspaceTerm
     const activeRepo = controller.activeRepo;
     const preferredRepo = props.preferredRepo;
     const onCloseTile = props.onCloseTile;
+    const onSplitVertical = props.onSplitVertical;
+    const onSplitHorizontal = props.onSplitHorizontal;
+    const attachLiveRun = controller.attachWorkspaceTerminalSession;
+    const selectLiveRunTab = controller.handleSelectTab;
+    const activeWorkspaceSurface = props.activeWorkspaceSurface === true;
     useEffect(() => {
       if (typeof window === 'undefined') return;
-      const matchWorkspace = (eventWorkspaceId: string | null | undefined) => {
+      const matchWorkspace = (eventWorkspaceId: string | null | undefined, eventTileId?: string) => {
+        if (eventTileId) return eventTileId === props.stateScope;
         if (!eventWorkspaceId) return props.canCloseTile !== true;
         return eventWorkspaceId === workspaceInstanceId;
       };
       const onSpawn = (event: Event) => {
-        const detail = (event as CustomEvent<{ kind?: string; workspaceId?: string }>).detail;
-        if (!matchWorkspace(detail?.workspaceId)) return;
+        const detail = (event as CustomEvent<{ kind?: string; workspaceId?: string; tileId?: string }>).detail;
+        if (!matchWorkspace(detail?.workspaceId, detail?.tileId)) return;
         const repo = preferredRepo ?? activeRepo ?? undefined;
         if (detail?.kind === 'orchestrator') spawnOrchestratorTab?.();
         else if (detail?.kind === 'chat') handleNewLLMChatTab(repo ?? undefined);
@@ -113,13 +129,36 @@ export const WorkspaceTerminalRoot = forwardRef<TerminalTabHandle, WorkspaceTerm
         if (detail?.workspaceId !== workspaceInstanceId) return;
         onCloseTile?.();
       };
+      const onSplitWorkspace = (event: Event) => {
+        const detail = (event as CustomEvent<{ workspaceId?: string; direction?: string; kind?: string }>).detail;
+        if (detail?.workspaceId !== workspaceInstanceId) return;
+        if (detail.kind !== 'chat' && detail.kind !== 'terminal') return;
+        if (detail.direction === 'right') onSplitVertical?.(detail.kind);
+        if (detail.direction === 'below') onSplitHorizontal?.(detail.kind);
+      };
+      const onOpenAgentTerminal = (event: Event) => {
+        const detail = (event as CustomEvent<{ session?: string; label?: string; workspaceId?: string }>).detail;
+        if (detail?.workspaceId ? detail.workspaceId !== workspaceInstanceId : !activeWorkspaceSurface) return;
+        if (!detail?.session) return;
+        const tabId = attachLiveRun({
+          sessionKey: detail.session,
+          tmuxSession: detail.session,
+          label: detail.label,
+          readOnly: true,
+        }, preferredRepo ?? activeRepo ?? null);
+        if (tabId) selectLiveRunTab(tabId);
+      };
       window.addEventListener('o8:request-spawn-tab', onSpawn as EventListener);
       window.addEventListener('o8:request-close-workspace', onCloseWorkspace as EventListener);
+      window.addEventListener('o8:request-split-workspace-tab', onSplitWorkspace as EventListener);
+      window.addEventListener('o8:open-agent-terminal', onOpenAgentTerminal as EventListener);
       return () => {
         window.removeEventListener('o8:request-spawn-tab', onSpawn as EventListener);
         window.removeEventListener('o8:request-close-workspace', onCloseWorkspace as EventListener);
+        window.removeEventListener('o8:request-split-workspace-tab', onSplitWorkspace as EventListener);
+        window.removeEventListener('o8:open-agent-terminal', onOpenAgentTerminal as EventListener);
       };
-    }, [props.canCloseTile, handleNewTab, handleNewLLMChatTab, spawnOrchestratorTab, spawnFleetCanvasTab, activeRepo, preferredRepo, onCloseTile, workspaceInstanceId]);
+    }, [props.canCloseTile, props.stateScope, handleNewTab, handleNewLLMChatTab, spawnOrchestratorTab, spawnFleetCanvasTab, activeRepo, preferredRepo, onCloseTile, onSplitVertical, onSplitHorizontal, workspaceInstanceId, activeWorkspaceSurface, attachLiveRun, selectLiveRunTab]);
 
     // Broadcast the active-tab label + tabId + kind + workspaceId + full
     // tabs list so the dashboard can route the title to the column-level
@@ -172,6 +211,7 @@ export const WorkspaceTerminalRoot = forwardRef<TerminalTabHandle, WorkspaceTerm
       window.dispatchEvent(new CustomEvent('o8:workspace-active-label', {
         detail: {
           workspaceId: workspaceInstanceId,
+          tileId: props.stateScope,
           label: conversationHeaderLabel,
           tabId: activeTabId,
           kind: activeTabKind,
@@ -201,7 +241,7 @@ export const WorkspaceTerminalRoot = forwardRef<TerminalTabHandle, WorkspaceTerm
         }));
       };
 
-    }, [conversationHeaderLabel, activeTabId, activeTabKind, workspaceInstanceId, tabsBroadcastSignature, controller.finishedTabCount, projectContextRailAvailable, projectContextRailVisible, terminalMode.active, props.activeWorkspaceSurface]);
+    }, [conversationHeaderLabel, activeTabId, activeTabKind, workspaceInstanceId, tabsBroadcastSignature, controller.finishedTabCount, projectContextRailAvailable, projectContextRailVisible, terminalMode.active, props.activeWorkspaceSurface, props.stateScope]);
 
     // Listen for chat-history rename so the workspace tab's label
     // refreshes in sync with the chat-history PATCH. The header strip
@@ -254,6 +294,11 @@ export const WorkspaceTerminalRoot = forwardRef<TerminalTabHandle, WorkspaceTerm
         if (!matchWorkspace(detail?.workspaceId)) return;
         if (detail?.tabId) handleCloseTab(detail.tabId);
       };
+      const onRename = (event: Event) => {
+        const detail = (event as CustomEvent<{ tabId?: string; label?: string; workspaceId?: string }>).detail;
+        if (!matchWorkspace(detail?.workspaceId)) return;
+        if (detail?.tabId && detail.label) handleUpdateTabLabel(detail.tabId, detail.label, { source: 'user' });
+      };
       const onCleanup = (event: Event) => {
         const detail = (event as CustomEvent<{ workspaceId?: string | null }>).detail;
         if (!matchWorkspace(detail?.workspaceId)) return;
@@ -267,13 +312,15 @@ export const WorkspaceTerminalRoot = forwardRef<TerminalTabHandle, WorkspaceTerm
       };
       window.addEventListener('o8:request-select-tab', onSelect as EventListener);
       window.addEventListener('o8:request-close-tab', onClose as EventListener);
+      window.addEventListener('o8:request-rename-tab', onRename as EventListener);
       window.addEventListener('o8:request-cleanup-tabs', onCleanup as EventListener);
       return () => {
         window.removeEventListener('o8:request-select-tab', onSelect as EventListener);
         window.removeEventListener('o8:request-close-tab', onClose as EventListener);
+        window.removeEventListener('o8:request-rename-tab', onRename as EventListener);
         window.removeEventListener('o8:request-cleanup-tabs', onCleanup as EventListener);
       };
-    }, [props.canCloseTile, handleSelectTab, handleCloseTab, cleanupFinishedTabs, workspaceInstanceId]);
+    }, [props.canCloseTile, handleSelectTab, handleCloseTab, handleUpdateTabLabel, cleanupFinishedTabs, workspaceInstanceId]);
 
     useEffect(() => {
       if (!cleanupToast) return;
@@ -294,6 +341,11 @@ export const WorkspaceTerminalRoot = forwardRef<TerminalTabHandle, WorkspaceTerm
       <div
         ref={containerDivRef}
         data-vibrancy-passthrough=""
+        data-o8-workspace-root="1"
+        data-o8-workspace-active={props.activeWorkspaceSurface === true ? 'true' : undefined}
+        data-o8-active-tab-id={activeTab?.id ?? undefined}
+        data-o8-active-tab-kind={activeTab?.kind ?? undefined}
+        data-o8-active-repo={activeWorkspaceRepoName ?? undefined}
         style={{
           flex: 1,
           display: 'flex',

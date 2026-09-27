@@ -25,6 +25,8 @@ interface ReviewArgs {
     requirementId: string;
     productionPath: string;
   }>;
+  processEntries: Array<{ constraintId: string; source: 'transcript' | 'lane-event' | 'command'; reference: string }>;
+  missingContractWaiverReason: string | null;
 }
 
 interface OperatorResponse<T> {
@@ -36,8 +38,8 @@ interface OperatorResponse<T> {
 function parseReviewArgs(rest: string[]): ReviewArgs {
   const args = parsePacketArguments(rest, {
     command: 'review',
-    valueFlags: ['expected-sha', 'commit-message', 'idempotency-key', 'contract-version'],
-    repeatableValueFlags: ['coverage'],
+    valueFlags: ['expected-sha', 'commit-message', 'idempotency-key', 'contract-version', 'waive-missing-contract'],
+    repeatableValueFlags: ['coverage', 'process-evidence'],
     booleanFlags: ['approve'],
   });
 
@@ -73,12 +75,38 @@ function parseReviewArgs(rest: string[]): ReviewArgs {
     return { requirementId, productionPath };
   });
 
+  const seenConstraintIds = new Set<string>();
+  const processEntries = (args.multiValues['process-evidence'] ?? []).map((entry) => {
+    const separator = entry.indexOf('=');
+    const constraintId = separator >= 0 ? entry.slice(0, separator).trim() : '';
+    const citation = separator >= 0 ? entry.slice(separator + 1).trim() : '';
+    const sourceSeparator = citation.indexOf(':');
+    const source = sourceSeparator >= 0 ? citation.slice(0, sourceSeparator).trim() : '';
+    const reference = sourceSeparator >= 0 ? citation.slice(sourceSeparator + 1).trim() : '';
+    if (!constraintId || !['transcript', 'lane-event', 'command'].includes(source) || !reference) {
+      throw new CliError('invalid_args', '--process-evidence must use <constraint-id>=<transcript|lane-event|command>:<concrete reference>.', EXIT.INVALID_ARGS);
+    }
+    if (seenConstraintIds.has(constraintId)) {
+      throw new CliError('invalid_args', `--process-evidence repeats constraint ${constraintId}.`, EXIT.INVALID_ARGS);
+    }
+    seenConstraintIds.add(constraintId);
+    return { constraintId, source: source as 'transcript' | 'lane-event' | 'command', reference };
+  });
+
+  if (processEntries.length > 0 && coverageEntries.length === 0) {
+    throw new CliError('invalid_args', '--process-evidence requires file-backed --coverage entries.', EXIT.INVALID_ARGS);
+  }
+
   if (contractVersion !== null && coverageEntries.length === 0) {
     throw new CliError(
       'invalid_args',
       '--contract-version requires at least one --coverage entry.',
       EXIT.INVALID_ARGS,
     );
+  }
+  const missingContractWaiverReason = args.values['waive-missing-contract']?.trim() || null;
+  if (missingContractWaiverReason && (missingContractWaiverReason.length > 500 || coverageEntries.length > 0)) {
+    throw new CliError('invalid_args', '--waive-missing-contract requires a reason of at most 500 characters and cannot be combined with --coverage.', EXIT.INVALID_ARGS);
   }
 
   return {
@@ -89,6 +117,8 @@ function parseReviewArgs(rest: string[]): ReviewArgs {
     idempotencyKey: args.values['idempotency-key']?.trim() || null,
     contractVersion,
     coverageEntries,
+    processEntries,
+    missingContractWaiverReason,
   };
 }
 
@@ -121,6 +151,9 @@ export async function runPacketReview(mode: OutputMode, rest: string[]): Promise
       'Pass the full output of `git rev-parse HEAD` with --expected-sha.',
     );
   }
+  if (args.missingContractWaiverReason && !/^[0-9a-f]{40}$/i.test(args.expectedHeadSha ?? '')) {
+    throw new CliError('invalid_args', '--waive-missing-contract requires a full 40-character --expected-sha.', EXIT.INVALID_ARGS);
+  }
   if (args.coverageEntries.length > 0 && !/^[0-9a-f]{40}$/i.test(args.expectedHeadSha ?? '')) {
     throw new CliError(
       'invalid_args',
@@ -138,7 +171,7 @@ export async function runPacketReview(mode: OutputMode, rest: string[]): Promise
     status?: string;
     note?: string;
     contractCoverage?: {
-      status: 'passed' | 'failed' | 'not-applicable';
+      status: 'passed' | 'failed' | 'not-applicable' | 'waived';
       reason: string;
       checks: Array<{
         requirementId: string;
@@ -156,7 +189,9 @@ export async function runPacketReview(mode: OutputMode, rest: string[]): Promise
       contractVersion: args.contractVersion ?? 1,
       headSha: args.expectedHeadSha!,
       entries: args.coverageEntries,
+      processEntries: args.processEntries,
     } : undefined,
+    ...(args.missingContractWaiverReason ? { missingContractWaiverReason: args.missingContractWaiverReason } : {}),
     clientMutationId: receiptKey,
   });
   if (!reviewRes.data?.ok) {
@@ -166,12 +201,15 @@ export async function runPacketReview(mode: OutputMode, rest: string[]): Promise
   if (!reviewResult) {
     throw new CliError('review_failed', 'Packet review returned no result.', EXIT.CONFLICT);
   }
+  if (!reviewResult.recorded) {
+    throw new CliError('review_not_recorded', reviewResult.note ?? 'The review was not recorded; merge was not attempted.', EXIT.CONFLICT);
+  }
   if (reviewResult.contractCoverage?.status === 'failed') {
     throw new CliError(
       'contract_coverage_failed',
       reviewResult.contractCoverage.reason,
       EXIT.CONFLICT,
-      'Repeat --coverage <requirement-id>=<repo-relative-production-path> for every sealed requirement.',
+      'Provide --coverage <requirement-id>=<repo-relative-production-path> for each file requirement and --process-evidence <constraint-id>=<transcript|lane-event|command>:<reference> for each process constraint.',
     );
   }
 
