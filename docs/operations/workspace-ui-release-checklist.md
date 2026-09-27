@@ -4,13 +4,19 @@ Source integration is not release proof. Keep issue closure and shipped acceptan
 
 | Scope | Tracking | Source state | Release acceptance |
 | --- | --- | --- | --- |
-| Compact worker layout | #2814, #2763 | Combined candidate | Four real workers and ten simulated panes at compact and large sizes; scroll, focus, close, drag, reload |
-| Fast shared checkout | #2772 | Combined candidate | Packaged orchestrator, scoped workers, reviewed commit, team closure, cold restore |
-| Shared workspace pages and navigation | #2817 | Combined candidate | Projects, Customize, Automations, Handoffs replies, tab ownership and retained pane layouts |
-| Managed-run observation | #2816 | Combined candidate | Attach, resize, visibility and reconnect preserve worker input and dimensions |
-| Account drawer release shortcut | #2769 | Included in shared UI candidate | Settings and help remain reachable |
+| Compact worker layout | #2814, #2763 | Shipped in v0.1.771 | Four real workers and ten simulated panes at compact and large sizes; scroll, focus, close, drag, reload |
+| Fast shared checkout | #2772 | Shipped in v0.1.771 | Packaged orchestrator, scoped workers, reviewed commit, team closure, cold restore |
+| Shared workspace pages and navigation | #2817 | Shipped in v0.1.771 | Projects, Customize, Automations, Handoffs replies, tab ownership and retained pane layouts |
+| Managed-run observation | #2816 | Shipped in v0.1.771 | Attach, resize, visibility and reconnect preserve worker input and dimensions |
+| Account drawer release shortcut | #2769 | Shipped in v0.1.771 | Settings and help remain reachable |
 
 Development-only worker previews and the compact rail study remain development-only. Onboarding media remains deferred under #2781 and #2782.
+
+## Release receipt
+
+Published [v0.1.771](https://github.com/hurttlocker/o8-releases/releases/tag/v0.1.771) contains integration #2819 at source `034875099c1b93cfc0e1d7a3438dc18f7a367f59`. Public updater signature, app and DMG notarization, Gatekeeper assessment, and matching app code signatures passed. Installed first-run launch and permission restart passed. The normal desktop profile reaches its workspace after the gateway reconnects; the account drawer shows v0.1.771 with Settings, Check for updates and Get help, and no release-note shortcut. Candidate worker tests below were not repeated with new paid workers after the version-only change.
+
+Keep #2763, #2766, #2768, #2772 and #2814 open for their remaining outside-worker, terminal interaction, collision, ten-real-worker, isolated-mode and compact steer/drop acceptance. Four real workers and ten simulated panes are different evidence.
 
 ## Candidate evidence
 

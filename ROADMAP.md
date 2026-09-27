@@ -28,9 +28,7 @@ A disposable packet exposed a review-evidence mismatch: process instructions wer
 
 The repository-scoped Handoffs pane, split-transcript peer events, visible codenames, and bounded conversation protocol merged in source. An installed two-agent run still has to prove the whole interaction. [#2690](https://github.com/hurttlocker/o8/issues/2690)
 
-Opt-in shared-checkout teams are in the combined integration candidate. Four real workers completed scoped edits in the packaged native app, followed by reviewed commit and team closure. Compact and large layouts, placement, reload, and cold restore passed. Release acceptance remains open. [#2772](https://github.com/hurttlocker/o8/issues/2772)
-
-Shared workspace UI and compact worker layouts passed combined native candidate acceptance. Existing-chat project changes persist before send, and completed workers update in place without reload. Page controls, automation loading, worker receipts, and read-only terminal observation are tracked in [#2817](https://github.com/hurttlocker/o8/issues/2817). Release acceptance remains open.
+Opt-in shared-checkout teams shipped in 0.1.771. Four real workers completed scoped edits in the packaged native app, followed by reviewed commit and team closure. Compact and large layouts, placement, reload, and cold restore passed. Ten real workers, collision handling and isolated-mode native acceptance remain open. [#2772](https://github.com/hurttlocker/o8/issues/2772)
 
 An outside agent chat can be readable through discovery without becoming the orchestrator chat in an o8 workspace. A read-only exact-session view comes first; linked worker placement and a writable handoff need parent identity and active-writer proof. [#2775](https://github.com/hurttlocker/o8/issues/2775)
 
@@ -136,6 +134,8 @@ Longer-term bets, ordered by evidence and dependencies rather than a calendar ye
 | Agents that use the screen, not only the repo. A packet can drive a browser or a GUI with the same isolation, review, and receipt. | The embedded browser agent and its governed verbs. | Computer-use as a worker capability behind the packet contract. | not yet filed |
 
 ## Shipped
+
+- **0.1.771:** project-first onboarding, permission success and restart recovery, agent-assisted setup, and the shared workspace integration ([#2817](https://github.com/hurttlocker/o8/issues/2817)). Existing-chat project changes persist before send; completed workers update without reload. Signed public artifacts and installed first-run restart passed. Broader worker and terminal acceptance remains in its open trackers.
 
 Arcs whose every child is closed and released. They stay here so the pillars read as a whole, and they get no tracking issue.
 
