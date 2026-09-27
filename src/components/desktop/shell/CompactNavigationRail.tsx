@@ -28,10 +28,10 @@ function runtimeName(runtime: string): string {
 
 const railButton: CSSProperties = {
   position: 'relative',
-  width: 40,
-  height: 40,
-  minWidth: 40,
-  minHeight: 40,
+  width: 44,
+  height: 44,
+  minWidth: 44,
+  minHeight: 44,
   padding: 0,
   display: 'flex',
   alignItems: 'center',
@@ -46,7 +46,7 @@ const railButton: CSSProperties = {
 
 type RailNavAction = 'handoffs' | 'automations' | 'customize' | 'projects';
 
-export function ChatRailStudy({
+export function CompactNavigationRail({
   onHoverReveal,
   onHoverLeave,
   onPinSidebar,
@@ -184,9 +184,9 @@ export function ChatRailStudy({
 
   return (
     <div
-      data-mcp-scope="dev-chat-rail-study"
+      data-mcp-scope="compact-navigation-rail"
       data-chrome-surface={isGlass ? 'true' : undefined}
-      aria-label="Development compact rail with recent chats"
+      aria-label="Compact navigation with recent chats"
       onMouseLeave={() => { setHoveredChatId(null); onHoverLeave(); }}
       style={{
         position: 'fixed',
@@ -218,13 +218,13 @@ export function ChatRailStudy({
       <button type="button" aria-label="Terminal" title="Terminal" onClick={onCreateTerminal} style={railButton}><Terminal size={19} strokeWidth={1.8} /></button>
       <button type="button" aria-label="Search" title="Search" onClick={onSearch} style={railButton}><InputSearch width={20} height={20} strokeWidth={1.8} /></button>
       <div style={{ width: 27, height: 1, marginTop: 6, marginBottom: 6, flexShrink: 0, background: 'var(--t-divider-subtle)' }} />
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 0, flexShrink: 1, overflowY: 'auto' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 0, flexShrink: 1, overflowY: 'auto', scrollbarWidth: 'none' }}>
         {navItems.map((item) => (
           <button key={item.id} type="button" aria-label={item.label} title={item.label} onClick={() => openNav(item.id)} style={{ ...railButton, flexShrink: 0 }}>{item.icon}</button>
         ))}
       </div>
       <div style={{ width: 27, height: 1, marginTop: 6, marginBottom: 6, flexShrink: 0, background: 'var(--t-divider-subtle)' }} />
-      <div style={{ minHeight: 40, flex: '1 1 80px', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, overflowY: 'auto' }}>
+      <div style={{ minHeight: 40, flex: '1 1 80px', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, overflowY: 'auto', scrollbarWidth: 'none' }}>
         {chats.map((chat) => (
           <button
             key={chat.tabId}
@@ -332,7 +332,7 @@ export function ChatRailStudy({
             autoEffects={false}
             style={{
               maxHeight: 'min(360px, calc(100vh - 24px))',
-              overflowY: 'auto',
+              overflowY: 'auto', scrollbarWidth: 'none',
               background: isGlass ? 'var(--t-bg)' : 'var(--t-panel-solid)',
               backdropFilter: isGlass ? 'blur(18px) saturate(1.15)' : undefined,
               WebkitBackdropFilter: isGlass ? 'blur(18px) saturate(1.15)' : undefined,
