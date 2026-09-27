@@ -27,7 +27,7 @@ const fullInventory = [
   },
   {
     id: 'gemini',
-    label: 'Gemini',
+    label: 'Gemini CLI',
     available: false,
     unavailableReason: 'needs_auth',
     detail: 'Gemini CLI is installed but not signed in.',
@@ -125,7 +125,7 @@ describe('onboarding runtime picker — real operator-defaults path', () => {
     inventory = [
       {
         id: 'gemini',
-        label: 'Gemini',
+        label: 'Gemini CLI',
         available: true,
         unavailableReason: null,
         detail: 'Gemini CLI is installed and signed in.',

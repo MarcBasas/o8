@@ -20,6 +20,8 @@ const CURRENT_CLAUDE_FLAGSHIPS = [
 
 const CURRENT_CODEX_FLAGSHIPS = [
   MODEL_IDS.raw.openAiGpt6Astra,
+  MODEL_IDS.raw.openAiGpt6Sol,
+  MODEL_IDS.raw.openAiGpt6Luna,
   MODEL_IDS.raw.openAiGpt56Sol,
 ] as const;
 
@@ -47,7 +49,7 @@ describe('Claude model picker coverage', () => {
 });
 
 describe('Codex model picker coverage', () => {
-  it('offers Astra and Sol in settings and both CLI pickers', () => {
+  it('offers current Codex models in settings and both CLI pickers', () => {
     const settingsIds = BRAIN_CODEX_MODEL_OPTIONS.map((option) => option.value);
     const workspaceIds = CODEX_CLI_MODELS.map((option) => option.id);
     const chatIds = CLI_RUNTIME_MODELS.codex.map((option) => option.id.replace('cli:codex:', ''));
@@ -64,9 +66,4 @@ it('formats current model IDs without dropping their minor versions', () => {
   expect(formatModelLabel('anthropic/claude-opus-5-5')).toBe('Opus 5.5');
   expect(formatModelLabel('claude-fable-5-1')).toBe('Fable 5.1');
   expect(formatModelLabel('gpt-6-sol')).toBe('GPT-6 Sol');
-});
-
-it('keeps the unverified subscription model out of curated Codex choices', () => {
-  expect(BRAIN_CODEX_MODEL_OPTIONS.map((item) => item.value)).not.toContain('gpt-6-sol');
-  expect(CODEX_CLI_MODELS.map((item) => item.id)).not.toContain('gpt-6-sol');
 });
