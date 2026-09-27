@@ -493,12 +493,7 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
   // session (that was the stuck-on-Codex trap).
   const isSingleMode = lockedMode === 'single';
   const isChatMode = orchestrationMode === 'chat';
-  // Solo vs fleet is now decided SILENTLY by installed runtime count (Q ruling
-  // 2026-07-11) — the manual Fleet/Solo chip was removed. One usable runtime →
-  // the orchestrator runs lean/inline (solo); two or more → fleet orchestration
-  // (dispatch). While the one-time probe is loading (null), default to fleet —
-  // dispatch is the thesis, and never gate the orchestrator's tools on a
-  // pending fetch.
+  // One available runtime runs inline; pending readiness preserves fleet routing.
   const soloOrchestrator = operatorDefaults.readyRuntimeCount === 1 && lockedMode !== 'single' && !isChatMode;
   const isOrchestratorMode = !isSingleMode && !isChatMode && (targetAgentKey === '__claude__' || !sessionTargets.some((s) => s.key === targetAgentKey));
 
@@ -569,15 +564,7 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
     () => workspaceTargets.find((target) => target.localPath === resolvedRepoPath) ?? null,
     [resolvedRepoPath, workspaceTargets],
   );
-  // When the empty-state surface is showing, the Project chip above
-  // the composer already owns the repo selector — duplicating it
-  // inside the composer pill row reads as visual redundancy (operator
-  // dogfood call). Hide it until messages arrive; on first message
-  // the composer slides down to its bottom rest and the repo chip
-  // reappears in the pill row so the operator can re-target during
-  // the conversation. Final `composerRepoLabel` is derived further
-  // down (after `displayMessages`) so the check matches what the
-  // empty-state slot uses.
+  // The empty-state Project chip owns selection until messages arrive.
   const composerRepoLabelBase = selectedWorkspaceTarget?.label
     ?? repoLabel
     ?? repoPathLabel(resolvedRepoPath);
@@ -589,10 +576,12 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
     singleRuntimeSessionRef.current = null;
     singleRuntimeLaunchPromiseRef.current = null;
   }, []);
-  const handleSelectComposerRepoPath = useComposerRepoTarget({
+  const { selectRepoPath: handleSelectComposerRepoPath, ensureSelectedRepoPersisted, targetSaveError } = useComposerRepoTarget({
+    activeThreadId: threadId,
     applyRepoPath: applyComposerRepoPath,
     ownerTabId,
     scopeTabId,
+    threadIdRef,
     workspaceTargets,
   });
 
@@ -1571,9 +1560,21 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
 
   const sendOrchestrator = useCallback((message: string, options: OrchestratorSendOptions) => {
     const handoffMode = backendSwitch.currentHandoffMode();
+    const sendingThreadId = threadIdRef.current;
     return orchStream.send(message, {
       ...options, pickedMode: composerModeRef.current,
       ...(handoffMode ? { handoffMode } : {}),
+      beforeSend: async (signal) => {
+        const ready = await ensureSelectedRepoPersisted(signal);
+        if (!ready && !signal.aborted && threadIdRef.current === sendingThreadId) {
+          setInput((draft) => draft ? `${message}\n\n${draft}` : message);
+          for (const image of options.attachments ?? []) {
+            addAttachedImage({ name: image.name ?? 'Image', dataUri: image.dataUri,
+              mimeType: image.dataUri.match(/^data:([^;]+);/)?.[1] ?? 'image/png' });
+          }
+        }
+        return ready;
+      },
       resolveTurnOptions: (signal) => resolveFreshComposerTurnOptions({
         repoPath: resolvedRepoPath,
         backend: orchestratorBackend,
@@ -1581,7 +1582,7 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
         setModel: setOrchestratorModel, setOperatorDefaults,
       }, signal),
     });
-  }, [backendSwitch, orchStream, orchestratorBackend, resolvedRepoPath, setOrchestratorModel]);
+  }, [addAttachedImage, backendSwitch, ensureSelectedRepoPersisted, orchStream, orchestratorBackend, resolvedRepoPath, setOrchestratorModel]);
 
   const startSlashOrchestration = useCallback(async (request: SlashOrchestrationRequest) => {
     const localEntriesAfterUser = request.commandEntry ? [request.commandEntry] : [];
@@ -2266,6 +2267,7 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
       </div>
       {composeFirst && transcriptSideRail ? <div style={{ position: 'absolute', top: 0, right: 0, height: 'max-content' }}>{transcriptSideRail}</div> : null}
       <ChatToastStack
+        projectTargetSaveError={targetSaveError}
         reloadNotice={reloadNotice}
         onDismissReloadNotice={dismissReloadNotice}
         showClearToast={showClearToast}
