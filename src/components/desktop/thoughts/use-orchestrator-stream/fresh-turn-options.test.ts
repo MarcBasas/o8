@@ -208,6 +208,58 @@ afterEach(async () => {
 });
 
 describe('composer fresh operator defaults at the send seam', () => {
+  it('sends a Project picker selection to the owning workspace tab', async () => {
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    const scopeEvents: Array<{ tabId: string; repoPath: string; repoName: string }> = [];
+    const onScope = (event: Event) => {
+      scopeEvents.push((event as CustomEvent<{ tabId: string; repoPath: string; repoName: string }>).detail);
+    };
+    window.addEventListener('o8:select-workspace-scope', onScope);
+    try {
+      await act(async () => root.render(createElement(ThoughtsChatPanel, {
+        open: true,
+        agents: [],
+        missionState: { version: 2, prompt: '', summary: '', packets: [], updatedAt: new Date(0).toISOString() },
+        preferredRuntime: 'codex',
+        sessionTargets: [],
+        workspaceTargets: [
+          { id: repoPath, label: 'Original', repoName: 'original', localPath: repoPath, branch: 'main', isWorktree: false },
+          { id: '/repo/selected', label: 'Selected', repoName: 'selected', localPath: '/repo/selected', branch: 'main', isWorktree: false },
+        ],
+        repoPath,
+        scopeTabId: 'owning-tab',
+        ownerTabId: 'owning-tab',
+        initialMode: 'fleet',
+        onModePersist: () => {},
+        suppressAutoRestore: true,
+        suppressRuntimePrewarm: true,
+        thoughtsBodyBackground: 'var(--t-bg)',
+        thoughtsElevatedSurface: 'var(--t-panel)',
+        thoughtsElevatedBorder: 'var(--t-border)',
+        thoughtsElevatedShadow: 'var(--t-panel-shadow)',
+        thoughtsMutedGlass: 'var(--t-muted)',
+        onMissionStateChange: () => {},
+        onChromeChange: () => {},
+      })));
+      const trigger = host.querySelector<HTMLButtonElement>('button[aria-label="Project target: original"]');
+      expect(trigger).toBeTruthy();
+      await act(async () => trigger?.click());
+      const selected = [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+        .find((button) => button.textContent?.includes('/repo/selected'));
+      expect(selected).toBeTruthy();
+      await act(async () => selected?.click());
+      expect(scopeEvents).toEqual([{ tabId: 'owning-tab', repoPath: '/repo/selected', repoName: 'selected' }]);
+      expect(host.querySelector('button[aria-label="Project target: selected"]')).toBeTruthy();
+      await act(async () => window.dispatchEvent(new CustomEvent('o8:select-workspace-scope', {
+        detail: { tabId: 'another-tab', repoPath, repoName: 'original' },
+      })));
+      expect(host.querySelector('button[aria-label="Project target: selected"]')).toBeTruthy();
+    } finally {
+      window.removeEventListener('o8:select-workspace-scope', onScope);
+    }
+  });
+
   it('reaches the live resolver through the real ThoughtsChatPanel send callback', async () => {
     const composerModeStorageId = 'live-mode-tab';
     localStorage.setItem('o8:composer-selector-v1', '0');

@@ -474,23 +474,18 @@ export function useWorkspaceTerminalController(
     return () => window.removeEventListener(WORKSPACE_THREAD_ID_EVENT, handler as EventListener);
   }, []);
 
-  // Dashboard repo picker → re-bind the active orchestrator tab's repo (#1265).
-  // OrchestratorTab's empty-state Project chip broadcasts
-  // 'o8:select-workspace-scope' when the user picks a repo, but nothing on the
-  // dashboard consumed it — so the choice never reached tab.repo and the
-  // orchestrator stayed stuck on whatever repo it spawned with (e.g. o8-mobile).
-  // Stamp the chosen repo onto the active orchestrator tab (the only tab whose
-  // empty-state picker is reachable) so repoPath re-binds immediately. The
-  // event carries name + localPath, which is all RegisteredRepo requires.
-  // Mirrors the 'o8:workspace-thread-id' listener above.
+  // Both Project pickers re-bind their owning tab, including a background tab
+  // in another workspace tile. The tab's repo is the split-worker claim and
+  // persisted restore scope, so never infer ownership from global focus.
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ repoPath?: string; repoName?: string }>).detail;
+      const detail = (event as CustomEvent<{ tabId?: string; repoPath?: string; repoName?: string | null }>).detail;
+      const tabId = detail?.tabId;
       const repoPath = detail?.repoPath;
-      if (!repoPath) return;
+      if (!tabId || !repoPath) return;
       setTabs((previous) => {
         const idx = previous.findIndex(
-          (t) => t.id === effectiveActiveTabId && t.kind === 'orchestrator',
+          (t) => t.id === tabId && t.kind === 'orchestrator',
         );
         if (idx < 0) return previous;
         if (previous[idx]!.repo?.localPath === repoPath) return previous;
@@ -498,7 +493,7 @@ export function useWorkspaceTerminalController(
         next[idx] = {
           ...next[idx]!,
           repo: {
-            name: detail?.repoName ?? repoPath.split('/').pop() ?? repoPath,
+            name: detail?.repoName || repoPath.split('/').pop() || repoPath,
             localPath: repoPath,
           },
         };
@@ -508,7 +503,7 @@ export function useWorkspaceTerminalController(
     };
     window.addEventListener('o8:select-workspace-scope', handler as EventListener);
     return () => window.removeEventListener('o8:select-workspace-scope', handler as EventListener);
-  }, [effectiveActiveTabId]);
+  }, []);
 
   // One-time scrub of orphaned `…:session-tiles:tab:*` localStorage keys left
   // behind by closed tabs (they were never cleaned on close pre-fix). Runs once

@@ -878,9 +878,9 @@ function OrchestratorTabInner({
     setScopeCleared(false);
     if (typeof window === 'undefined') return;
     window.dispatchEvent(new CustomEvent('o8:select-workspace-scope', {
-      detail: { repoPath: target.localPath, repoName: target.repoName },
+      detail: { tabId, repoPath: target.localPath, repoName: target.repoName },
     }));
-  }, []);
+  }, [tabId]);
   const handleEmptyAddProject = useCallback((mode?: 'scratch' | 'existing') => {
     if (typeof window === 'undefined') return;
     window.dispatchEvent(new CustomEvent('o8:open-add-repo-flow', { detail: { mode } }));
@@ -891,9 +891,9 @@ function OrchestratorTabInner({
     setScopeCleared(true);
     if (typeof window === 'undefined') return;
     window.dispatchEvent(new CustomEvent('o8:select-workspace-scope', {
-      detail: { repoPath: ORCHESTRATOR_HOME_REPO_SENTINEL, repoName: null },
+      detail: { tabId, repoPath: ORCHESTRATOR_HOME_REPO_SENTINEL, repoName: null },
     }));
-  }, []);
+  }, [tabId]);
 
   const emptyStateNode = useMemo(
     () => (
@@ -1039,6 +1039,8 @@ function OrchestratorTabInner({
       sessionTargets={sessionTargets}
       workspaceTargets={data.workspaceTargets ?? []}
       repoPath={effectiveRepoPath}
+      scopeTabId={tabId}
+      ownerTabId={publishWorkspaceThread ? tabId : undefined}
       projectId={data.activeProjectId ?? null}
       thoughtsBodyBackground={thoughtsBodyBackground}
       thoughtsElevatedSurface={thoughtsElevatedSurface}

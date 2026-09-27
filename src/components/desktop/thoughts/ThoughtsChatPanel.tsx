@@ -90,6 +90,7 @@ import { usePersistChatThread } from './chat-panel/usePersistChatThread';
 import { useTurnSummaryReceipt } from './chat-panel/useTurnSummaryReceipt';
 import { useSuggestedReplies } from './chat-panel/useSuggestedReplies';
 import { useThoughtsComposerAttachments } from './chat-panel/useThoughtsComposerAttachments';
+import { useComposerRepoTarget } from './chat-panel/useComposerRepoTarget';
 import { useThreadHistoryBackfill } from './chat-panel/useThreadHistoryBackfill';
 import {
   fetchOlderThreadPage,
@@ -138,6 +139,10 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
   sessionTargets: AgentTarget[];
   workspaceTargets: OrchestratorWorkspaceTarget[];
   repoPath?: string | null;
+  /** Identity for the outer Project picker, including isolated panels. */
+  scopeTabId?: string;
+  /** Workspace tab that owns this composer, when rendered in the main workspace. */
+  ownerTabId?: string;
   projectId?: string | null;
   thoughtsBodyBackground: string;
   thoughtsElevatedSurface: string;
@@ -217,6 +222,8 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
   sessionTargets,
   workspaceTargets,
   repoPath: repoPathProp,
+  scopeTabId,
+  ownerTabId,
   projectId: projectIdProp,
   thoughtsBodyBackground,
   thoughtsElevatedSurface,
@@ -574,7 +581,7 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
   const composerRepoLabelBase = selectedWorkspaceTarget?.label
     ?? repoLabel
     ?? repoPathLabel(resolvedRepoPath);
-  const handleSelectComposerRepoPath = useCallback((next: string) => {
+  const applyComposerRepoPath = useCallback((next: string) => {
     setResolvedRepoPath(next);
     setPlanText(null);
     setWaitingForReply(false);
@@ -582,24 +589,12 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
     singleRuntimeSessionRef.current = null;
     singleRuntimeLaunchPromiseRef.current = null;
   }, []);
-
-  // Listen for the empty-state Project chip's selection. Only the
-  // currently OPEN panel responds (gated on `open`) so a multi-tab
-  // workspace doesn't fan the picker click out to every tab. Empty
-  // path = "don't work in a project" → clears resolvedRepoPath.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (!open) return;
-    const onScope = (event: Event) => {
-      const detail = (event as CustomEvent<{ repoPath?: string | null }>).detail;
-      const nextPath = typeof detail?.repoPath === 'string' && detail.repoPath.trim()
-        ? detail.repoPath
-        : '';
-      handleSelectComposerRepoPath(nextPath);
-    };
-    window.addEventListener('o8:select-workspace-scope', onScope as EventListener);
-    return () => window.removeEventListener('o8:select-workspace-scope', onScope as EventListener);
-  }, [handleSelectComposerRepoPath, open]);
+  const handleSelectComposerRepoPath = useComposerRepoTarget({
+    applyRepoPath: applyComposerRepoPath,
+    ownerTabId,
+    scopeTabId,
+    workspaceTargets,
+  });
 
   // ── Resolve repo path for orchestrator stream ──
   useEffect(() => {
