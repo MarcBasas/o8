@@ -1,5 +1,7 @@
 'use client';
 
+import { retargetWorkspaceTab } from './retarget-workspace-tab';
+
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ForwardedRef, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   buildRepoStateScope,
@@ -484,19 +486,7 @@ export function useWorkspaceTerminalController(
       const repoPath = detail?.repoPath;
       if (!tabId || !repoPath) return;
       setTabs((previous) => {
-        const idx = previous.findIndex(
-          (t) => t.id === tabId && t.kind === 'orchestrator',
-        );
-        if (idx < 0) return previous;
-        if (previous[idx]!.repo?.localPath === repoPath) return previous;
-        const next = [...previous];
-        next[idx] = {
-          ...next[idx]!,
-          repo: {
-            name: detail?.repoName || repoPath.split('/').pop() || repoPath,
-            localPath: repoPath,
-          },
-        };
+        const next = retargetWorkspaceTab(previous, tabId, repoPath, detail?.repoName);
         tabsRef.current = next;
         return next;
       });
