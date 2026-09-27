@@ -9,6 +9,7 @@ import {
 } from '@/lib/orchestrator/session-tile-responsive';
 import { SessionTileSurface } from './SessionTileSurface';
 import { ThreadDropLayer, type ThreadDropAction } from './ThreadDropLayer';
+import { WorkerSplitPreview } from './WorkerSplitPreview';
 
 interface ResponsiveSessionSurfaceProps extends ComponentProps<typeof SessionTileSurface> {
   active: boolean;
@@ -22,6 +23,7 @@ export function ResponsiveSessionSurface({
 }: ResponsiveSessionSurfaceProps) {
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const [band, setBand] = useState<SessionTileViewportBand>('wide');
+  const [previewActive, setPreviewActive] = useState(false);
 
   useLayoutEffect(() => {
     const surface = surfaceRef.current;
@@ -50,16 +52,19 @@ export function ResponsiveSessionSurface({
     [surfaceProps.layout, band],
   );
   const workerScrollRows = compactWorkerScrollRows(surfaceProps.layout, band);
+  const renderedSurfaceProps = {
+    ...surfaceProps,
+    layout: renderedLayout,
+    workerScrollRows,
+    disableResizeHandles: surfaceProps.disableResizeHandles || (workerScrollRows > 0 || (band === 'stacked' && renderedLayout !== surfaceProps.layout)),
+  };
 
   return (
     <div ref={surfaceRef} style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
-      <SessionTileSurface
-        {...surfaceProps}
-        layout={renderedLayout}
-        workerScrollRows={workerScrollRows}
-        disableResizeHandles={surfaceProps.disableResizeHandles || (workerScrollRows > 0 || (band === 'stacked' && renderedLayout !== surfaceProps.layout))}
-      />
-      <ThreadDropLayer active={active} layout={renderedLayout} onDrop={onThreadDrop} useRenderedLeafRects={workerScrollRows > 0} />
+      {process.env.NODE_ENV === 'development'
+        ? <WorkerSplitPreview {...renderedSurfaceProps} onPreviewActiveChange={setPreviewActive} />
+        : <SessionTileSurface {...renderedSurfaceProps} />}
+      <ThreadDropLayer active={active && !previewActive} layout={renderedLayout} onDrop={onThreadDrop} useRenderedLeafRects={workerScrollRows > 0} />
     </div>
   );
 }
