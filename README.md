@@ -38,7 +38,7 @@ A merge that fails climbs a five-step ladder that ends at a human card. The life
 | | Aider · Goose · Kimi Code · OpenHands · Qwen Code · Qoder |
 | | 3code · Prime Agent · DeepSeek Harness |
 
-Eighteen runtimes, one adapter contract, and a test that keeps this table equal to the registry. Registered is not certified: readiness differs by CLI version and platform, and a first-run picker shows what is installed and working on your machine. Adding a runtime is a small documented patch: [runtime adapter contract](./docs/internals/runtime-adapter-contract.md). Claude Code can also keep its tools and session behavior while another model supplies inference: [model carriers](./docs/user/claude-code-model-carriers.md).
+o8 finds the coding-agent CLIs you already have installed and runs them behind one adapter contract. The table lists every runtime o8 can detect today, and a test keeps it equal to the registry. Readiness differs by CLI version and platform, so the first-run picker shows what is installed and working on your machine. Adding a runtime is a small documented patch: [runtime adapter contract](./docs/internals/runtime-adapter-contract.md). Claude Code can also keep its tools and session behavior while another model supplies inference: [model carriers](./docs/user/claude-code-model-carriers.md).
 
 ![Before sending: the Lead chip sets the model and its thinking effort, and the mode chip sets Solo, Multitask, Compare plans, or Fusion](./assets/choose-before-you-send.gif)
 
@@ -84,7 +84,7 @@ o8 runs on your machine against your own subscriptions and keys; it is not in th
 
 ## Free and paid
 
-Everything that runs on your machine is free and open source: the app, all eighteen runtimes, governance, memory, the Brain, mobile, and voice with your own keys. Paid services, when they exist, are the things that run on our servers: managed inference, hosted voice, remote access without network setup. Convenience, never capability. A capped Founders Edition is at [o8.run](https://o8.run).
+Everything that runs on your machine is free and open source: the app, every runtime it detects, governance, memory, the Brain, mobile, and voice with your own keys. Pro is the optional managed edition for the things that run on our servers: higher daily managed-inference limits, early access to experimental features, and remote access to up to 10 Macs from a browser. Convenience, never capability. The first 250 Pro members pay once and become Founding Operators: [o8.run/pro](https://o8.run/pro).
 
 ## Voice
 
