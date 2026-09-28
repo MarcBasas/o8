@@ -137,10 +137,11 @@ describe('staged mission creation', () => {
       issues_inline: [{ title: 'one worker comparison', body: 'Launch only the selected candidate.' }],
       repoPath, runtime: 'codex', comparisonModels: ['gpt-5.6-sol', 'gpt-5.6-sol'], dispatch: false,
     }));
-    const { runHeadlessSprintTick } = await import('@/lib/orchestrator/headless-loop');
-    await runHeadlessSprintTick();
+    const { fanOutComparisonPackets } = await import('@/lib/orchestrator/comparison-fanout');
+    const { readOrchestratorControlPlaneState, writeOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
+    const cached = fanOutComparisonPackets(readOrchestratorControlPlaneState());
+    writeOrchestratorControlPlaneState(cached);
     const { currentMissionState } = await import('@/lib/orchestrator/operator-mission-service/shared');
-    const cached = currentMissionState();
     expect(cached.packets).toHaveLength(2);
     const firstId = cached.packets[0]!.id;
     const heldId = cached.packets[1]!.id;
@@ -174,6 +175,7 @@ describe('staged mission creation', () => {
     const { dispatchMission } = await import('@/lib/orchestrator/operator-mission-service/mission');
     expect(await dispatchMission({ missionId: staged.missionId })).toMatchObject({ dispatched: 1 });
     expect(launches.calls.map((entry) => entry.packetId)).toEqual([firstId]);
+    const { runHeadlessSprintTick } = await import('@/lib/orchestrator/headless-loop');
     await runHeadlessSprintTick();
     expect(launches.calls).toHaveLength(1);
     expect(currentMissionState().packets.find((packet) => packet.id === heldId)).toMatchObject({
@@ -208,6 +210,36 @@ describe('staged mission creation', () => {
     expect(readOrchestratorControlPlaneState().packets[0]).toMatchObject({
       queueState: 'held', holdIntent: 'operator', lane: null,
     });
+  }, 20_000);
+
+  it('blocks a scheduled tick while a manual lane claim is live, including a stale tick snapshot', async () => {
+    const repoPath = createTempRepo();
+    const { createEmptyOrchestratorMissionState } = await import('@/lib/orchestrator/store');
+    const { readOrchestratorControlPlaneState, writeOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
+    const { getDispatchBlocker, runDispatchTick } = await import('@/lib/orchestrator/scheduling');
+    const packetId = 'manual-claim-scheduler';
+    const packet = {
+      id: packetId, referenceLabel: packetId, title: packetId, summary: 'Manual lane owns launch',
+      workspaceTargetPath: repoPath, branchTarget: 'main', runtime: 'codex' as const,
+      dependencyLabels: [], dependencyPacketIds: [], queueState: 'queued' as const,
+      releaseState: 'pending' as const, status: 'queued' as const,
+      blockedReason: null, lane: null, review: null,
+    };
+    writeOrchestratorControlPlaneState({ ...createEmptyOrchestratorMissionState(), repoPath, packets: [packet] });
+    const staleTick = readOrchestratorControlPlaneState();
+    writeOrchestratorControlPlaneState({
+      ...staleTick,
+      packets: [{ ...staleTick.packets[0]!, manualLaunchClaim: {
+        token: 'live-claim', ownerPid: process.pid, startedAt: new Date().toISOString(),
+      } }],
+    });
+    const claimed = readOrchestratorControlPlaneState();
+    expect(getDispatchBlocker(claimed.packets[0]!, claimed.packets)).toBe('Manual lane opening');
+    await runDispatchTick(claimed);
+    expect(launches.calls).toEqual([]);
+    const staleOutcome = await runDispatchTick(staleTick);
+    expect(launches.calls).toEqual([]);
+    expect(staleOutcome.packets[0]?.blockedReason).toContain('manual lane');
   }, 20_000);
 
   it('refuses the manual open-lane route for an operator-held packet', async () => {

@@ -4,6 +4,7 @@ import type {
   OrchestratorDagWave,
   OrchestratorPacket,
 } from '@/lib/orchestrator/types';
+import { manualLaunchClaimIsLive } from '@/lib/orchestrator/manual-launch-claim';
 
 export type { DagNode } from '@/lib/orchestrator/types';
 
@@ -99,6 +100,7 @@ export function getDispatchableWave(packets: OrchestratorPacket[]): Orchestrator
 
     if (
       packet.queueState === 'queued'
+      && !manualLaunchClaimIsLive(packet.manualLaunchClaim)
       && canDispatch
       && packet.releaseState !== 'released'
       && Boolean(packet.workspaceTargetPath)

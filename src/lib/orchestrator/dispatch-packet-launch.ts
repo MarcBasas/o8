@@ -38,6 +38,7 @@ import {
 } from './storage-admission';
 import { findExactCommittedLaunch } from './storage-admission-generation';
 import { readOrchestratorControlPlaneState } from './control-plane';
+import { manualLaunchClaimIsLive } from './manual-launch-claim';
 
 export interface LaunchPacketResult {
   laneId: string;
@@ -255,9 +256,10 @@ export async function launchPacketWithStorageAdmission(input: {
   // reservation makes later Holds refuse; this read catches Holds that won
   // before the reservation existed, before any lane or session is opened.
   const currentPacket = readOrchestratorControlPlaneState().packets.find((candidate) => candidate.id === packet.id);
-  if (currentPacket?.queueState === 'held' && currentPacket.holdIntent === 'operator') {
+  if ((currentPacket?.queueState === 'held' && currentPacket.holdIntent === 'operator')
+    || manualLaunchClaimIsLive(currentPacket?.manualLaunchClaim)) {
     const receipt = await storageAdmission.settleFailedLaunch(packet, admissionLease);
-    throw new PacketStorageAdmissionError('Dispatch cancelled because the operator held this packet.', receipt);
+    throw new PacketStorageAdmissionError('Dispatch cancelled because this packet is held or opening a manual lane.', receipt);
   }
   const launchGeneration = admissionLease.receipt.ownerGeneration;
   if (

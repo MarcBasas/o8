@@ -2284,8 +2284,8 @@ function DashboardInner() {
       packetId: packet.id,
       actor: 'user',
     });
-    if (laneData.reason === 'packet_held') {
-      throw new Error('This packet is held. Unhold it before launching.');
+    if (laneData.reason === 'packet_held' || laneData.reason === 'already_launching' || laneData.reason === 'packet_missing') {
+      throw new Error(typeof laneData.note === 'string' ? laneData.note : 'This packet cannot launch right now.');
     }
     if (laneData.ok && laneData.laneId) {
       laneId = laneData.laneId as string;

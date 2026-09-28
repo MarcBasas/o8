@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { randomUUID } from 'node:crypto';
 import { requirePanelAuth } from '@/lib/panel/auth';
 import { resolveRequestPrincipalContext, workerPacketRefusal } from '@/lib/auth/principal';
 import { getLane, getLaneEvents, listLanes, listActiveLanes } from '@/lib/lane/registry';
@@ -10,7 +11,10 @@ import { currentLaneMergePolicy } from '@/lib/lane/dogfood-guard';
 import { reconcileOrphanedWorktrees } from '@/lib/lane/reconcile';
 import { serverTimingHeaders } from '@/lib/performance/server-timing';
 import { resolvePacketLaunchContexts } from '@/lib/orchestrator/packet-launch-context';
-import { readOrchestratorControlPlaneState, withControlPlaneLock } from '@/lib/orchestrator/control-plane';
+import { withLockedState } from '@/lib/orchestrator/control-plane';
+import { manualLaunchClaimIsLive } from '@/lib/orchestrator/manual-launch-claim';
+import { getSqlite } from '@/lib/db';
+import { StorageAdmissionStore } from '@/lib/workspace/storage-admission';
 import { repoActionLeaseMaxWaitMsForTests } from '@/lib/lane/lane-route-test-seams';
 import { resolveLaneTranscriptHealth } from '@/lib/lane/transcript-health';
 import { deriveIdempotencyKey, withIdempotency } from '@/lib/orchestrator/idempotency-store';
@@ -160,18 +164,39 @@ export async function POST(req: NextRequest) {
   };
 
   try {
-    if (command.verb === 'open_lane' && command.packetId && principal.role === 'operator') {
-      return await withControlPlaneLock(async () => {
-        const packet = readOrchestratorControlPlaneState().packets.find((entry) => entry.id === command.packetId);
-        if (packet?.queueState === 'held' && packet.holdIntent === 'operator') {
-          return NextResponse.json({ ok: false, reason: 'packet_held', note: 'This packet is held by the operator.' }, { status: 409 });
-        }
+    if (command.verb === 'open_lane' && command.packetId) {
+      const token = randomUUID();
+      const { result: claim } = await withLockedState((state) => {
+        const packet = state.packets.find((entry) => entry.id === command.packetId);
+        if (!packet) return 'packet_missing' as const;
+        if (packet.queueState === 'held' && packet.holdIntent === 'operator') return 'packet_held' as const;
+        if (manualLaunchClaimIsLive(packet.manualLaunchClaim)) return 'already_launching' as const;
+        const reservation = new StorageAdmissionStore(getSqlite()).getLatestReservationForOwner(packet.id);
+        if (reservation?.state === 'reserved') return 'already_launching' as const;
+        packet.manualLaunchClaim = { token, ownerPid: process.pid, startedAt: new Date().toISOString() };
+        return 'claimed' as const;
+      });
+      if (claim !== 'claimed') {
+        const status = claim === 'packet_missing' ? 404 : 409;
+        return NextResponse.json({
+          ok: false, reason: claim,
+          note: claim === 'packet_held' ? 'This packet is held by the operator.'
+            : claim === 'already_launching' ? 'This packet is already opening a lane.'
+              : 'This packet is no longer in the current mission.',
+        }, { status });
+      }
+      try {
         const result = await dispatch(command);
         return NextResponse.json(result, {
           status: result.ok ? 200 : 422,
           headers: { 'Cache-Control': 'no-store, max-age=0' },
         });
-      });
+      } finally {
+        await withLockedState((state) => {
+          const packet = state.packets.find((entry) => entry.id === command.packetId);
+          if (packet?.manualLaunchClaim?.token === token) packet.manualLaunchClaim = null;
+        });
+      }
     }
     if (command.verb === 'create_pr') {
       const key = deriveIdempotencyKey({
