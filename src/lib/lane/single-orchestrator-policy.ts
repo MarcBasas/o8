@@ -1,13 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import {
   chmodSync,
+  closeSync,
   constants as fsConstants,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
+  readSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -78,6 +82,7 @@ function uniqueStrings(values: string[]): string[] {
 
 function discoverCodexInstallations(binary: string, env: NodeJS.ProcessEnv): {
   cliPaths: string[];
+  nativeBinaries: string[];
   denyReadPaths: string[];
   denyExecPaths: string[];
 } {
@@ -104,6 +109,7 @@ function discoverCodexInstallations(binary: string, env: NodeJS.ProcessEnv): {
     cliPaths: uniqueStrings(candidates.flatMap((candidate, index) => [
       candidate, realpathSync(candidate), resolved[index].nativeBinary,
     ])),
+    nativeBinaries: uniqueStrings(resolved.map((item) => item.nativeBinary)),
     denyReadPaths: uniqueStrings(resolved.flatMap((item) => item.denyReadPaths)),
     denyExecPaths: uniqueStrings(resolved.flatMap((item) => item.denyExecPaths)),
   };
@@ -128,6 +134,48 @@ function discoverCodexToolHosts(env: NodeJS.ProcessEnv): string[] {
       return false;
     }
   });
+}
+
+function hasSameExecutableBytes(host: string, protectedBinary: string): boolean {
+  const hostStat = statSync(host);
+  const binaryStat = statSync(protectedBinary);
+  if (hostStat.dev === binaryStat.dev && hostStat.ino === binaryStat.ino) return true;
+  if (hostStat.size !== binaryStat.size) return false;
+
+  const hostFd = openSync(host, 'r');
+  try {
+    const binaryFd = openSync(protectedBinary, 'r');
+    try {
+      const hostChunk = Buffer.allocUnsafe(64 * 1024);
+      const binaryChunk = Buffer.allocUnsafe(hostChunk.length);
+      for (let offset = 0; offset < hostStat.size; offset += hostChunk.length) {
+        const length = Math.min(hostChunk.length, hostStat.size - offset);
+        if (readSync(hostFd, hostChunk, 0, length, offset) !== length ||
+            readSync(binaryFd, binaryChunk, 0, length, offset) !== length) {
+          throw new Error('Codex executable changed during helper validation');
+        }
+        if (!hostChunk.subarray(0, length).equals(binaryChunk.subarray(0, length))) return false;
+      }
+      return true;
+    } finally {
+      closeSync(binaryFd);
+    }
+  } finally {
+    closeSync(hostFd);
+  }
+}
+
+function selectedCodexToolHost(nativeBinary: string, protectedBinaries: string[]): string | null {
+  const host = join(dirname(nativeBinary), 'codex-code-mode-host');
+  if (!existsSync(host)) return null;
+  const hostStat = lstatSync(host);
+  // The selected CLI may be reached through a wrapper, but its adjacent host
+  // must be a distinct regular executable, never an alias or copy of a CLI.
+  if (!hostStat.isFile() || realpathSync(host) !== host || !(hostStat.mode & 0o111) ||
+      protectedBinaries.some((binary) => hasSameExecutableBytes(host, binary))) {
+    throw new Error('Invalid code-mode host beside selected Codex executable');
+  }
+  return host;
 }
 
 export async function prepareSingleOrchestratorLaunch(input: {
@@ -157,6 +205,7 @@ export async function prepareSingleOrchestratorLaunch(input: {
   const guardBinDir = join(overlayHome, 'bin');
   const rulesDir = join(overlayHome, 'rules');
   const launchBinaryPath = join(privateDir, '.codex-main');
+  const launchToolHostPath = join(privateDir, 'codex-code-mode-host');
   const supervisorPath = join(privateDir, '.single-supervisor.mjs');
   const cleanup = () => rmSync(launchRoot, { recursive: true, force: true });
 
@@ -178,8 +227,17 @@ export async function prepareSingleOrchestratorLaunch(input: {
     const source = resolvePrivateCodexSource(input.binary);
     const installations = discoverCodexInstallations(input.binary, input.env);
     const toolHosts = discoverCodexToolHosts(input.env);
+    const selectedToolHost = selectedCodexToolHost(source.nativeBinary, installations.nativeBinaries);
     copyFileSync(source.nativeBinary, launchBinaryPath, fsConstants.COPYFILE_FICLONE);
     chmodSync(launchBinaryPath, 0o700);
+    if (selectedToolHost) {
+      // Code mode resolves this sibling relative to argv[0] after relocation.
+      copyFileSync(selectedToolHost, launchToolHostPath, fsConstants.COPYFILE_FICLONE);
+      chmodSync(launchToolHostPath, 0o500);
+      if (installations.nativeBinaries.some((binary) => hasSameExecutableBytes(launchToolHostPath, binary))) {
+        throw new Error('Invalid code-mode host beside selected Codex executable');
+      }
+    }
     const blockedPrefixes = [
       ['codex'],
       ...installations.cliPaths.map((path) => [path]),
@@ -263,12 +321,12 @@ export async function prepareSingleOrchestratorLaunch(input: {
       finalDenyExecPaths: [...installations.denyExecPaths, launchesRoot],
       finalDenyExecNamePrefixes: ['codex'],
       finalDenyReadBasenames: ['codex', 'codex.js'],
-      finalDenyWritePaths: [launchesRoot],
-      finalImmutableWritePaths: [rulesPath, guardPath],
+      finalDenyWritePaths: [launchesRoot, ...(selectedToolHost ? [dirname(selectedToolHost)] : [])],
+      finalImmutableWritePaths: [rulesPath, guardPath, ...(selectedToolHost ? [launchToolHostPath] : [])],
       // The signed app's tool host is not a Codex CLI installation. Solo still
       // denies CLI recursion, but this exact helper must run for workspace tools.
-      finalAllowReadPaths: [launchBinaryPath, ...toolHosts],
-      finalAllowExecPaths: [launchBinaryPath, ...toolHosts],
+      finalAllowReadPaths: [launchBinaryPath, ...(selectedToolHost ? [launchToolHostPath] : []), ...toolHosts],
+      finalAllowExecPaths: [launchBinaryPath, ...(selectedToolHost ? [launchToolHostPath] : []), ...toolHosts],
     });
     const env = singleOrchestratorEnvironment(input.env, overlayHome);
     env.CODEX_SQLITE_HOME = input.codexHome;

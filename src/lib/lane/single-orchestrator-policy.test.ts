@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { SANDBOX_EXEC_PATH } from '@/lib/runtimes/shared/owned-session/sandbox';
 import { codexComposerImagePaths, persistComposerImages } from '@/lib/mobile/orchestrator-image-media';
 import { prepareSingleOrchestratorLaunch, singleOrchestratorEnvironment } from './single-orchestrator-policy';
@@ -216,6 +216,128 @@ describe('Single orchestrator process boundary', () => {
       prepared.cleanup();
     }
   }, 30_000);
+
+  it.skipIf(process.platform !== 'darwin' || !installedCodex || !existsSync(join(dirname(realpathSync(installedCodex ?? '/dev/null')), 'codex-code-mode-host')))(
+    'executes the selected native CLI tool host beside its relocated image', async () => {
+      const codexHome = tempRoot('o8-single-relocated-host-');
+      const prepared = await prepareSingleOrchestratorLaunch({
+        repoPath: process.cwd(),
+        codexHome,
+        binary: installedCodex!,
+        args: ['--version'],
+        env: process.env,
+      });
+      const relocatedHost = join(dirname(prepared.launchBinaryPath), 'codex-code-mode-host');
+      try {
+        const output = execFileSync(SANDBOX_EXEC_PATH, [
+          '-f', prepared.profilePath, relocatedHost, '--help',
+        ], { env: prepared.env, encoding: 'utf8' });
+        expect(output).toContain('codex-code-mode-host');
+        expect(() => execFileSync(SANDBOX_EXEC_PATH, [
+          '-f', prepared.profilePath, '/bin/chmod', '700', relocatedHost,
+        ], { env: prepared.env })).toThrow();
+        expect(() => execFileSync(SANDBOX_EXEC_PATH, [
+          '-f', prepared.profilePath, installedCodex!, '--version',
+        ], { env: prepared.env })).toThrow();
+      } finally {
+        prepared.cleanup();
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== 'darwin')('rejects a selected tool host aliased to the protected CLI', async () => {
+    const repo = tempRoot('o8-single-host-alias-');
+    const binary = join(repo, 'codex-test-launcher');
+    const host = join(repo, 'codex-code-mode-host');
+    const codexHome = tempRoot('o8-single-host-alias-home-');
+    writeFileSync(binary, '#!/bin/sh\nexec /bin/sh "$@"\n', { mode: 0o700 });
+    symlinkSync(binary, host);
+    const prepare = () => prepareSingleOrchestratorLaunch({
+      repoPath: repo,
+      codexHome,
+      binary,
+      args: ['-c', 'true'],
+      env: process.env,
+    });
+    await expect(prepare()).rejects.toThrow('Invalid code-mode host');
+    rmSync(host);
+    linkSync(binary, host);
+    await expect(prepare()).rejects.toThrow('Invalid code-mode host');
+    rmSync(host);
+    copyFileSync(binary, host);
+    await expect(prepare()).rejects.toThrow('Invalid code-mode host');
+  });
+
+  it.skipIf(process.platform !== 'darwin')('rejects a host copied from another protected CLI', async () => {
+    const repo = tempRoot('o8-single-other-cli-copy-');
+    const binary = join(repo, 'selected-launcher');
+    const host = join(repo, 'codex-code-mode-host');
+    const otherBinDir = tempRoot('o8-single-other-cli-bin-');
+    const otherCli = join(otherBinDir, 'codex');
+    writeFileSync(binary, '#!/bin/sh\nexec /bin/sh "$@"\n', { mode: 0o700 });
+    writeFileSync(otherCli, '#!/bin/sh\nprintf alternate\n', { mode: 0o700 });
+    copyFileSync(otherCli, host);
+    await expect(prepareSingleOrchestratorLaunch({
+      repoPath: repo,
+      codexHome: tempRoot('o8-single-other-cli-home-'),
+      binary,
+      args: ['-c', 'true'],
+      env: { ...process.env, PATH: `${otherBinDir}${delimiter}${process.env.PATH ?? ''}` },
+    })).rejects.toThrow('Invalid code-mode host');
+  });
+
+  it.skipIf(process.platform !== 'darwin')('keeps the selected host source immutable across Solo turns', async () => {
+    const repo = tempRoot('o8-single-host-source-repo-');
+    const installation = tempRoot('o8-single-host-source-install-');
+    const binary = join(installation, 'codex');
+    const host = join(installation, 'codex-code-mode-host');
+    const original = '#!/bin/sh\nprintf helper\n';
+    writeFileSync(binary, '#!/bin/sh\nexec /bin/sh "$@"\n', { mode: 0o700 });
+    writeFileSync(host, original, { mode: 0o700 });
+    const prepared = await prepareSingleOrchestratorLaunch({
+      repoPath: repo,
+      codexHome: tempRoot('o8-single-host-source-home-'),
+      binary,
+      args: ['-c', 'true'],
+      env: process.env,
+    });
+    try {
+      expect(() => execFileSync(SANDBOX_EXEC_PATH, [
+        '-f', prepared.profilePath, '/bin/sh', '-c', 'printf replaced > "$1"', '--', host,
+      ], { env: prepared.env })).toThrow();
+      expect(() => execFileSync(SANDBOX_EXEC_PATH, [
+        '-f', prepared.profilePath, '/bin/mv', host, join(installation, 'replaced-host'),
+      ], { env: prepared.env })).toThrow();
+      expect(() => execFileSync(SANDBOX_EXEC_PATH, [
+        '-f', prepared.profilePath, '/bin/mv', installation, `${installation}-replaced`,
+      ], { env: prepared.env })).toThrow();
+      expect(readFileSync(host, 'utf8')).toBe(original);
+    } finally {
+      prepared.cleanup();
+    }
+  });
+
+  it.skipIf(process.platform !== 'darwin')('runs the selected CLI through its relocated host to read the workspace', async () => {
+    const repo = tempRoot('o8-single-host-workspace-');
+    const installation = tempRoot('o8-single-host-workspace-install-');
+    const binary = join(installation, 'codex');
+    const host = join(installation, 'codex-code-mode-host');
+    writeFileSync(join(repo, 'README.md'), 'workspace proof\nsecond line\n');
+    writeFileSync(binary, '#!/bin/sh\n"$(dirname "$0")/codex-code-mode-host" "$1"\n', { mode: 0o700 });
+    writeFileSync(host, '#!/bin/sh\nhead -n 1 "$1"\n', { mode: 0o700 });
+    const prepared = await prepareSingleOrchestratorLaunch({
+      repoPath: repo,
+      codexHome: tempRoot('o8-single-host-workspace-home-'),
+      binary,
+      args: [join(repo, 'README.md')],
+      env: process.env,
+    });
+    try {
+      expect(await runPrepared(prepared, repo)).toBe('workspace proof\n');
+    } finally {
+      prepared.cleanup();
+    }
+  });
 
   it.skipIf(process.platform !== 'darwin' || !installedCodex || !existsSync(bundledCodeModeHost))(
     'allows the installed tool host while Codex CLI relaunch remains denied', async () => {
