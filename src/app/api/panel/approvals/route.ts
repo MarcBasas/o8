@@ -30,6 +30,7 @@ import { invalidateInboxCache } from '@/lib/mobile/inbox';
 import { approvedFromCardFact } from '@/lib/mobile/inbox-referee-chips';
 import { publishRealtimeMutation } from '@/lib/realtime/publisher';
 import { findLaneBySession, getLane } from '@/lib/lane/registry';
+import { isDiscoveredCliSessionKey } from '@/lib/runtime/discovered-cli-session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -234,6 +235,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, approval: current, resolved: action, note: 'Approval was already resolved.' }, {
       headers: { 'Cache-Control': 'no-store, max-age=0' },
     });
+  }
+
+  if (action === 'approve' && current.continuation?.kind === 'lane'
+    && current.continuation.verb === 'resume') {
+    const lane = getLane(current.continuation.laneId);
+    if (lane && isDiscoveredCliSessionKey(lane.runtime, lane.sessionKey)) {
+      return NextResponse.json({
+        ok: false,
+        error: 'This lane is bound to an external CLI session. A lane resume could start another run. Continue in the original terminal.',
+      }, {
+        status: 409,
+        headers: { 'Cache-Control': 'no-store, max-age=0' },
+      });
+    }
   }
 
   try {
