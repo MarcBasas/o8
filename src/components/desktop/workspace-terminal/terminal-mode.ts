@@ -6,6 +6,7 @@ export interface WorkspaceAttachedTerminalSession {
   sessionKey: string;
   tmuxSession: string;
   label?: string;
+  readOnly?: boolean;
   repo?: RegisteredRepo;
   statusEvidence?: TerminalStatusEvidence;
 }

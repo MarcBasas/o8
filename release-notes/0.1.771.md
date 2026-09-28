@@ -1,0 +1,5 @@
+- Start with the runtimes already on your machine, guided project setup, and optional microphone and permission checks that resume after a restart.
+- Keep workers beside a full-height chat, with readable compact layouts, adjustable panes, saved placement, and completion status that updates without reloading.
+- Choose Fast teams to run scoped workers in one shared checkout, then review and commit the combined result.
+- Move between Projects, Customize, Automations, and Handoffs with consistent navigation and workspace controls.
+- Keep project changes when continuing an existing chat, recover missing runtime threads, and inspect worker terminals without changing their input or size.

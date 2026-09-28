@@ -16,6 +16,7 @@ export interface ChatToastStackProps {
   reloadNotice: OrchestratorReloadNotice | null;
   onDismissReloadNotice: () => void;
   showClearToast: boolean;
+  projectTargetSaveError?: boolean;
   /** Phase 4 friction fix #1: tab-refocus draft auto-clear toast. */
   showDraftClearedToast?: boolean;
   thoughtsBodyBackground: string;
@@ -26,14 +27,20 @@ export function ChatToastStack(props: ChatToastStackProps) {
     reloadNotice,
     onDismissReloadNotice,
     showClearToast,
+    projectTargetSaveError = false,
     showDraftClearedToast = false,
     thoughtsBodyBackground,
   } = props;
 
-  if (!reloadNotice && !showClearToast && !showDraftClearedToast) return null;
+  if (!reloadNotice && !showClearToast && !showDraftClearedToast && !projectTargetSaveError) return null;
 
   return (
     <>
+      {projectTargetSaveError ? (
+        <div role="alert" style={{ paddingTop: 6, paddingRight: 12, paddingBottom: 6, paddingLeft: 12, color: 'var(--t-text)', background: thoughtsBodyBackground }}>
+          Could not save this Project target. Select it again before sending.
+        </div>
+      ) : null}
       {reloadNotice ? (
         <div
           style={{

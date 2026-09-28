@@ -11,6 +11,17 @@ const subscribeToMountedState = () => () => {};
 const getMountedSnapshot = () => true;
 const getServerMountedSnapshot = () => false;
 
+// Brain citations arrive as structured records for the source pills. The
+// composer also emits these complete internal markers in its token stream.
+// This intentionally leaves an incomplete marker alone until a later stream
+// update supplies its closing bracket, and leaves all other bracketed Markdown
+// untouched.
+const BRAIN_CITATION_MARKER = /\s*\[(?:CITATION:[a-zA-Z0-9_#.:/-]+|O-outcome-[a-zA-Z0-9_#.:/-]+)\]/g;
+
+export function proseWithoutBrainCitationMarkers(content: string): string {
+  return content.replace(BRAIN_CITATION_MARKER, '');
+}
+
 function inline(text: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const pattern = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;

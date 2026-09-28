@@ -2,7 +2,7 @@
 
 import type { CSSProperties } from 'react';
 import type { ProjectRecord } from '../repo-registry/useProjects';
-import { RamsButton } from '../settings/shared';
+import { WorkspacePageHeader } from '../WorkspacePageHeader';
 
 export type CustomizeTab = 'rules' | 'commands' | 'prompts' | 'skills' | 'plugins' | 'connections' | 'agents' | 'hooks';
 
@@ -50,17 +50,13 @@ export function CustomizeHeader({ tab, onTab, query, onQuery, repos, scope, onSc
     plugins: 'Features that add new capabilities and interfaces to o8.',
   };
   return (
-    <header style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
-          <h1 style={{ marginTop: 0, marginRight: 0, marginBottom: 0, marginLeft: 0, fontSize: 28, fontWeight: 400, letterSpacing: '-0.8px', color: 'var(--t-text)' }}>{label}</h1>
-          {onClose ? <RamsButton variant="ghost" onClick={onClose}>Back to workspace</RamsButton> : null}
-        </div>
-        <p style={{ marginTop: 12, marginBottom: 0, fontSize: 14, lineHeight: 1.6, color: 'var(--t-text-muted)' }}>
-          {project ? `${project.name} · ${project.repoPaths.length} ${project.repoPaths.length === 1 ? 'repository' : 'repositories'}` : 'Personal customizations'}
-        </p>
-      </div>
-      <nav aria-label="Customization sections" style={{ display: 'flex', flexWrap: 'wrap', columnGap: 22, rowGap: 4, borderBottom: '1px solid var(--t-divider-subtle)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
+      <WorkspacePageHeader
+        title="Customize"
+        subtitle={project ? `${project.name} · ${project.repoPaths.length} ${project.repoPaths.length === 1 ? 'repository' : 'repositories'}` : 'Personal customizations'}
+        onClose={onClose}
+      />
+      <nav aria-label="Customization sections" style={{ display: 'flex', flexWrap: 'wrap', columnGap: 22, rowGap: 4, marginBottom: 24, borderBottom: '1px solid var(--t-divider-subtle)' }}>
         {tabs.map((item) => (
           <button key={item.id} type="button" aria-pressed={tab === item.id} onClick={() => onTab(item.id)} style={{
             minHeight: 44, display: 'inline-flex', alignItems: 'center', gap: 6, paddingTop: 10, paddingBottom: 10,
@@ -74,7 +70,7 @@ export function CustomizeHeader({ tab, onTab, query, onQuery, repos, scope, onSc
         ))}
       </nav>
       {tab !== 'plugins' ? (
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginBottom: 24 }}>
           <input aria-label={`Search ${label}`} placeholder={`Search ${label} for ${repoName}…`} value={query} onChange={(event) => onQuery(event.target.value)}
             style={{ ...fieldStyle, flex: '1 1 200px', fontSize: 13 }} />
           {filtersRepositories ? <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--t-text-muted)', maxWidth: '100%' }}>
@@ -88,6 +84,6 @@ export function CustomizeHeader({ tab, onTab, query, onQuery, repos, scope, onSc
         </div>
       ) : null}
       {tab !== 'plugins' ? <p style={{ marginTop: 0, marginBottom: 0, color: 'var(--t-text-muted)', fontSize: 13, lineHeight: 1.6 }}>{explanations[tab]}{filtersRepositories && project ? ' This view filters the list; it does not change your task’s repository.' : ''}</p> : null}
-    </header>
+    </div>
   );
 }

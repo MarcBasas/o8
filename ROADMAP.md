@@ -16,9 +16,9 @@ Taste is a gate on every row here, not a pillar of its own. A change that reads 
 
 ## Now
 
-The effort-compatibility fixes found by [#2520](https://github.com/hurttlocker/o8/issues/2520) shipped in version 0.1.761. The remaining inference-consumption repair is [#2531](https://github.com/hurttlocker/o8/issues/2531), found by the audit [#2522](https://github.com/hurttlocker/o8/issues/2522).
+The effort-compatibility fixes found by [#2520](https://github.com/hurttlocker/o8/issues/2520) shipped in version 0.1.761. The remaining inference-consumption repair found by the audit [#2522](https://github.com/hurttlocker/o8/issues/2522) has merged and awaits the next release.
 
-After that batch, run the correctness and reliability queue: mobile approval-route parity [#2479](https://github.com/hurttlocker/o8/issues/2479) and its completed-merge equality test [#2480](https://github.com/hurttlocker/o8/issues/2480), remaining dispatch and lifecycle findings, then the dedicated Symon review [#2534](https://github.com/hurttlocker/o8/issues/2534). That review is queued, not claimed or started. Its scope is existing session, payer, model, tool-result, interruption, reconnect, and approval behavior; feature work stays in its separate program.
+Mobile approval-route parity and its completed-merge equality test have merged and await release. The next correctness and reliability queue is the remaining dispatch and lifecycle findings, then the dedicated Symon review [#2534](https://github.com/hurttlocker/o8/issues/2534). That review is queued, not claimed or started. Its scope is existing session, payer, model, tool-result, interruption, reconnect, and approval behavior; feature work stays in its separate program.
 
 The typed judgment program measures and replays recorded answers before it adds a surface or promotes one. The replay labels shipped in 0.1.760; recorded labels do not establish a promotion decision. Managed judgment is a separately gated hosted-service change, and the bring-your-own-key path remains the current free path. [#2481](https://github.com/hurttlocker/o8/issues/2481)
 
@@ -27,6 +27,10 @@ First-use and remote project operation remain product outcomes, not substitutes 
 A disposable packet exposed a review-evidence mismatch: process instructions were sealed as changed-file requirements, while a separate run recorded a missing default contract and proceeded without coverage. Both repairs merged in source; release and the exact installed-build rerun remain open. [#2682](https://github.com/hurttlocker/o8/issues/2682)
 
 The repository-scoped Handoffs pane, split-transcript peer events, visible codenames, and bounded conversation protocol merged in source. An installed two-agent run still has to prove the whole interaction. [#2690](https://github.com/hurttlocker/o8/issues/2690)
+
+Opt-in shared-checkout teams shipped in 0.1.771. Four real workers completed scoped edits in the packaged native app, followed by reviewed commit and team closure. Compact and large layouts, placement, reload, and cold restore passed. Ten real workers, collision handling and isolated-mode native acceptance remain open. [#2772](https://github.com/hurttlocker/o8/issues/2772)
+
+An outside agent chat can be readable through discovery without becoming the orchestrator chat in an o8 workspace. A read-only exact-session view comes first; linked worker placement and a writable handoff need parent identity and active-writer proof. [#2775](https://github.com/hurttlocker/o8/issues/2775)
 
 Linux and Windows maintainer-VM validation is paused; the install-to-merge proof remains outstanding. Do not start that work from this queue. [#1672](https://github.com/hurttlocker/o8/issues/1672), [#2204](https://github.com/hurttlocker/o8/issues/2204)
 
@@ -86,7 +90,7 @@ Desktop, mobile, CLI, MCP, headless, and voice reach the same governed control p
 
 | Arc | Done means | State | Gap | Where |
 | --- | --- | --- | --- | --- |
-| Terminals as a workspace surface | A tmux or vim session survives an update and a pane switch byte for byte, and agent terminal actions go through a governed adapter. | open | Plain-terminal CLI discovery is tracked in #2727, turn-event projection in #2729, repo-less reload in #2732, and cross-profile tmux ownership in #2733. Other CLI states and governed agent actions remain open. | [#1723](https://github.com/hurttlocker/o8/issues/1723) |
+| Terminals as a workspace surface | A tmux or vim session survives an update and a pane switch byte for byte, and agent terminal actions go through a governed adapter. | open | CLI discovery is tracked in #2727, verified Codex turn events in #2729, repo-less reload in #2732, and cross-profile tmux ownership in #2733. Other CLI states, governed actions, and native multi-terminal add/close proof remain open. | [#1723](https://github.com/hurttlocker/o8/issues/1723) |
 | Settings take effect everywhere | An operator changes a setting once and every surface uses the new value on its next action, with no reload and no second place to set it. | open | Operator defaults are snapshotted at page load and cached per terminal server; the same bug has recurred under four names. | [#2217](https://github.com/hurttlocker/o8/issues/2217) |
 | Remote project operation | An operator reconnects to the same remote task, preview, diff, evidence, and approval path; a later packet can use another supported agent system with the same project rules. | open | The standalone worker uses the legacy protocol. Durable worker integration, remote workspace identity, and an operator-visible recovery and continuation proof remain open. | [#2282](https://github.com/hurttlocker/o8/issues/2282) |
 | Symon correctness and reliability | Existing desktop and phone flows have a recorded correctness and reliability review. Confirmed failures become bounded issues; resulting fixes are verified through their real entry points and shipped. | open | The review is queued after the repair batch. | [#2534](https://github.com/hurttlocker/o8/issues/2534) |
@@ -130,6 +134,8 @@ Longer-term bets, ordered by evidence and dependencies rather than a calendar ye
 | Agents that use the screen, not only the repo. A packet can drive a browser or a GUI with the same isolation, review, and receipt. | The embedded browser agent and its governed verbs. | Computer-use as a worker capability behind the packet contract. | not yet filed |
 
 ## Shipped
+
+- **0.1.771:** project-first onboarding, permission success and restart recovery, agent-assisted setup, and the shared workspace integration ([#2817](https://github.com/hurttlocker/o8/issues/2817)). Existing-chat project changes persist before send; completed workers update without reload. Signed public artifacts and installed first-run restart passed. Broader worker and terminal acceptance remains in its open trackers.
 
 Arcs whose every child is closed and released. They stay here so the pillars read as a whole, and they get no tracking issue.
 

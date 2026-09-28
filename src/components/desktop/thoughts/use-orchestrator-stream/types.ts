@@ -33,6 +33,8 @@ export interface OrchestratorSendOptions {
   /** Explicit consent to seed a cold cross-backend continuation. */
   handoffMode?: 'handoff';
   attachments?: Array<{ dataUri: string; name?: string }>;
+  /** A required durable action that must finish before this turn reaches the worker. */
+  beforeSend?: (signal: AbortSignal) => Promise<boolean>;
   /**
    * Resolves settings which must be current when this turn is constructed.
    * The composer uses this for persisted operator defaults, which can change

@@ -56,6 +56,8 @@ interface ThreadDropLayerProps {
   active: boolean;
   layout: SessionTileLayout;
   onDrop: (action: ThreadDropAction) => void;
+  /** Worker panes can move inside their own scroll region at compact sizes. */
+  useRenderedLeafRects?: boolean;
 }
 
 interface HoverTarget {
@@ -74,7 +76,7 @@ function toPayload(payload: ThreadDragPayload): ThreadPanePayload {
   };
 }
 
-export function ThreadDropLayer({ active, layout, onDrop }: ThreadDropLayerProps) {
+export function ThreadDropLayer({ active, layout, onDrop, useRenderedLeafRects = false }: ThreadDropLayerProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [dragPayload, setDragPayload] = useState<ThreadDragPayload | null>(null);
   const [hover, setHover] = useState<HoverTarget | null>(null);
@@ -110,31 +112,49 @@ export function ThreadDropLayer({ active, layout, onDrop }: ThreadDropLayerProps
     if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
       return null;
     }
-    const nx = (clientX - rect.left) / rect.width;
-    const ny = (clientY - rect.top) / rect.height;
+    const surface = useRenderedLeafRects
+      ? host.parentElement?.querySelector<HTMLElement>('[data-session-tile-surface]')
+      : null;
+    const renderedLeaves = surface
+      ? new Map(Array.from(surface.querySelectorAll<HTMLElement>('[data-session-tile-leaf-id]'))
+        .map((node) => [node.dataset.sessionTileLeafId, node] as const))
+      : null;
     for (const { leaf, rect: leafRect } of leavesRef.current) {
-      if (
-        nx >= leafRect.left && nx <= leafRect.left + leafRect.width
-        && ny >= leafRect.top && ny <= leafRect.top + leafRect.height
-      ) {
-        const leafTopPx = leafRect.top * rect.height;
-        const withinLeafYPx = ny * rect.height - leafTopPx;
+      const rendered = renderedLeaves?.get(leaf.id)?.getBoundingClientRect();
+      if (useRenderedLeafRects && !rendered) continue;
+      const left = rendered?.left ?? rect.left + leafRect.left * rect.width;
+      const top = rendered?.top ?? rect.top + leafRect.top * rect.height;
+      const width = rendered?.width ?? leafRect.width * rect.width;
+      const height = rendered?.height ?? leafRect.height * rect.height;
+      if (width <= 0 || height <= 0) continue;
+      if (clientX >= left && clientX <= left + width && clientY >= top && clientY <= top + height) {
+        const visibleLeft = Math.max(left, rect.left);
+        const visibleTop = Math.max(top, rect.top);
+        const visibleRight = Math.min(left + width, rect.right);
+        const visibleBottom = Math.min(top + height, rect.bottom);
+        const visibleRect: SessionTileRect = {
+          left: (visibleLeft - rect.left) / rect.width,
+          top: (visibleTop - rect.top) / rect.height,
+          width: (visibleRight - visibleLeft) / rect.width,
+          height: (visibleBottom - visibleTop) / rect.height,
+        };
+        const withinLeafYPx = clientY - top;
         if (withinLeafYPx <= HEADER_BAND_PX) {
-          return { leafId: leaf.id, leafKind: leaf.kind, leafRect, zone: 'replace' };
+          return { leafId: leaf.id, leafKind: leaf.kind, leafRect: visibleRect, zone: 'replace' };
         }
-        const relX = (nx - leafRect.left) / leafRect.width;
-        const relY = (ny - leafRect.top) / leafRect.height;
+        const relX = (clientX - left) / width;
+        const relY = (clientY - top) / height;
         if (relX >= 0.5) {
-          return { leafId: leaf.id, leafKind: leaf.kind, leafRect, zone: 'split-right' };
+          return { leafId: leaf.id, leafKind: leaf.kind, leafRect: visibleRect, zone: 'split-right' };
         }
         if (relY >= 0.5) {
-          return { leafId: leaf.id, leafKind: leaf.kind, leafRect, zone: 'split-below' };
+          return { leafId: leaf.id, leafKind: leaf.kind, leafRect: visibleRect, zone: 'split-below' };
         }
-        return { leafId: leaf.id, leafKind: leaf.kind, leafRect, zone: 'split-right' };
+        return { leafId: leaf.id, leafKind: leaf.kind, leafRect: visibleRect, zone: 'split-right' };
       }
     }
     return null;
-  }, []);
+  }, [useRenderedLeafRects]);
 
   useEffect(() => {
     if (!active) return;
@@ -242,6 +262,7 @@ export function ThreadDropLayer({ active, layout, onDrop }: ThreadDropLayerProps
   return (
     <div
       ref={hostRef}
+      data-thread-drop-layer="true"
       style={{
         position: 'absolute',
         top: 0,

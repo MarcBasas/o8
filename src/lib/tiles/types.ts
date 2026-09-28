@@ -16,6 +16,7 @@ export interface TerminalTileContent {
   kind: 'terminal';
   repoPath?: string | null;
   createdFromSplit?: boolean;
+  initialTab?: 'chat' | 'terminal';
 }
 
 export interface PreviewTileContent {
@@ -50,6 +51,8 @@ export interface TileSplitNode {
   id: string;
   direction: TileSplitDirection;
   ratio: number;
+  /** Preserve an operator-placed split through auto-add, close, and reload. */
+  userArranged?: boolean;
   children: [TileNode, TileNode];
 }
 

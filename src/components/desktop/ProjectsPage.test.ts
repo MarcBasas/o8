@@ -21,6 +21,10 @@ it.each(['first', 'repo:unassigned', 'legacy-project'])('opens a saved project o
   const root = createRoot(container);
   try {
     await act(async () => root.render(createElement(ProjectsPage, { initialProjectId, onClose: vi.fn() })));
+    const pageHeader = container.querySelector('header');
+    expect(pageHeader?.querySelector('h1')?.textContent).toBe('Projects');
+    expect(pageHeader?.textContent).toContain('Back to workspace');
+    expect(pageHeader?.textContent).toContain('New project');
     const allProjects = [...container.querySelectorAll('button')].find((button) => button.textContent === 'All projects');
     if (initialProjectId === 'first') {
       expect(allProjects).toBeDefined();
