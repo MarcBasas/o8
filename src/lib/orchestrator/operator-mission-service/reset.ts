@@ -72,6 +72,7 @@ function markPacketResetHeld(packet: OrchestratorPacket) {
   // which races the next dispatch tick and traps the packet in a recovery loop.
   packet.status = 'draft';
   packet.queueState = 'held';
+  packet.holdIntent = 'explicit-dispatch';
   packet.releaseState = 'pending';
   packet.releaseStatePayload = null;
   packet.archivedAt = null;

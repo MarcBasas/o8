@@ -43,6 +43,7 @@ function hasLaneBinding(packet: OrchestratorPacket): boolean {
 export function rearmHeldPacketsForExplicitDispatch(state: OrchestratorMissionState): void {
   for (const packet of state.packets) {
     if (packet.queueState !== 'held') continue;
+    if (packet.holdIntent !== 'explicit-dispatch') continue;
     if (packet.archivedAt || packet.status === 'archived') continue;
     if (packet.releaseState === 'released') continue;
     if (packet.status === 'failed' || packet.operatorStopped || hasLaneBinding(packet)) continue;
@@ -50,6 +51,7 @@ export function rearmHeldPacketsForExplicitDispatch(state: OrchestratorMissionSt
     packet.queueState = 'queued';
     packet.status = 'queued';
     packet.blockedReason = null;
+    packet.holdIntent = undefined;
   }
 }
 

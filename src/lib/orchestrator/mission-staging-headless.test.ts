@@ -128,4 +128,144 @@ describe('staged mission creation', () => {
     await runHeadlessSprintTick();
     expect(launches.calls).toHaveLength(3);
   }, 20_000);
+
+  it('launches only the selected comparison candidate after an operator holds its sibling', async () => {
+    const repoPath = createTempRepo();
+    stubMissionApiFetch();
+    const { handleCreateMission } = await import('@/lib/mcp/operator-handlers/mission');
+    const staged = parseResult<{ missionId: string }>(await handleCreateMission({
+      issues_inline: [{ title: 'one worker comparison', body: 'Launch only the selected candidate.' }],
+      repoPath, runtime: 'codex', comparisonModels: ['gpt-5.6-sol', 'gpt-5.6-sol'], dispatch: false,
+    }));
+    const { fanOutComparisonPackets } = await import('@/lib/orchestrator/comparison-fanout');
+    const { readOrchestratorControlPlaneState, writeOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
+    const cached = fanOutComparisonPackets(readOrchestratorControlPlaneState());
+    writeOrchestratorControlPlaneState(cached);
+    const { currentMissionState } = await import('@/lib/orchestrator/operator-mission-service/shared');
+    expect(cached.packets).toHaveLength(2);
+    const firstId = cached.packets[0]!.id;
+    const heldId = cached.packets[1]!.id;
+    const { NextRequest } = await import('next/server');
+    const stateRoute = await import('@/app/api/orchestrator/state/route');
+    const packetRequest = (packetId: string, queueState: 'held' | 'queued') => new NextRequest('http://localhost/api/orchestrator/state', {
+      method: 'PATCH',
+      headers: { host: 'localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ packetId, updates: { queueState, blockedReason: queueState === 'held' ? 'Held by operator' : null } }),
+    });
+    expect((await stateRoute.PATCH(packetRequest(firstId, 'held'))).status).toBe(200);
+    expect((await stateRoute.PATCH(packetRequest(heldId, 'held'))).status).toBe(200);
+    const status = await stateRoute.GET(new NextRequest('http://localhost/api/orchestrator/state', {
+      headers: { host: 'localhost' },
+    }));
+    const statusBody = await status.json() as { mission: { packets: Array<{ id: string; queueState: string; holdIntent?: string; blockedReason: string | null; lane: unknown }> } };
+    expect(status.status).toBe(200);
+    expect(statusBody.mission.packets).toHaveLength(2);
+    for (const packet of statusBody.mission.packets) {
+      expect(packet).toMatchObject({ queueState: 'held', holdIntent: 'operator', blockedReason: 'Held by operator', lane: null });
+    }
+    expect((await stateRoute.PATCH(packetRequest(firstId, 'queued'))).status).toBe(200);
+
+    // A cached whole-mission write and a fresh dispatch must both respect the hold.
+    const stale = await stateRoute.POST(new NextRequest('http://localhost/api/orchestrator/state', {
+      method: 'POST',
+      headers: { host: 'localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ mission: cached }),
+    }));
+    expect(stale.status).toBe(200);
+    const { dispatchMission } = await import('@/lib/orchestrator/operator-mission-service/mission');
+    expect(await dispatchMission({ missionId: staged.missionId })).toMatchObject({ dispatched: 1 });
+    expect(launches.calls.map((entry) => entry.packetId)).toEqual([firstId]);
+    const { runHeadlessSprintTick } = await import('@/lib/orchestrator/headless-loop');
+    await runHeadlessSprintTick();
+    expect(launches.calls).toHaveLength(1);
+    expect(currentMissionState().packets.find((packet) => packet.id === heldId)).toMatchObject({
+      queueState: 'held', holdIntent: 'operator', blockedReason: 'Held by operator', lane: null,
+    });
+  }, 20_000);
+
+  it('does not launch a stale dispatch snapshot after an operator Hold wins during preflight', async () => {
+    const repoPath = createTempRepo();
+    const { createEmptyOrchestratorMissionState } = await import('@/lib/orchestrator/store');
+    const { readOrchestratorControlPlaneState, writeOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
+    const { runDispatchTick } = await import('@/lib/orchestrator/scheduling');
+    const packetId = 'held-during-dispatch-preflight';
+    const queued = {
+      id: packetId, referenceLabel: 'PKT-HOLD-RACE', title: 'Hold race', summary: 'Do not launch',
+      workspaceTargetPath: repoPath, branchTarget: 'main', runtime: 'codex' as const,
+      dependencyLabels: [], dependencyPacketIds: [], queueState: 'queued' as const,
+      releaseState: 'pending' as const, status: 'queued' as const,
+      blockedReason: null, lane: null, review: null,
+    };
+    writeOrchestratorControlPlaneState({ ...createEmptyOrchestratorMissionState(), repoPath, packets: [queued] });
+    const staleTick = readOrchestratorControlPlaneState();
+    const { NextRequest } = await import('next/server');
+    const { PATCH } = await import('@/app/api/orchestrator/state/route');
+    const hold = await PATCH(new NextRequest('http://localhost/api/orchestrator/state', {
+      method: 'PATCH', headers: { host: 'localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ packetId, updates: { queueState: 'held', blockedReason: 'Held by operator' } }),
+    }));
+    expect(hold.status).toBe(200);
+    await runDispatchTick(staleTick);
+    expect(launches.calls).toEqual([]);
+    expect(readOrchestratorControlPlaneState().packets[0]).toMatchObject({
+      queueState: 'held', holdIntent: 'operator', lane: null,
+    });
+  }, 20_000);
+
+  it('blocks a scheduled tick while a manual lane claim is live, including a stale tick snapshot', async () => {
+    const repoPath = createTempRepo();
+    const { createEmptyOrchestratorMissionState } = await import('@/lib/orchestrator/store');
+    const { readOrchestratorControlPlaneState, writeOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
+    const { getDispatchBlocker, runDispatchTick } = await import('@/lib/orchestrator/scheduling');
+    const packetId = 'manual-claim-scheduler';
+    const packet = {
+      id: packetId, referenceLabel: packetId, title: packetId, summary: 'Manual lane owns launch',
+      workspaceTargetPath: repoPath, branchTarget: 'main', runtime: 'codex' as const,
+      dependencyLabels: [], dependencyPacketIds: [], queueState: 'queued' as const,
+      releaseState: 'pending' as const, status: 'queued' as const,
+      blockedReason: null, lane: null, review: null,
+    };
+    writeOrchestratorControlPlaneState({ ...createEmptyOrchestratorMissionState(), repoPath, packets: [packet] });
+    const staleTick = readOrchestratorControlPlaneState();
+    writeOrchestratorControlPlaneState({
+      ...staleTick,
+      packets: [{ ...staleTick.packets[0]!, manualLaunchClaim: {
+        token: 'live-claim', ownerPid: process.pid, startedAt: new Date().toISOString(),
+      } }],
+    });
+    const claimed = readOrchestratorControlPlaneState();
+    expect(getDispatchBlocker(claimed.packets[0]!, claimed.packets)).toBe('Manual lane opening');
+    await runDispatchTick(claimed);
+    expect(launches.calls).toEqual([]);
+    const staleOutcome = await runDispatchTick(staleTick);
+    expect(launches.calls).toEqual([]);
+    expect(staleOutcome.packets[0]?.blockedReason).toContain('manual lane');
+  }, 20_000);
+
+  it('refuses the manual open-lane route for an operator-held packet', async () => {
+    const repoPath = createTempRepo();
+    const operatorToken = 'manual-held-operator-0123456789abcdef';
+    writeFileSync(join(process.env.O8_DATA_DIR!, 'ws-token'), operatorToken);
+    const { createEmptyOrchestratorMissionState } = await import('@/lib/orchestrator/store');
+    const { writeOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
+    const packetId = 'manual-open-held';
+    writeOrchestratorControlPlaneState({
+      ...createEmptyOrchestratorMissionState(), repoPath,
+      packets: [{
+        id: packetId, referenceLabel: 'PKT-MANUAL-HOLD', title: 'Manual hold', summary: 'Do not open',
+        workspaceTargetPath: repoPath, branchTarget: 'main', runtime: 'codex',
+        dependencyLabels: [], dependencyPacketIds: [], queueState: 'held', holdIntent: 'operator',
+        releaseState: 'pending', status: 'draft', blockedReason: 'Held by operator', lane: null, review: null,
+      }],
+    });
+    const { NextRequest } = await import('next/server');
+    const { POST } = await import('@/app/api/lanes/route');
+    const response = await POST(new NextRequest('http://localhost/api/lanes', {
+      method: 'POST', headers: { host: 'localhost', authorization: `Bearer ${operatorToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ verb: 'open_lane', packetId, repoPath, branch: 'main', runtime: 'codex', label: 'Manual hold', actor: 'user' }),
+    }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ ok: false, reason: 'packet_held' });
+    expect(launches.calls).toEqual([]);
+  });
 });

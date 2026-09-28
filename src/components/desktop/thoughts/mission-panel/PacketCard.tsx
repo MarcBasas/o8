@@ -39,6 +39,7 @@ interface PacketCardProps {
   repoRemoteUrlByPath?: Record<string, string | null | undefined>;
   reviewState: ReviewPanelState | null;
   onPatch: (updater: (packet: OrchestratorPacket) => OrchestratorPacket) => void;
+  onHoldChange: (held: boolean) => void; pendingAction: 'held' | 'queued' | 'launch' | 'resume' | null;
   onLaunch: () => void;
   onFocus: () => void;
   onDelete: () => void;
@@ -64,6 +65,7 @@ export function PacketCard({
   repoRemoteUrlByPath,
   reviewState,
   onPatch,
+  onHoldChange, pendingAction,
   onLaunch,
   onFocus,
   onDelete,
@@ -80,7 +82,7 @@ export function PacketCard({
   const recoveryMessage = packet.recovery?.message ?? null;
   const visibleBlocker = recoveryMessage ?? (terminalPacket ? null : (packet.blockedReason ?? (dependencyBlocker ? `Waiting on ${dependencyBlocker.referenceLabel}` : null)));
   const canShowLaunchAction = !terminalPacket && !packet.archivedAt && packet.queueState !== 'held' && !dependencyBlocker;
-  const canLaunch = canShowLaunchAction && hasBranchTarget;
+  const canLaunch = canShowLaunchAction && hasBranchTarget && pendingAction === null;
   const hasInteractiveLane = Boolean(packet.lane?.laneId || packet.lane?.sessionKey || (packet.lane?.tileId && packet.lane?.tabId));
   const matchedTarget = workspaceTargets.find((target) => target.localPath === packet.workspaceTargetPath) ?? null;
   const targetLabel = matchedTarget?.label ?? null;
@@ -459,7 +461,7 @@ export function PacketCard({
             {packet.queueState !== 'held' && !packet.lane ? (
               <button
                 type="button"
-                onClick={() => onPatch((current) => ({ ...current, queueState: 'held', blockedReason: 'Held by operator' }))}
+                onClick={() => onHoldChange(true)} disabled={pendingAction !== null}
                 style={{
                   borderWidth: 0,
                   background: 'transparent',
@@ -476,12 +478,12 @@ export function PacketCard({
                 onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--t-divider-subtle)'; e.currentTarget.style.color = 'var(--t-text)'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--t-text-muted)'; }}
               >
-                Hold
+                {pendingAction === 'held' ? 'Holding…' : 'Hold'}
               </button>
             ) : packet.queueState === 'held' ? (
               <button
                 type="button"
-                onClick={() => onPatch((current) => ({ ...current, queueState: 'queued', blockedReason: null }))}
+                onClick={() => onHoldChange(false)} disabled={pendingAction !== null}
                 style={{
                   borderWidth: 0,
                   background: 'transparent',
@@ -503,7 +505,7 @@ export function PacketCard({
             ) : null}
             <button
               type="button"
-              onClick={() => onPatch((current) => ({ ...current, archivedAt: current.archivedAt ? null : new Date().toISOString() }))}
+              onClick={() => onPatch((current) => ({ ...current, archivedAt: current.archivedAt ? null : new Date().toISOString() }))} disabled={pendingAction !== null}
               style={{
                 borderWidth: 0,
                 background: 'transparent',
@@ -524,7 +526,7 @@ export function PacketCard({
             </button>
             <button
               type="button"
-              onClick={onDelete}
+              onClick={onDelete} disabled={pendingAction !== null}
               style={{
                 borderWidth: 0,
                 background: 'transparent',
@@ -565,7 +567,7 @@ export function PacketCard({
                 letterSpacing: '-0.1px',
               }}
             >
-              Launch
+              {pendingAction === 'launch' ? 'Launching…' : 'Launch'}
               </button>
             ) : (
               <>
@@ -596,7 +598,7 @@ export function PacketCard({
                 {packet.lane?.laneId && (packet.status === 'idle' || packet.status === 'awaiting_review' || packet.status === 'recovering') ? (
                   <button
                     type="button"
-                    onClick={onResume}
+                    onClick={onResume} disabled={pendingAction !== null}
                     style={{
                       borderWidth: 0,
                       background: 'transparent',
@@ -613,7 +615,7 @@ export function PacketCard({
                     onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(37, 99, 235, 0.08)'; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                   >
-                    Resume
+                    {pendingAction === 'resume' ? 'Resuming…' : 'Resume'}
                   </button>
                 ) : null}
                 {hasInteractiveLane ? (

@@ -301,6 +301,10 @@ export interface OrchestratorPacket {
   dependencyLabels: string[];
   dependencyPacketIds: string[];
   queueState: OrchestratorQueueState;
+  /** A staged or reset hold may be re-armed by explicit mission dispatch; an operator hold may not. */
+  holdIntent?: 'explicit-dispatch' | 'operator';
+  /** Server-owned claim while a manual lane is being prepared. */
+  manualLaunchClaim?: { token: string; ownerPid: number; startedAt: string } | null;
   releaseState: OrchestratorReleaseState;
   releaseStatePayload?: OrchestratorReleaseStatePayload | null;
   status: OrchestratorPacketStatus;

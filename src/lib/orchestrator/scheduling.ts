@@ -24,6 +24,7 @@ import {
 import { publishRealtimeMutation } from '@/lib/realtime/publisher';
 import { bindWorkerLaunchParent } from '@/lib/orchestrator/worker-launch-context';
 import { launchPacketWithStorageAdmission } from '@/lib/orchestrator/dispatch-packet-launch';
+import { manualLaunchClaimAppeared, manualLaunchClaimIsLive } from '@/lib/orchestrator/manual-launch-claim';
 import {
   PacketStorageAdmissionError,
   type PacketStorageAdmissionCoordinator,
@@ -37,10 +38,8 @@ import {
   surfaceDispatchPreflightRefusalIncident,
 } from './dispatch-preflight-refusal';
 import { forgetRecoverySkip, pruneRecoverySkipMemo, shouldLogRecoverySkip } from './recovery-skip-log';
-
 import { computePredictedFiles, filterOverlappingPackets } from './preservation-envelope';
 import { applyPacketScopePolicy, packetScopeDispatchBlocker } from './packet-scope-policy';
-
 // Back-compat export — resolves env var, then the persisted operator default,
 // then the locked fallback (5). Existing imports keep working.
 export const MAX_PARALLEL_DISPATCHES = resolveParallelCapSync();
@@ -52,7 +51,6 @@ export const MAX_LAUNCH_ATTEMPTS = 5;
 export const RUNTIME_PARALLEL_CAP: Partial<Record<OrchestratorRuntime, number>> = {
   gemini: 3,
 };
-
 export interface DispatchLaunchBudget {
   maxLaunches: number;
   perRuntime?: Partial<Record<OrchestratorRuntime, number>>;
@@ -324,6 +322,7 @@ export function getDispatchBlocker(
   if (candidate.operatorStopped) {
     return 'Operator stopped';
   }
+  if (manualLaunchClaimIsLive(candidate.manualLaunchClaim)) return 'Manual lane opening';
   const scopeBlocker = packetScopeDispatchBlocker(candidate);
   if (scopeBlocker) {
     return scopeBlocker;
@@ -405,7 +404,8 @@ export function mergeDispatchTickOutcome(
     const index = freshIndexById.get(packet.id);
     if (index === undefined) {
       fresh.packets.push(packet);
-    } else {
+    } else if ((fresh.packets[index]?.holdIntent !== 'operator' || tickBase.packets.find((entry) => entry.id === packet.id)?.holdIntent === 'operator')
+      && !manualLaunchClaimAppeared(fresh.packets[index], tickBase.packets.find((entry) => entry.id === packet.id))) {
       fresh.packets[index] = packet;
     }
   }

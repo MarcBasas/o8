@@ -56,6 +56,7 @@ const stopRoute = await import('@/app/api/orchestrator/stop-packet/route');
 // initialize its re-export graph in the test runner.
 await import('@/lib/orchestrator/operator-mission-service');
 const { closeDb } = await import('@/lib/db');
+const { getSqlite } = await import('@/lib/db');
 const { createLane, deleteLane, listLanes, setLaneStatus } = await import('@/lib/lane/registry');
 const { createEmptyOrchestratorMissionState } = await import('@/lib/orchestrator/store');
 const { updateOrchestratorMissionState } = await import('@/lib/orchestrator/store');
@@ -128,6 +129,52 @@ afterAll(() => {
 });
 
 describe('cached client mission writes during stop', () => {
+  it('refuses Hold after a manual lane is opened but before its session launches', async () => {
+    const packetId = 'manual-lane-hold-race';
+    writeOrchestratorControlPlaneState({
+      ...createEmptyOrchestratorMissionState(), missionId: 'manual-lane-race',
+      repoPath: dataDir, packets: [{ ...packet(packetId), queueState: 'queued', status: 'queued' }],
+    });
+    createLane({ repoPath: dataDir, branch: 'packet/manual-lane', runtime: 'codex', packetId });
+    const response = await stateRoute.PATCH(request({
+      packetId, updates: { queueState: 'held', blockedReason: 'Held by operator' },
+    }, 'PATCH'));
+    expect(response.status).toBe(409);
+    expect(readOrchestratorControlPlaneState().packets[0]).toMatchObject({ queueState: 'queued' });
+  });
+
+  it('refuses Hold once the packet has an active launch reservation', async () => {
+    const packetId = 'reserved-launch-hold-race';
+    writeOrchestratorControlPlaneState({
+      ...createEmptyOrchestratorMissionState(), missionId: 'reserved-launch-race',
+      repoPath: dataDir, packets: [{ ...packet(packetId), queueState: 'queued', status: 'queued' }],
+    });
+    const now = Date.now();
+    getSqlite().prepare(`
+      INSERT INTO storage_admission_reservations (
+        reservation_id, volume_id, target_path, exact_bytes, owner_id,
+        owner_generation, generation, state, lease_expires_at,
+        pre_measurement_json, last_mutation_id, last_reason, created_at, updated_at
+      ) VALUES (?, 'fixture-volume', ?, 1, ?, 1, 1, 'reserved', ?, '{}', ?, 'admitted', ?, ?)
+    `).run(`reservation:${packetId}`, dataDir, packetId, now + 60_000, `reserve:${packetId}`, now, now);
+    const response = await stateRoute.PATCH(request({
+      packetId, updates: { queueState: 'held', blockedReason: 'Held by operator' },
+    }, 'PATCH'));
+    expect(response.status).toBe(409);
+    expect(readOrchestratorControlPlaneState().packets[0]).toMatchObject({ queueState: 'queued', status: 'queued' });
+  });
+
+  it('rejects a late hold after a worker has launched', async () => {
+    seedMission();
+    const response = await stateRoute.PATCH(request({
+      packetId: 'b', updates: { queueState: 'held', blockedReason: 'Held by operator' },
+    }, 'PATCH'));
+    expect(response.status).toBe(409);
+    expect(readOrchestratorControlPlaneState().packets[1]).toMatchObject({
+      queueState: 'queued', status: 'running', lane: expect.objectContaining({ laneId: expect.any(String) }),
+    });
+  });
+
   it('preserves the stop guard when a stale sidebar archives a sibling during kill confirmation', async () => {
     const cached = seedMission();
     let releaseKill!: () => void;

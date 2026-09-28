@@ -8,6 +8,7 @@ import type { DomainLaneSummary } from '@/lib/orchestrator/domain-lane-summary';
 import { normalizeQualitySearchPacketState } from '@/lib/orchestrator/quality-search';
 import { normalizePacketStorageAdmission, normalizePacketStorageAdmissionEpoch } from '@/lib/orchestrator/packet-storage-admission-normalize';
 import { normalizePacketAlignmentResolvedAt } from '@/lib/orchestrator/packet-alignment-normalize';
+import { normalizeManualLaunchClaim } from '@/lib/orchestrator/manual-launch-claim';
 import { normalizeLaneBinding } from '@/lib/orchestrator/lane-binding';
 import { normalizeTerminalStatusEvidenceField } from '@/lib/terminal-status/normalize';
 import { hydrateOrchestratorTurnPinEntry, installOrchestratorTurnPinFetchPatch, persistOrchestratorTurnPin, readCachedOrchestratorTurnPin, stageOrchestratorTurnPin } from '@/lib/orchestrator/turn-pins';
@@ -307,7 +308,6 @@ function normalizeWorkerRouting(value: unknown, runtime: OrchestratorRuntime, wo
     source: 'orchestrator-state',
   });
 }
-
 function normalizePacket(raw: unknown, index: number, existing: Array<Pick<OrchestratorPacket, 'referenceLabel'>>) {
   const packet = (raw && typeof raw === 'object' ? raw : {}) as Partial<OrchestratorPacket>;
   const referenceLabel = typeof packet.referenceLabel === 'string' && packet.referenceLabel.trim()
@@ -332,7 +332,8 @@ function normalizePacket(raw: unknown, index: number, existing: Array<Pick<Orche
     dependencyPacketIds: Array.isArray(packet.dependencyPacketIds)
       ? packet.dependencyPacketIds.map((id) => String(id).trim()).filter(Boolean)
       : [],
-    queueState,
+    queueState, holdIntent: packet.holdIntent === 'operator' || packet.holdIntent === 'explicit-dispatch' ? packet.holdIntent : queueState === 'held' && packet.status === 'draft' && !packet.blockedReason ? 'explicit-dispatch' : undefined,
+    manualLaunchClaim: normalizeManualLaunchClaim(packet.manualLaunchClaim),
     releaseState: packet.releaseState === 'released' ? 'released' : 'pending',
     releaseStatePayload: normalizeReleaseStatePayload(packet.releaseStatePayload),
     status: packet.status === 'running'
@@ -427,7 +428,6 @@ function normalizePacket(raw: unknown, index: number, existing: Array<Pick<Orche
     buyinDoc: normalizePacketBuyinDoc(packet.buyinDoc),
   } satisfies OrchestratorPacket;
 }
-
 function normalizePacketBuyinDoc(value: unknown): OrchestratorPacket['buyinDoc'] {
   if (!value || typeof value !== 'object') return undefined;
   const raw = value as { status?: unknown; artifactId?: unknown; generatedAt?: unknown; error?: unknown };
@@ -1003,7 +1003,7 @@ export function reconcileOrchestratorMissionState(
 
     if (packet.queueState === 'held') {
       next.status = 'blocked';
-      next.blockedReason = packet.blockedReason ?? 'Held by operator';
+      next.blockedReason = packet.blockedReason ?? (packet.holdIntent === 'explicit-dispatch' ? 'Awaiting explicit dispatch' : 'Held by operator');
       return next;
     }
 

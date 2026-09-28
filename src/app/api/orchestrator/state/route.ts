@@ -10,6 +10,9 @@ import { currentLaneMergePolicy } from '@/lib/lane/dogfood-guard';
 import { getLaneEvents, findLaneByPacket, listLanes } from '@/lib/lane/registry';
 import { listApprovals } from '@/lib/approvals/store';
 import { getRuntimeInventorySnapshot } from '@/lib/runtime/inventory';
+import { getSqlite } from '@/lib/db';
+import { StorageAdmissionStore } from '@/lib/workspace/storage-admission';
+import { manualLaunchClaimIsLive } from '@/lib/orchestrator/manual-launch-claim';
 import { resolveAgentSummaryStatuses } from '@/lib/orchestrator/operator-status-model';
 import { packetStatusWriteRejection } from '@/lib/orchestrator/packet-patch-policy';
 import { hasCanonicalReleaseEvidence } from '@/lib/orchestrator/packet-release-truth';
@@ -214,8 +217,13 @@ function mergeClientMissionUnderLock(
           serverPacket.operatorStopped === true
           || (serverPacket.releaseState === 'released' && hasCanonicalReleaseEvidence(serverPacket))
         );
+        const serverOperatorHold = serverPacket?.queueState === 'held'
+          && serverPacket.holdIntent === 'operator';
         const preserveLifecycle = serverPacket && (
           serverLifecycleTerminal
+          || serverOperatorHold
+          || Boolean(serverPacket.manualLaunchClaim)
+          || packet.holdIntent !== serverPacket.holdIntent
           || packet.operatorStopped === true
           || staleAdmission
           || !sameAdmissionEpoch
@@ -233,7 +241,9 @@ function mergeClientMissionUnderLock(
           }
           persisted.storageAdmission = serverPacket.storageAdmission ?? null;
           persisted.storageAdmissionEpoch = serverPacket.storageAdmissionEpoch;
+          persisted.manualLaunchClaim = serverPacket.manualLaunchClaim ?? null;
         }
+        if (!serverPacket) persisted.manualLaunchClaim = null;
         delete persisted.statusEvidence;
         return persisted;
       })
@@ -247,6 +257,7 @@ function mergeClientMissionUnderLock(
   for (const packet of current.packets) {
     if (incomingIds.has(packet.id)) continue;
     const lifecycleProtected = packet.operatorStopped === true
+      || Boolean(packet.manualLaunchClaim)
       || normalizePacketStorageAdmissionEpoch(packet.storageAdmissionEpoch) > 1;
     if (lifecycleProtected || !removedPacketIds.has(packet.id)) packets.push(packet);
   }
@@ -347,19 +358,34 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    const FORBIDDEN_FIELDS = new Set(['id', 'missionId']);
+    const FORBIDDEN_FIELDS = new Set(['id', 'missionId', 'holdIntent', 'manualLaunchClaim']);
     const { state: mission, result } = await withLockedState((current) => {
       const packet = current.packets.find((p) => p.id === packetId);
       if (!packet) return { found: false } as const;
+      if (packet.manualLaunchClaim && !manualLaunchClaimIsLive(packet.manualLaunchClaim)) packet.manualLaunchClaim = null;
+      const liveLane = updates.queueState === 'held' ? findLaneByPacket(packetId) : null;
+      const launchReservation = updates.queueState === 'held'
+        ? new StorageAdmissionStore(getSqlite()).getLatestReservationForOwner(packetId)
+        : null;
+      if (
+        (liveLane && (liveLane.status === 'idle' || liveLane.status === 'launching' || liveLane.status === 'running' || liveLane.status === 'recovering'))
+        || launchReservation?.state === 'reserved'
+        || Boolean(packet.manualLaunchClaim)
+      ) {
+        return { found: true, alreadyLaunched: true } as const;
+      }
       const mutablePacket = packet as unknown as Record<string, unknown>;
       for (const [key, value] of Object.entries(updates)) {
         if (FORBIDDEN_FIELDS.has(key)) continue;
         mutablePacket[key] = value;
       }
+      if (updates.queueState === 'held') packet.holdIntent = 'operator';
+      if (updates.queueState === 'queued') packet.holdIntent = undefined;
       return { found: true } as const;
     });
 
     if (!result.found) return buildErrorResponse(`Packet ${packetId} not found.`, 404);
+    if ('alreadyLaunched' in result) return buildErrorResponse(`Packet ${packetId} is launching or running; stop its worker before holding it.`, 409);
     if (typeof updates.archivedAt === 'string' && updates.archivedAt.trim()) {
       autoResolveMergedPacketVerificationIncidents({ packetId, event: 'packet_archived' });
     }
