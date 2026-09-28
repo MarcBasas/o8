@@ -37,6 +37,7 @@ function fullPacketFixture() {
     dependencyLabels: ['P0'],
     dependencyPacketIds: ['pkt-control-0'],
     queueState: 'queued',
+    holdIntent: 'operator',
     releaseState: 'pending',
     releaseStatePayload: {
       mergeCommit: 'abc123',

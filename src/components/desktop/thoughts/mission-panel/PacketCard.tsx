@@ -39,6 +39,7 @@ interface PacketCardProps {
   repoRemoteUrlByPath?: Record<string, string | null | undefined>;
   reviewState: ReviewPanelState | null;
   onPatch: (updater: (packet: OrchestratorPacket) => OrchestratorPacket) => void;
+  onHoldChange: (held: boolean) => void;
   onLaunch: () => void;
   onFocus: () => void;
   onDelete: () => void;
@@ -64,6 +65,7 @@ export function PacketCard({
   repoRemoteUrlByPath,
   reviewState,
   onPatch,
+  onHoldChange,
   onLaunch,
   onFocus,
   onDelete,
@@ -459,7 +461,7 @@ export function PacketCard({
             {packet.queueState !== 'held' && !packet.lane ? (
               <button
                 type="button"
-                onClick={() => onPatch((current) => ({ ...current, queueState: 'held', blockedReason: 'Held by operator' }))}
+                onClick={() => onHoldChange(true)}
                 style={{
                   borderWidth: 0,
                   background: 'transparent',
@@ -481,7 +483,7 @@ export function PacketCard({
             ) : packet.queueState === 'held' ? (
               <button
                 type="button"
-                onClick={() => onPatch((current) => ({ ...current, queueState: 'queued', blockedReason: null }))}
+                onClick={() => onHoldChange(false)}
                 style={{
                   borderWidth: 0,
                   background: 'transparent',

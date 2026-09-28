@@ -65,4 +65,18 @@ describe('mergeDispatchTickOutcome (F3)', () => {
     expect(fresh.packets.find((entry) => entry.id === 'pkt-b')?.lastEventLabel).toBe('landed_mid_tick');
     expect(fresh.packets.some((entry) => entry.id === 'pkt-fanout')).toBe(true);
   });
+
+  it('does not replace an operator hold with an in-flight tick result for that packet', () => {
+    const tickBase = missionState([packet('pkt-a')]);
+    const afterDispatch = missionState([packet('pkt-a', { status: 'launching' })]);
+    const fresh = missionState([packet('pkt-a', {
+      queueState: 'held', holdIntent: 'operator', status: 'blocked', blockedReason: 'Held by operator',
+    })]);
+
+    mergeDispatchTickOutcome(fresh, tickBase, afterDispatch);
+
+    expect(fresh.packets[0]).toMatchObject({
+      queueState: 'held', holdIntent: 'operator', status: 'blocked', blockedReason: 'Held by operator',
+    });
+  });
 });

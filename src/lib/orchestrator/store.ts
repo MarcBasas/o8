@@ -332,7 +332,7 @@ function normalizePacket(raw: unknown, index: number, existing: Array<Pick<Orche
     dependencyPacketIds: Array.isArray(packet.dependencyPacketIds)
       ? packet.dependencyPacketIds.map((id) => String(id).trim()).filter(Boolean)
       : [],
-    queueState,
+    queueState, holdIntent: packet.holdIntent === 'operator' || packet.holdIntent === 'explicit-dispatch' ? packet.holdIntent : queueState === 'held' && packet.status === 'draft' && !packet.blockedReason ? 'explicit-dispatch' : undefined,
     releaseState: packet.releaseState === 'released' ? 'released' : 'pending',
     releaseStatePayload: normalizeReleaseStatePayload(packet.releaseStatePayload),
     status: packet.status === 'running'
@@ -1003,7 +1003,7 @@ export function reconcileOrchestratorMissionState(
 
     if (packet.queueState === 'held') {
       next.status = 'blocked';
-      next.blockedReason = packet.blockedReason ?? 'Held by operator';
+      next.blockedReason = packet.blockedReason ?? (packet.holdIntent === 'explicit-dispatch' ? 'Awaiting explicit dispatch' : 'Held by operator');
       return next;
     }
 

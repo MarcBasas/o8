@@ -128,4 +128,56 @@ describe('staged mission creation', () => {
     await runHeadlessSprintTick();
     expect(launches.calls).toHaveLength(3);
   }, 20_000);
+
+  it('launches only the selected comparison candidate after an operator holds its sibling', async () => {
+    const repoPath = createTempRepo();
+    stubMissionApiFetch();
+    const { handleCreateMission } = await import('@/lib/mcp/operator-handlers/mission');
+    const staged = parseResult<{ missionId: string }>(await handleCreateMission({
+      issues_inline: [{ title: 'one worker comparison', body: 'Launch only the selected candidate.' }],
+      repoPath, runtime: 'codex', comparisonModels: ['gpt-5.6-sol', 'gpt-5.6-sol'], dispatch: false,
+    }));
+    const { runHeadlessSprintTick } = await import('@/lib/orchestrator/headless-loop');
+    await runHeadlessSprintTick();
+    const { currentMissionState } = await import('@/lib/orchestrator/operator-mission-service/shared');
+    const cached = currentMissionState();
+    expect(cached.packets).toHaveLength(2);
+    const firstId = cached.packets[0]!.id;
+    const heldId = cached.packets[1]!.id;
+    const { NextRequest } = await import('next/server');
+    const stateRoute = await import('@/app/api/orchestrator/state/route');
+    const packetRequest = (packetId: string, queueState: 'held' | 'queued') => new NextRequest('http://localhost/api/orchestrator/state', {
+      method: 'PATCH',
+      headers: { host: 'localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ packetId, updates: { queueState, blockedReason: queueState === 'held' ? 'Held by operator' : null } }),
+    });
+    expect((await stateRoute.PATCH(packetRequest(firstId, 'held'))).status).toBe(200);
+    expect((await stateRoute.PATCH(packetRequest(heldId, 'held'))).status).toBe(200);
+    const status = await stateRoute.GET(new NextRequest('http://localhost/api/orchestrator/state', {
+      headers: { host: 'localhost' },
+    }));
+    const statusBody = await status.json() as { mission: { packets: Array<{ id: string; queueState: string; holdIntent?: string; blockedReason: string | null; lane: unknown }> } };
+    expect(status.status).toBe(200);
+    expect(statusBody.mission.packets).toHaveLength(2);
+    for (const packet of statusBody.mission.packets) {
+      expect(packet).toMatchObject({ queueState: 'held', holdIntent: 'operator', blockedReason: 'Held by operator', lane: null });
+    }
+    expect((await stateRoute.PATCH(packetRequest(firstId, 'queued'))).status).toBe(200);
+
+    // A cached whole-mission write and a fresh dispatch must both respect the hold.
+    const stale = await stateRoute.POST(new NextRequest('http://localhost/api/orchestrator/state', {
+      method: 'POST',
+      headers: { host: 'localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ mission: cached }),
+    }));
+    expect(stale.status).toBe(200);
+    const { dispatchMission } = await import('@/lib/orchestrator/operator-mission-service/mission');
+    expect(await dispatchMission({ missionId: staged.missionId })).toMatchObject({ dispatched: 1 });
+    expect(launches.calls.map((entry) => entry.packetId)).toEqual([firstId]);
+    await runHeadlessSprintTick();
+    expect(launches.calls).toHaveLength(1);
+    expect(currentMissionState().packets.find((packet) => packet.id === heldId)).toMatchObject({
+      queueState: 'held', holdIntent: 'operator', blockedReason: 'Held by operator', lane: null,
+    });
+  }, 20_000);
 });

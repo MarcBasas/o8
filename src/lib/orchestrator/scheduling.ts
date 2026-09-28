@@ -405,7 +405,7 @@ export function mergeDispatchTickOutcome(
     const index = freshIndexById.get(packet.id);
     if (index === undefined) {
       fresh.packets.push(packet);
-    } else {
+    } else if (fresh.packets[index]?.holdIntent !== 'operator' || tickBase.packets.find((entry) => entry.id === packet.id)?.holdIntent === 'operator') {
       fresh.packets[index] = packet;
     }
   }

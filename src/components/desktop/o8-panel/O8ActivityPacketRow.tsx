@@ -20,7 +20,8 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { orchestratorStatusTone } from '@/lib/orchestrator/display';
-import type { OrchestratorPacket } from '@/lib/orchestrator/types';
+import { ORCHESTRATOR_STATE_API_PATH, updateOrchestratorMissionState } from '@/lib/orchestrator/store';
+import type { OrchestratorPacket, OrchestratorStateApiResponse } from '@/lib/orchestrator/types';
 import { useOrchestratorData } from '../orchestrator-data-context';
 import { relativeAge } from '../agent-panel/shared';
 import { PacketCard } from '../thoughts/mission-panel/PacketCard';
@@ -92,6 +93,28 @@ function O8ActivityPacketRowBase({ packet, isExpanded, onToggleExpanded }: O8Act
     },
     [data, packet.id],
   );
+
+  const setPacketHold = useCallback((held: boolean) => {
+    // A lifecycle decision is a targeted locked write. The debounced mission
+    // POST can contain an older sibling and must not undo this hold.
+    void fetch(ORCHESTRATOR_STATE_API_PATH, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        packetId: packet.id,
+        updates: {
+          queueState: held ? 'held' : 'queued',
+          blockedReason: held ? 'Held by operator' : null,
+        },
+      }),
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`Packet hold update failed (${response.status}).`);
+      const payload = await response.json() as OrchestratorStateApiResponse;
+      updateOrchestratorMissionState(payload.mission);
+    }).catch((error: unknown) => {
+      console.error('[o8-activity-packet] hold update failed:', error);
+    });
+  }, [packet.id]);
 
   const handleDelete = useCallback(() => {
     data?.onMissionStateChange?.((current) => ({
@@ -518,6 +541,7 @@ function O8ActivityPacketRowBase({ packet, isExpanded, onToggleExpanded }: O8Act
             repoRemoteUrlByPath={repoRemoteUrlByPath}
             reviewState={reviewState}
             onPatch={patchPacket}
+            onHoldChange={setPacketHold}
             onLaunch={handleLaunch}
             onFocus={handleFocus}
             onDelete={handleDelete}

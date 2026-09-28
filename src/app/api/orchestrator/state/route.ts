@@ -214,8 +214,12 @@ function mergeClientMissionUnderLock(
           serverPacket.operatorStopped === true
           || (serverPacket.releaseState === 'released' && hasCanonicalReleaseEvidence(serverPacket))
         );
+        const serverOperatorHold = serverPacket?.queueState === 'held'
+          && serverPacket.holdIntent === 'operator';
         const preserveLifecycle = serverPacket && (
           serverLifecycleTerminal
+          || serverOperatorHold
+          || packet.holdIntent !== serverPacket.holdIntent
           || packet.operatorStopped === true
           || staleAdmission
           || !sameAdmissionEpoch
@@ -347,19 +351,26 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    const FORBIDDEN_FIELDS = new Set(['id', 'missionId']);
+    const FORBIDDEN_FIELDS = new Set(['id', 'missionId', 'holdIntent']);
     const { state: mission, result } = await withLockedState((current) => {
       const packet = current.packets.find((p) => p.id === packetId);
       if (!packet) return { found: false } as const;
+      const liveLane = updates.queueState === 'held' ? findLaneByPacket(packetId) : null;
+      if (liveLane && (liveLane.status === 'launching' || liveLane.status === 'running' || liveLane.status === 'recovering')) {
+        return { found: true, alreadyLaunched: true } as const;
+      }
       const mutablePacket = packet as unknown as Record<string, unknown>;
       for (const [key, value] of Object.entries(updates)) {
         if (FORBIDDEN_FIELDS.has(key)) continue;
         mutablePacket[key] = value;
       }
+      if (updates.queueState === 'held') packet.holdIntent = 'operator';
+      if (updates.queueState === 'queued') packet.holdIntent = undefined;
       return { found: true } as const;
     });
 
     if (!result.found) return buildErrorResponse(`Packet ${packetId} not found.`, 404);
+    if ('alreadyLaunched' in result) return buildErrorResponse(`Packet ${packetId} already launched; stop its worker before holding it.`, 409);
     if (typeof updates.archivedAt === 'string' && updates.archivedAt.trim()) {
       autoResolveMergedPacketVerificationIncidents({ packetId, event: 'packet_archived' });
     }

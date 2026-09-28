@@ -128,6 +128,17 @@ afterAll(() => {
 });
 
 describe('cached client mission writes during stop', () => {
+  it('rejects a late hold after a worker has launched', async () => {
+    seedMission();
+    const response = await stateRoute.PATCH(request({
+      packetId: 'b', updates: { queueState: 'held', blockedReason: 'Held by operator' },
+    }, 'PATCH'));
+    expect(response.status).toBe(409);
+    expect(readOrchestratorControlPlaneState().packets[1]).toMatchObject({
+      queueState: 'queued', status: 'running', lane: expect.objectContaining({ laneId: expect.any(String) }),
+    });
+  });
+
   it('preserves the stop guard when a stale sidebar archives a sibling during kill confirmation', async () => {
     const cached = seedMission();
     let releaseKill!: () => void;
