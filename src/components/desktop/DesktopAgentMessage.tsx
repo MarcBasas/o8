@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FileText } from './lucide-shims';
+import { DesktopMediaImage } from './DesktopMediaAttachment';
 import { ttsEngine, type TTSEngineState } from '@/lib/tts/engine';
 import { userScrolledRecently } from '@/lib/tts/scroll-follow';
 import { CommandStripNode } from '@/components/desktop/CommandStripNode';
@@ -85,11 +86,8 @@ const MediaGrid = memo(function MediaGrid({
           gap: 8,
         }}>
           {images.map((item, index) => (
-            <a
+            <div
               key={`${item.path}-${index}`}
-              href={mediaHref(item.path)}
-              target="_blank"
-              rel="noreferrer"
               style={{
                 display: 'block',
                 overflow: 'hidden',
@@ -99,19 +97,8 @@ const MediaGrid = memo(function MediaGrid({
                 boxShadow: 'var(--t-panel-shadow)',
               }}
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={mediaHref(item.path)}
-                alt={item.name}
-                loading="lazy"
-                style={{
-                  display: 'block',
-                  width: '100%',
-                  maxHeight: images.length === 1 ? 280 : 180,
-                  objectFit: 'cover',
-                }}
-              />
-            </a>
+              <DesktopMediaImage path={item.path} name={item.name} maxHeight={images.length === 1 ? 280 : 180} />
+            </div>
           ))}
         </div>
       ) : null}
