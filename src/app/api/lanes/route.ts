@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { requirePanelAuth } from '@/lib/panel/auth';
 import { resolveRequestPrincipalContext, workerPacketRefusal } from '@/lib/auth/principal';
-import { getLane, getLaneEvents, listLanes, listActiveLanes } from '@/lib/lane/registry';
+import { findLaneByPacket, getLane, getLaneEvents, listLanes, listActiveLanes } from '@/lib/lane/registry';
 import { summarizeLaneArchive, wasArchivedByOperator } from '@/lib/lane/archive-summary';
 import { collapseArchivedLanesByTask } from '@/lib/lanes/collapse-archived-by-task';
 import { codename } from '@/lib/agents/codename';
@@ -171,6 +171,8 @@ export async function POST(req: NextRequest) {
         if (!packet) return 'packet_missing' as const;
         if (packet.queueState === 'held' && packet.holdIntent === 'operator') return 'packet_held' as const;
         if (manualLaunchClaimIsLive(packet.manualLaunchClaim)) return 'already_launching' as const;
+        const lane = findLaneByPacket(packet.id);
+        if (lane && (lane.status === 'idle' || lane.status === 'launching' || lane.status === 'running' || lane.status === 'recovering')) return 'already_launching' as const;
         const reservation = new StorageAdmissionStore(getSqlite()).getLatestReservationForOwner(packet.id);
         if (reservation?.state === 'reserved') return 'already_launching' as const;
         packet.manualLaunchClaim = { token, ownerPid: process.pid, startedAt: new Date().toISOString() };

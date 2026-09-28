@@ -26,6 +26,7 @@ const { createEmptyOrchestratorMissionState } = await import('@/lib/orchestrator
 const { readOrchestratorControlPlaneState, writeOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
 const { closeDb, getSqlite } = await import('@/lib/db');
 const { mintPacketWorkerToken } = await import('@/lib/auth/packet-worker-token');
+const { createLane } = await import('@/lib/lane/registry');
 const lanesRoute = await import('@/app/api/lanes/route');
 const stateRoute = await import('@/app/api/orchestrator/state/route');
 
@@ -56,6 +57,19 @@ function seed(packetId: string, manualLaunchClaim: { token: string; ownerPid: nu
 }
 
 describe('manual packet launch claim', () => {
+  it('does not open a second lane for a packet with a live lane', async () => {
+    const packetId = 'already-open';
+    seed(packetId);
+    createLane({ repoPath: dataDir, branch: 'packet/already-open', runtime: 'codex', packetId });
+    const launchesBefore = pending.launches;
+    const response = await lanesRoute.POST(request('/api/lanes', {
+      verb: 'open_lane', packetId, repoPath: dataDir, branch: 'main', runtime: 'codex', actor: 'user',
+    }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ reason: 'already_launching' });
+    expect(pending.launches).toBe(launchesBefore);
+  });
+
   it('refuses a held packet opened through its own worker credential', async () => {
     const packetId = 'worker-held';
     seed(packetId);
