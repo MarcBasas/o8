@@ -10,6 +10,7 @@ import { currentLaneMergePolicy } from '@/lib/lane/dogfood-guard';
 import { reconcileOrphanedWorktrees } from '@/lib/lane/reconcile';
 import { serverTimingHeaders } from '@/lib/performance/server-timing';
 import { resolvePacketLaunchContexts } from '@/lib/orchestrator/packet-launch-context';
+import { readOrchestratorControlPlaneState, withControlPlaneLock } from '@/lib/orchestrator/control-plane';
 import { repoActionLeaseMaxWaitMsForTests } from '@/lib/lane/lane-route-test-seams';
 import { resolveLaneTranscriptHealth } from '@/lib/lane/transcript-health';
 import { deriveIdempotencyKey, withIdempotency } from '@/lib/orchestrator/idempotency-store';
@@ -159,6 +160,19 @@ export async function POST(req: NextRequest) {
   };
 
   try {
+    if (command.verb === 'open_lane' && command.packetId && principal.role === 'operator') {
+      return await withControlPlaneLock(async () => {
+        const packet = readOrchestratorControlPlaneState().packets.find((entry) => entry.id === command.packetId);
+        if (packet?.queueState === 'held' && packet.holdIntent === 'operator') {
+          return NextResponse.json({ ok: false, reason: 'packet_held', note: 'This packet is held by the operator.' }, { status: 409 });
+        }
+        const result = await dispatch(command);
+        return NextResponse.json(result, {
+          status: result.ok ? 200 : 422,
+          headers: { 'Cache-Control': 'no-store, max-age=0' },
+        });
+      });
+    }
     if (command.verb === 'create_pr') {
       const key = deriveIdempotencyKey({
         verb: 'lane_create_pr',

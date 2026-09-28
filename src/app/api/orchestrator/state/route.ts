@@ -10,6 +10,8 @@ import { currentLaneMergePolicy } from '@/lib/lane/dogfood-guard';
 import { getLaneEvents, findLaneByPacket, listLanes } from '@/lib/lane/registry';
 import { listApprovals } from '@/lib/approvals/store';
 import { getRuntimeInventorySnapshot } from '@/lib/runtime/inventory';
+import { getSqlite } from '@/lib/db';
+import { StorageAdmissionStore } from '@/lib/workspace/storage-admission';
 import { resolveAgentSummaryStatuses } from '@/lib/orchestrator/operator-status-model';
 import { packetStatusWriteRejection } from '@/lib/orchestrator/packet-patch-policy';
 import { hasCanonicalReleaseEvidence } from '@/lib/orchestrator/packet-release-truth';
@@ -356,7 +358,13 @@ export async function PATCH(req: NextRequest) {
       const packet = current.packets.find((p) => p.id === packetId);
       if (!packet) return { found: false } as const;
       const liveLane = updates.queueState === 'held' ? findLaneByPacket(packetId) : null;
-      if (liveLane && (liveLane.status === 'launching' || liveLane.status === 'running' || liveLane.status === 'recovering')) {
+      const launchReservation = updates.queueState === 'held'
+        ? new StorageAdmissionStore(getSqlite()).getLatestReservationForOwner(packetId)
+        : null;
+      if (
+        (liveLane && (liveLane.status === 'idle' || liveLane.status === 'launching' || liveLane.status === 'running' || liveLane.status === 'recovering'))
+        || launchReservation?.state === 'reserved'
+      ) {
         return { found: true, alreadyLaunched: true } as const;
       }
       const mutablePacket = packet as unknown as Record<string, unknown>;
@@ -370,7 +378,7 @@ export async function PATCH(req: NextRequest) {
     });
 
     if (!result.found) return buildErrorResponse(`Packet ${packetId} not found.`, 404);
-    if ('alreadyLaunched' in result) return buildErrorResponse(`Packet ${packetId} already launched; stop its worker before holding it.`, 409);
+    if ('alreadyLaunched' in result) return buildErrorResponse(`Packet ${packetId} is launching or running; stop its worker before holding it.`, 409);
     if (typeof updates.archivedAt === 'string' && updates.archivedAt.trim()) {
       autoResolveMergedPacketVerificationIncidents({ packetId, event: 'packet_archived' });
     }

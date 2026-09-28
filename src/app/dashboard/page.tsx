@@ -2275,21 +2275,22 @@ function DashboardInner() {
         return await res.json().catch(() => ({})) as Record<string, unknown>;
       } catch { return {}; }
     };
-    try {
-      const laneData = await laneApi({
-        verb: 'open_lane',
-        repoPath: packet.workspaceTargetPath ?? workspaceTerminalPreferredRepo?.localPath ?? '',
-        branch: packet.branchTarget || 'main',
-        runtime: packet.runtime,
-        label: packet.title,
-        packetId: packet.id,
-        actor: 'user',
-      });
-      if (laneData.ok && laneData.laneId) {
-        laneId = laneData.laneId as string;
-        console.log(`[orchestrator] Lane created: ${laneId} for packet ${packet.referenceLabel}`);
-      }
-    } catch {
+    const laneData = await laneApi({
+      verb: 'open_lane',
+      repoPath: packet.workspaceTargetPath ?? workspaceTerminalPreferredRepo?.localPath ?? '',
+      branch: packet.branchTarget || 'main',
+      runtime: packet.runtime,
+      label: packet.title,
+      packetId: packet.id,
+      actor: 'user',
+    });
+    if (laneData.reason === 'packet_held') {
+      throw new Error('This packet is held. Unhold it before launching.');
+    }
+    if (laneData.ok && laneData.laneId) {
+      laneId = laneData.laneId as string;
+      console.log(`[orchestrator] Lane created: ${laneId} for packet ${packet.referenceLabel}`);
+    } else {
       console.warn('[orchestrator] Lane creation failed, continuing without lane tracking');
     }
 

@@ -65,6 +65,9 @@ function O8ActivityPacketRowBase({ packet, isExpanded, onToggleExpanded }: O8Act
 
   // ── Per-row state for PacketCard's expanded body ──────────────────────
   const [editingField, setEditingField] = useState<EditingField>(null);
+  const [pendingAction, setPendingAction] = useState<'held' | 'queued' | 'launch' | 'resume' | null>(null);
+  const [holdError, setHoldError] = useState<string | null>(null);
+  const pendingActionRef = useRef<'held' | 'queued' | 'launch' | 'resume' | null>(null);
   const [reviewState, setReviewState] = useState<ReviewPanelState>(EMPTY_REVIEW_STATE);
   const reviewLoadedKeyRef = useRef<string | null>(null);
   const changedFiles = reviewState.snapshot?.changedFiles ?? [];
@@ -95,6 +98,10 @@ function O8ActivityPacketRowBase({ packet, isExpanded, onToggleExpanded }: O8Act
   );
 
   const setPacketHold = useCallback((held: boolean) => {
+    if (pendingActionRef.current) return;
+    pendingActionRef.current = held ? 'held' : 'queued';
+    setPendingAction(pendingActionRef.current);
+    setHoldError(null);
     // A lifecycle decision is a targeted locked write. The debounced mission
     // POST can contain an older sibling and must not undo this hold.
     void fetch(ORCHESTRATOR_STATE_API_PATH, {
@@ -113,6 +120,10 @@ function O8ActivityPacketRowBase({ packet, isExpanded, onToggleExpanded }: O8Act
       updateOrchestratorMissionState(payload.mission);
     }).catch((error: unknown) => {
       console.error('[o8-activity-packet] hold update failed:', error);
+      setHoldError(error instanceof Error ? error.message : 'Unable to change this packet hold.');
+    }).finally(() => {
+      pendingActionRef.current = null;
+      setPendingAction(null);
     });
   }, [packet.id]);
 
@@ -124,8 +135,17 @@ function O8ActivityPacketRowBase({ packet, isExpanded, onToggleExpanded }: O8Act
   }, [data, packet.id]);
 
   const handleLaunch = useCallback(async () => {
+    if (pendingActionRef.current) return;
+    pendingActionRef.current = 'launch';
+    setPendingAction('launch');
+    setHoldError(null);
     try {
-      const binding = await data?.onLaunchPacket?.(packet);
+      const response = await fetch(ORCHESTRATOR_STATE_API_PATH, { cache: 'no-store' });
+      if (!response.ok) throw new Error('Unable to verify this packet before launch.');
+      const payload = await response.json() as OrchestratorStateApiResponse;
+      const latestPacket = payload.mission.packets.find((candidate) => candidate.id === packet.id);
+      if (!latestPacket || latestPacket.queueState === 'held' || latestPacket.holdIntent === 'operator') return;
+      const binding = await data?.onLaunchPacket?.(latestPacket);
       patchPacket((current) => ({
         ...current,
         queueState: 'queued',
@@ -136,9 +156,12 @@ function O8ActivityPacketRowBase({ packet, isExpanded, onToggleExpanded }: O8Act
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to launch this packet.';
       console.error('[o8-activity-packet] launch failed:', error);
-      patchPacket((current) => ({ ...current, blockedReason: message }));
+      setHoldError(message);
+    } finally {
+      pendingActionRef.current = null;
+      setPendingAction(null);
     }
-  }, [data, packet, patchPacket]);
+  }, [data, packet.id, patchPacket]);
 
   const handleFocus = useCallback(() => {
     if (typeof window !== 'undefined' && (packet.lane?.laneId || packet.lane?.sessionKey || packet.id)) {
@@ -174,12 +197,22 @@ function O8ActivityPacketRowBase({ packet, isExpanded, onToggleExpanded }: O8Act
 
   const handleResume = useCallback(() => {
     const laneId = packet.lane?.laneId;
-    if (!laneId) return;
-    fetch('/api/lanes', {
+    if (!laneId || pendingActionRef.current) return;
+    pendingActionRef.current = 'resume';
+    setPendingAction('resume');
+    setHoldError(null);
+    void fetch('/api/lanes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ verb: 'resume', laneId, message: 'Continue the previous task.', actor: 'user' }),
-    }).catch(() => {});
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`Unable to resume this worker (${response.status}).`);
+    }).catch((error: unknown) => {
+      setHoldError(error instanceof Error ? error.message : 'Unable to resume this worker.');
+    }).finally(() => {
+      pendingActionRef.current = null;
+      setPendingAction(null);
+    });
   }, [packet.lane?.laneId]);
 
   const handleStop = useCallback(() => {
@@ -530,6 +563,11 @@ function O8ActivityPacketRowBase({ packet, isExpanded, onToggleExpanded }: O8Act
             borderBottom: '1px solid var(--t-panel-border, rgba(0,0,0,0.06))',
           }}
         >
+          {holdError ? (
+            <div role="alert" style={{ color: 'var(--t-error, #ef4444)', fontSize: 11, paddingBottom: 6 }}>
+              {holdError}
+            </div>
+          ) : null}
           <PacketCard
             packet={packet}
             allPackets={allPackets}
@@ -542,6 +580,7 @@ function O8ActivityPacketRowBase({ packet, isExpanded, onToggleExpanded }: O8Act
             reviewState={reviewState}
             onPatch={patchPacket}
             onHoldChange={setPacketHold}
+            pendingAction={pendingAction}
             onLaunch={handleLaunch}
             onFocus={handleFocus}
             onDelete={handleDelete}

@@ -180,4 +180,60 @@ describe('staged mission creation', () => {
       queueState: 'held', holdIntent: 'operator', blockedReason: 'Held by operator', lane: null,
     });
   }, 20_000);
+
+  it('does not launch a stale dispatch snapshot after an operator Hold wins during preflight', async () => {
+    const repoPath = createTempRepo();
+    const { createEmptyOrchestratorMissionState } = await import('@/lib/orchestrator/store');
+    const { readOrchestratorControlPlaneState, writeOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
+    const { runDispatchTick } = await import('@/lib/orchestrator/scheduling');
+    const packetId = 'held-during-dispatch-preflight';
+    const queued = {
+      id: packetId, referenceLabel: 'PKT-HOLD-RACE', title: 'Hold race', summary: 'Do not launch',
+      workspaceTargetPath: repoPath, branchTarget: 'main', runtime: 'codex' as const,
+      dependencyLabels: [], dependencyPacketIds: [], queueState: 'queued' as const,
+      releaseState: 'pending' as const, status: 'queued' as const,
+      blockedReason: null, lane: null, review: null,
+    };
+    writeOrchestratorControlPlaneState({ ...createEmptyOrchestratorMissionState(), repoPath, packets: [queued] });
+    const staleTick = readOrchestratorControlPlaneState();
+    const { NextRequest } = await import('next/server');
+    const { PATCH } = await import('@/app/api/orchestrator/state/route');
+    const hold = await PATCH(new NextRequest('http://localhost/api/orchestrator/state', {
+      method: 'PATCH', headers: { host: 'localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ packetId, updates: { queueState: 'held', blockedReason: 'Held by operator' } }),
+    }));
+    expect(hold.status).toBe(200);
+    await runDispatchTick(staleTick);
+    expect(launches.calls).toEqual([]);
+    expect(readOrchestratorControlPlaneState().packets[0]).toMatchObject({
+      queueState: 'held', holdIntent: 'operator', lane: null,
+    });
+  }, 20_000);
+
+  it('refuses the manual open-lane route for an operator-held packet', async () => {
+    const repoPath = createTempRepo();
+    const operatorToken = 'manual-held-operator-0123456789abcdef';
+    writeFileSync(join(process.env.O8_DATA_DIR!, 'ws-token'), operatorToken);
+    const { createEmptyOrchestratorMissionState } = await import('@/lib/orchestrator/store');
+    const { writeOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
+    const packetId = 'manual-open-held';
+    writeOrchestratorControlPlaneState({
+      ...createEmptyOrchestratorMissionState(), repoPath,
+      packets: [{
+        id: packetId, referenceLabel: 'PKT-MANUAL-HOLD', title: 'Manual hold', summary: 'Do not open',
+        workspaceTargetPath: repoPath, branchTarget: 'main', runtime: 'codex',
+        dependencyLabels: [], dependencyPacketIds: [], queueState: 'held', holdIntent: 'operator',
+        releaseState: 'pending', status: 'draft', blockedReason: 'Held by operator', lane: null, review: null,
+      }],
+    });
+    const { NextRequest } = await import('next/server');
+    const { POST } = await import('@/app/api/lanes/route');
+    const response = await POST(new NextRequest('http://localhost/api/lanes', {
+      method: 'POST', headers: { host: 'localhost', authorization: `Bearer ${operatorToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ verb: 'open_lane', packetId, repoPath, branch: 'main', runtime: 'codex', label: 'Manual hold', actor: 'user' }),
+    }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ ok: false, reason: 'packet_held' });
+    expect(launches.calls).toEqual([]);
+  });
 });
