@@ -82,7 +82,7 @@ const broadcastAutomationSay = await import('@/app/api/broadcast/automation-say/
 const broadcastWhy = await import('@/app/api/broadcast/why/route');
 const broadcastSnapshot = await import('@/app/api/broadcast/snapshot/route');
 const broadcastTokens = await import('@/app/api/broadcast/tokens/route');
-const { createTestApproval, getApproval } = await import('@/lib/approvals/store');
+const { createTestApproval, getApproval, createApproval, listApprovalEvents } = await import('@/lib/approvals/store');
 const { panelGateMiddleware } = await import('@/middleware');
 const { createEmptyOrchestratorMissionState } = await import('@/lib/orchestrator/store');
 const { writeOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
@@ -1006,5 +1006,39 @@ describe('principal-authz — /api/lanes actor comes from the credential, never 
       event.verb === 'status_change'
       && (event.payload as { status?: string }).status === 'archived'
     ))).toBe(false);
+  });
+});
+
+
+describe('principal-authz — external CLI resume', () => {
+  it.each([
+    ['codex', 'codex:stale-thread'],
+    ['codex', 'codex-discovered:stale-thread'],
+    ['codex', 'codex-live:67890'],
+    ['claude-code', 'claude-code:stale-thread'],
+    ['claude-code', 'claude-code-discovered:stale-thread'],
+  ] as const)('keeps %s %s pending without claiming approval', async (runtime, sessionKey) => {
+    const { createLane, getLane, updateLane } = await import('@/lib/lane/registry');
+    const lane = createLane({
+      repoPath: dataDir,
+      branch: `test/external-resume-${sessionKey.replaceAll(':', '-')}`,
+      runtime,
+      sessionKey,
+    });
+    updateLane(lane.id, { status: 'awaiting_input' }, 'orchestrator');
+    const approval = createApproval({
+      source: 'runtime', runtime, agent: 'External CLI', sessionKey,
+      title: 'Resume lane', description: 'Continue the external CLI.',
+      summary: 'Resume lane.', risk: 'medium',
+      continuation: { kind: 'lane', laneId: lane.id, verb: 'resume' },
+    });
+    const response = await approvals.POST(req('http://localhost/api/panel/approvals', {
+      principal: 'operator', body: { action: 'approve', id: approval.id },
+    }));
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain('original terminal');
+    expect(getApproval(approval.id)?.status).toBe('pending');
+    expect(listApprovalEvents(approval.id).some((event) => event.type === 'approved')).toBe(false);
+    expect(getLane(lane.id)).toMatchObject({ sessionKey, status: 'awaiting_input' });
   });
 });
