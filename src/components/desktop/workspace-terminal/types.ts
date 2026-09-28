@@ -196,6 +196,8 @@ export interface TerminalTabHandle {
   }) => string;
   openOrchestratorTab: (repo?: RegisteredRepo | null) => string;
   openTerminalTab: (repo?: RegisteredRepo) => string;
+  focusTerminalSession: (sessionName: string) => boolean;
+  openAttachedTerminalSession: (session: WorkspaceAttachedTerminalSession, repo: RegisteredRepo | null) => string;
   openHistoryChat: (
     historyTabId: string,
     title: string,
