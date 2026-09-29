@@ -19,7 +19,7 @@ import {
 import {
   createToolCallTracker, parseOrchestratorTurnUsage,
   processStreamEvent,
-  type OrchestratorEvent, type OrchestratorTurnUsage,
+  type OrchestratorEvent,
 } from '@/lib/lane/orchestrator-stream-events';
 import { claudeEffortFlagValue, type ThinkingEffort } from '@/lib/orchestrator/thinking-effort';
 import { getRuntime, type RuntimeSession } from '@/lib/runtimes';
@@ -32,6 +32,11 @@ import { assertOrchestratorRepoPath } from '@/lib/lane/repo-preflight';
 import { buildOrchestratorSystemPrompt } from '@/lib/lane/orchestrator-system-prompt';
 import { fingerprintMcpConfig, firstMcpConfigDivergence } from '@/lib/lane/orchestrator-mcp-fingerprint';
 import { buildOrchestratorArgs } from '@/lib/lane/orchestrator-spawn-args';
+import type {
+  OrchestratorActiveTurn,
+  OrchestratorProcConfig,
+  WarmState,
+} from './orchestrator-session-state';
 import {
   orchestratorPromptFingerprint,
   readDeliveredOrchestratorPrompt,
@@ -552,51 +557,6 @@ function attachmentToImageBlock(att: { dataUri: string }): { type: 'image'; sour
 
 const IDLE_REAP_MS = 30 * 60_000;
 const MAX_LIVE_PROCS = 4; // mirror the Brain warm-pool cap
-interface OrchestratorProcConfig {
-  cwd: string;
-  model: string;
-  permissionMode: OrchestratorPermissionMode;
-  toolProfile: ToolProfile;
-  effort: ThinkingEffort;
-  mcpConfigPath: string;
-  mcpConfigHash: string;
-  mcpConfigMaterial: string;
-  modelSource: string;
-  carrierFingerprint: string;
-}
-interface OrchestratorActiveTurn {
-  onEvent: (e: OrchestratorEvent) => void;
-  captureEvent: (e: OrchestratorEvent) => void;
-  resolve: (outcome: FalseDispatchAttemptResult) => void;
-  reject: (err: Error) => void;
-  timeout: ReturnType<typeof setTimeout>;
-  abortSignal: AbortSignal | null;
-  abortListener: (() => void) | null;
-  settled: boolean;
-  toolTracker: ReturnType<typeof createToolCallTracker>;
-  turnSessionId: string | null;
-  cost: number | null;
-  usage?: OrchestratorTurnUsage | null;
-  lastAssistantText: string;
-  sawToolUseAfterText: boolean;
-  launchAgentCallCount: number;
-  crashRecord: OrchestratorTurnRecord | null;
-  stopCrashTail: (() => void) | null;
-  /** Prompt fingerprint the Claude session holds once this turn completes (#2904). */
-  promptFingerprint: string | null;
-}
-interface WarmState {
-  procConfig: OrchestratorProcConfig | null;
-  activeTurn: OrchestratorActiveTurn | null;
-  idleTimer: ReturnType<typeof setTimeout> | null;
-  stdoutLineBuffer: string;
-  stderrBuffer: string;
-  lastUsedAt: number;
-  crashStdoutPath: string | null;
-  crashStderrPath: string | null;
-  /** Prompt fingerprint the live Claude session holds; null when unknown (#2904). */
-  sessionPrompt: string | null;
-}
 const warmStates = new Map<string, WarmState>();
 
 export function getWarmState(sessionName: string): WarmState {
@@ -796,10 +756,8 @@ function handleClaudeJsonLine(session: OrchestratorSession, w: WarmState, line: 
   processStreamEvent(raw, turn.captureEvent, (id) => { turn.turnSessionId = id; }, (c) => { turn.cost = c; }, turn.toolTracker);
   if (raw.type === 'result') {
     turn.usage = parseOrchestratorTurnUsage(raw);
-    const subtype = typeof raw.subtype === 'string' ? raw.subtype : '';
-    const successfulResult = raw.is_error !== true && !subtype.startsWith('error_');
-    // The ONLY settle that passes successfulResult — the model ran the turn to
-    // successful completion itself, so its claims are its own and the detector applies.
+    const successfulResult = raw.is_error !== true && !(typeof raw.subtype === 'string' && raw.subtype.startsWith('error_'));
+    // Only a successful result drives false-dispatch checks and prompt delivery.
     settleOrchestratorTurn(session, w, null, successfulResult);
     return false;
   }
