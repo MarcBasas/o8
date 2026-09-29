@@ -122,9 +122,9 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function sshArgs(profile: MachineProfile, command: string[]): string[] {
+function sshArgs(profile: MachineProfile, command: string[], interactive = false): string[] {
   return [
-    '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
+    interactive ? '-tt' : '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
     '-o', 'ConnectTimeout=8', '-o', 'NumberOfPasswordPrompts=0',
     ...(profile.sshConfig ? ['-F', profile.sshConfig] : []),
     '-p', String(profile.port), '--', profile.target,
@@ -136,9 +136,14 @@ function remoteCommand(profile: MachineProfile, sub: string, rest: string[], mod
   return [profile.remoteCli, 'terminal', sub, ...rest, ...(mode.human ? ['--human'] : [])];
 }
 
-async function sshRun(profile: MachineProfile, command: string[], stream = false, timeoutMs = 15_000): Promise<{ code: number; output: string; error: string }> {
+async function sshRun(profile: MachineProfile, command: string[], stream = false, timeoutMs = 15_000, interactive = false): Promise<{ code: number; output: string; error: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn('ssh', sshArgs(profile, command), { stdio: ['pipe', 'pipe', 'pipe'] });
+    // Let OpenSSH own the local PTY for human control. It propagates the
+    // terminal size and SIGWINCH to the remote PTY; piping it through Node
+    // would freeze remote full-screen programs at the CLI's fallback size.
+    const child = spawn('ssh', sshArgs(profile, command, interactive), {
+      stdio: interactive ? ['inherit', 'inherit', 'pipe'] : ['pipe', 'pipe', 'pipe'],
+    });
     let output = '';
     let error = '';
     let settled = false;
@@ -151,7 +156,7 @@ async function sshRun(profile: MachineProfile, command: string[], stream = false
       if (timer) clearTimeout(timer);
       process.off('SIGINT', stop);
       process.off('SIGTERM', stop);
-      if (stream) process.stdin.unpipe(child.stdin);
+      if (stream && !interactive && child.stdin) process.stdin.unpipe(child.stdin);
       if (timedOut) {
         reject(new CliError('machine_timeout', `SSH machine ${profile.label} did not respond in time.`, EXIT.CONNECTION_REFUSED));
       } else if (overLimit) {
@@ -167,20 +172,21 @@ async function sshRun(profile: MachineProfile, command: string[], stream = false
     process.on('SIGTERM', stop);
     child.on('error', () => finish(-1));
     child.on('close', (code) => finish(code ?? -1));
-    child.stdin.on('error', () => {}); // The remote process may close before local stdin reaches EOF.
+    child.stdin?.on('error', () => {}); // The remote process may close before local stdin reaches EOF.
     child.stderr.on('data', (chunk: Buffer) => {
       error += chunk.toString();
       if (error.length > 4_096) error = error.slice(0, 4_096);
     });
-    child.stdout.on('data', (chunk: Buffer) => {
+    child.stdout?.on('data', (chunk: Buffer) => {
       if (stream) process.stdout.write(chunk);
       else {
         output += chunk.toString();
         if (output.length > MAX_OUTPUT) { overLimit = true; child.kill('SIGTERM'); }
       }
     });
-    if (stream) process.stdin.pipe(child.stdin);
-    else child.stdin.end();
+    if (stream) {
+      if (!interactive && child.stdin) process.stdin.pipe(child.stdin);
+    } else child.stdin?.end();
     if (!stream) timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); }, timeoutMs);
   });
 }
@@ -302,15 +308,13 @@ export async function runRemoteTerminal(mode: OutputMode, sub: string, rest: str
   requireOperator();
   const profile = exactProfile(readCatalog(), machineKey);
   if (!profile.enabled) throw new CliError('machine_disabled', 'That SSH machine is disabled.', EXIT.CONFLICT);
-  if (mode.human && sub === 'control') {
-    throw new CliError('invalid_args', 'Remote terminal control currently uses the JSON stream; omit --human.', EXIT.INVALID_ARGS);
-  }
   const stream = sub === 'observe' || sub === 'control';
+  const interactive = sub === 'control' && mode.human;
   const requestedTimeout = sub === 'wait' && rest.includes('--timeout')
     ? Number(rest[rest.indexOf('--timeout') + 1]) : 30_000;
   const timeoutMs = sub === 'wait' && Number.isSafeInteger(requestedTimeout)
     && requestedTimeout >= 1 && requestedTimeout <= 600_000 ? requestedTimeout + 10_000 : 15_000;
-  const result = await sshRun(profile, remoteCommand(profile, sub, rest, stream ? mode : { ...mode, human: false }), stream, timeoutMs);
+  const result = await sshRun(profile, remoteCommand(profile, sub, rest, stream ? mode : { ...mode, human: false }), stream, timeoutMs, interactive);
   if (result.code !== 0) {
     if (sub === 'wait' && result.code === EXIT.CONFLICT) {
       try {

@@ -43,6 +43,7 @@ beforeAll(async () => {
 for argument in "$@"; do last="$argument"; done
 case " $* " in *downhost*) echo 'offline' >&2; exit 255;; esac
 case " $* " in *emptyhost*) exit 0;; esac
+case " $* " in *--human*) case " $* " in *' -tt '*) :;; *) echo 'missing remote PTY' >&2; exit 44;; esac;; esac
 exec /bin/sh -c "$last"
 `);
   writeFileSync(remote, `#!/bin/sh
@@ -50,7 +51,10 @@ case "$2" in
   list) echo '{"schema":"o8/cli/terminal.list/v1","sessions":[{"id":"session-a"}]}' ;;
   show) echo '{"schema":"o8/cli/terminal.show/v1","text":"remote-only","session":{"id":"session-a"}}' ;;
   wait) case "$*" in *NEVER*) echo '{"schema":"o8/cli/error/v1","error":{"code":"wait_timeout","message":"Remote wait timed out."}}' >&2; exit 5;; esac; echo '{"schema":"o8/cli/terminal.wait/v1","id":"session-a","match":"remote","line":"remote-match","source":"stream","waitedMs":1}' ;;
-  control) echo '{"schema":"o8/cli/terminal.control/v1","event":"attached","id":"session-a"}'; read -r frame; echo '{"schema":"o8/cli/terminal.control/v1","event":"data","id":"session-a","text":"remote-reply"}' ;;
+  control) case "$*" in
+    *--human*) printf 'remote human ready\r\n'; IFS= read -r frame; printf 'remote-human:%s\n' "$frame" ;;
+    *) echo '{"schema":"o8/cli/terminal.control/v1","event":"attached","id":"session-a"}'; read -r frame; echo '{"schema":"o8/cli/terminal.control/v1","event":"data","id":"session-a","text":"remote-reply"}' ;;
+  esac ;;
   *) exit 4 ;;
 esac
 `);
@@ -94,6 +98,10 @@ describe('saved SSH machine CLI through the bundled process and persisted catalo
     const controlled = run(['terminal', 'control', 'session-a', '--machine', 'Build'], '{"type":"input","data":"hello"}\n');
     expect(controlled.status).toBe(0);
     expect(controlled.stdout).toContain('remote-reply');
+    const humanControl = run(['--human', 'terminal', 'control', 'session-a', '--machine', 'Build'], 'hello\n');
+    expect(humanControl.status, humanControl.stderr).toBe(0);
+    expect(humanControl.stdout).toContain('remote human ready\r\n');
+    expect(humanControl.stdout).toContain('remote-human:hello');
 
     const malicious = run(['terminal', 'show', `session-a'; touch ${marker}; echo '`, '--machine', 'Build']);
     expect(malicious.status).toBe(0);
