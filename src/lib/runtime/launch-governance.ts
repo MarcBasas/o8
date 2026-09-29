@@ -29,7 +29,22 @@ export async function settleRuntimeLaunchGovernance(input: {
   repoPath: string;
 }): Promise<RuntimeLaunchResult> {
   const { payload, runtime, runtimeId, prompt, result, launchWorktree, projectId, cwd, repoPath } = input;
-  if (!result.sessionKey) throw new Error(result.note || `Unable to launch ${runtimeId}.`);
+  if (!result.sessionKey) {
+    if (!result.ok && result.sideEffect === 'none') {
+      return {
+        ok: false,
+        runtime: runtimeId,
+        clientMutationId: payload.clientMutationId,
+        surfaceId: '',
+        note: result.note || `Unable to launch ${runtimeId}.`,
+        cwd,
+        repoPath,
+        worktree: launchWorktree?.worktree ?? null,
+        laneId: payload.existingLaneId ?? null,
+      };
+    }
+    throw new Error(result.note || `Unable to launch ${runtimeId}.`);
+  }
   if (!result.ok) {
     const failedResult: RuntimeLaunchResult = {
       ok: false,
