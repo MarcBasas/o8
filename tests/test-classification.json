@@ -20,7 +20,8 @@
       "reasons": [
         "child-process",
         "executable-fixture",
-        "git-cli"
+        "git-cli",
+        "network-listener"
       ]
     },
     {
