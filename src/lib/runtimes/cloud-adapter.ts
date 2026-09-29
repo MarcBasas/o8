@@ -34,6 +34,7 @@ import {
   queueJobControl,
   readSessionJobEvents,
 } from '@/lib/cloud/job-queue';
+import { DEFAULT_CLOUD_TEAM_ID } from '@/lib/cloud/team';
 import { randomUUID } from 'node:crypto';
 import { resolveCloudRemoteSource } from '@/lib/cloud/remote-source';
 
@@ -62,7 +63,7 @@ const RUNTIME_ID = 'cloud' as const;
  * constant here; when teams show up in the dispatch flow (separate issue),
  * the LaunchOptions will carry a teamId and we'll read from that instead.
  */
-const DEFAULT_TEAM_ID = 'team_default';
+const DEFAULT_TEAM_ID = DEFAULT_CLOUD_TEAM_ID;
 
 function sessionKeyFor(jobId: string): string {
   return `${RUNTIME_ID}:${jobId}`;
