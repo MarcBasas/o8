@@ -208,6 +208,7 @@ export interface CloudJobStore {
   cancel(teamId: string, jobId: string, nowMs?: number): CloudJob | undefined;
   get(teamId: string, jobId: string): CloudJob | undefined;
   getLatestForSession(teamId: string, sessionId: string): CloudJob | undefined;
+  getLatestForPacket(teamId: string, packetId: string): CloudJob | undefined;
   list(teamId: string, limit?: number): CloudJob[];
   readEvents(teamId: string, jobId: string, sinceId?: number, limit?: number): CloudJobEvent[];
   readSessionEvents(teamId: string, sessionId: string, sinceId?: number, limit?: number): CloudJobEvent[];
