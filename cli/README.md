@@ -31,6 +31,9 @@ JSON to stdout is the default; pass `--human` for ANSI-formatted output.
 | `o8 mission stop --mission <id>` | Interrupt and hold every packet in a mission, then print per-packet results |
 | `o8 run stop <runId>` | Stop an o8-managed run listed by `o8 run --list` |
 | `o8 run --last` | Show the latest run's command, start time, durable exit receipt, and retained log path |
+| `o8 terminal list` | List live dashboard shell IDs, including detached sessions |
+| `o8 terminal show <id> [--lines N]` | Read up to 1000 lines from an existing dashboard shell |
+| `o8 terminal observe <id>` | Stream an existing shell read-only; `--human` prints terminal text |
 | `o8 packet log <event>` | (Phase-1 stub) — will append a structured lane event once the backend route lands |
 
 ## Configuration
@@ -50,6 +53,7 @@ Resolution order:
 4. Fallback port `3001`, no token (dev workflow on loopback)
 
 Loopback callers don't need a token; cross-origin callers do.
+Terminal commands require the local operator token even on loopback; worker credentials cannot observe operator shells.
 
 ## Exit codes
 
