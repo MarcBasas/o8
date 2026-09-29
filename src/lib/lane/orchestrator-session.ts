@@ -32,6 +32,8 @@ import { assertOrchestratorRepoPath } from '@/lib/lane/repo-preflight';
 import { buildOrchestratorSystemPrompt } from '@/lib/lane/orchestrator-system-prompt';
 import { fingerprintMcpConfig, firstMcpConfigDivergence } from '@/lib/lane/orchestrator-mcp-fingerprint';
 import { buildOrchestratorArgs } from '@/lib/lane/orchestrator-spawn-args';
+import { detectPermissionRequest, missingClaudeResumeError } from './orchestrator-session-predicates';
+export { detectPermissionRequest } from './orchestrator-session-predicates';
 import {
   isFalseDispatchTurn,
   runTurnWithFalseDispatchRetry,
@@ -447,7 +449,7 @@ export function reloadOrchestratorSession(repoPath: string, threadId?: string | 
   const session = sessions.get(sessionName);
   // MCP-config change → recycle the resident proc so the next turn spawns with
   // the new config (a resident proc bakes config at spawn).
-  if (session?.proc) killOrchestratorProc(session, getWarmState(sessionName));
+  if (session?.proc) killOrchestratorProc(session, getWarmState(sessionName), true);
   return {
     repoPath: normalizedRepoPath,
     sessionName,
@@ -585,13 +587,15 @@ interface WarmState {
   lastUsedAt: number;
   crashStdoutPath: string | null;
   crashStderrPath: string | null;
+  resumeAfterKill: boolean;
+  resumeUnavailable: boolean;
 }
 const warmStates = new Map<string, WarmState>();
 
 export function getWarmState(sessionName: string): WarmState {
   let w = warmStates.get(sessionName);
   if (!w) {
-    w = { procConfig: null, activeTurn: null, idleTimer: null, stdoutLineBuffer: '', stderrBuffer: '', lastUsedAt: Date.now(), crashStdoutPath: null, crashStderrPath: null };
+    w = { procConfig: null, activeTurn: null, idleTimer: null, stdoutLineBuffer: '', stderrBuffer: '', lastUsedAt: Date.now(), crashStdoutPath: null, crashStderrPath: null, resumeAfterKill: false, resumeUnavailable: false };
     warmStates.set(sessionName, w);
   }
   return w;
@@ -624,15 +628,15 @@ function scheduleIdleReap(session: OrchestratorSession, w: WarmState): void {
   if (session.status === 'dead' || !session.proc) return;
   w.idleTimer = setTimeout(() => {
     console.log(`[orchestrator-session] idle-reap ${session.sessionName}`);
-    killOrchestratorProc(session, w);
+    killOrchestratorProc(session, w, true);
   }, IDLE_REAP_MS);
 }
 
-/** SIGTERM (then SIGKILL) the resident proc; the session recycles next turn. */
-function killOrchestratorProc(session: OrchestratorSession, w: WarmState): void {
+function killOrchestratorProc(session: OrchestratorSession, w: WarmState, resumeSession = false): void {
   clearIdleTimer(w);
   const proc = session.proc;
   session.proc = null;
+  w.resumeAfterKill = resumeSession;
   w.procConfig = null;
   w.crashStdoutPath = null;
   w.crashStderrPath = null;
@@ -661,30 +665,8 @@ function reapIdleForCapacity(exceptSessionName: string): void {
   }
   if (lru) {
     console.log(`[orchestrator-session] MAX_LIVE (${MAX_LIVE_PROCS}) — reaping idle ${lru.session.sessionName}`);
-    killOrchestratorProc(lru.session, lru.w);
+    killOrchestratorProc(lru.session, lru.w, true);
   }
-}
-
-/** ExitPlanMode / can_use_tool / control_request — the escalate-to-execute gate
- *  that a resident PLAN-mode proc must never get answered. */
-const PERMISSION_TOOL_NAMES = new Set(['ExitPlanMode', 'exit_plan_mode', 'permission_request', 'request_permission']);
-export function detectPermissionRequest(raw: Record<string, unknown>): boolean {
-  const type = typeof raw.type === 'string' ? raw.type : '';
-  if (type === 'can_use_tool' || type === 'control_request' || type === 'permission_request') return true;
-  const bareName = typeof raw.name === 'string' ? raw.name
-    : typeof raw.tool_name === 'string' ? raw.tool_name
-      : typeof raw.tool === 'string' ? raw.tool : '';
-  if (bareName && PERMISSION_TOOL_NAMES.has(bareName)) return true;
-  const block = raw.content_block as Record<string, unknown> | undefined;
-  if (block && block.type === 'tool_use' && typeof block.name === 'string' && PERMISSION_TOOL_NAMES.has(block.name)) return true;
-  const content = (raw.message as Record<string, unknown> | undefined)?.content;
-  if (Array.isArray(content)) {
-    for (const b of content) {
-      const bb = b as Record<string, unknown> | null;
-      if (bb && bb.type === 'tool_use' && typeof bb.name === 'string' && PERMISSION_TOOL_NAMES.has(bb.name)) return true;
-    }
-  }
-  return false;
 }
 
 /** Settle the active turn — emit `done` (+ an error event on a bad crash), run
@@ -752,8 +734,8 @@ function settleOrchestratorTurn(
   const done: Extract<OrchestratorEvent, { type: 'done' }> = {
     type: 'done', sessionId: turn.turnSessionId, cost: turn.cost, ...(turn.usage ? { usage: turn.usage } : {}),
   };
-  if (!falseDispatch) turn.onEvent(done);
-  if (error) turn.onEvent({ type: 'error', error: error.message });
+  if (!falseDispatch && !w.resumeUnavailable) turn.onEvent(done);
+  if (error && !w.resumeUnavailable) turn.onEvent({ type: 'error', error: error.message });
 
   if ((session.proc || hadCrashRecord) && session.status !== 'dead') {
     session.status = 'ready';
@@ -777,6 +759,12 @@ function handleClaudeJsonLine(session: OrchestratorSession, w: WarmState, line: 
 
   const turn = w.activeTurn;
   if (!turn) return true; // stray output between turns
+  const resumeError = missingClaudeResumeError(raw, session.claudeSessionId);
+  if (resumeError) {
+    w.resumeUnavailable = true;
+    settleOrchestratorTurn(session, w, new Error(resumeError));
+    return false;
+  }
   processStreamEvent(raw, turn.captureEvent, (id) => { turn.turnSessionId = id; }, (c) => { turn.cost = c; }, turn.toolTracker);
   if (raw.type === 'result') {
     turn.usage = parseOrchestratorTurnUsage(raw);
@@ -928,6 +916,7 @@ function spawnOrchestratorProc(session: OrchestratorSession, w: WarmState, confi
     discardOrchestratorTurnRecord(updated);
   }
   session.proc = proc;
+  w.resumeAfterKill = false;
   w.procConfig = config;
   w.stdoutLineBuffer = '';
   w.stderrBuffer = '';
@@ -961,12 +950,12 @@ export async function sendToOrchestrator(
     await waitForSessionIdle(session, PREEMPT_SETTLE_MS);
   }
 
-  // #457 — Auto-recover dead sessions by creating a fresh one. A SIGTERM'd turn
-  // exits non-zero → 'dead', so the settle wait above commonly lands here.
+  // #457/#2909 — Resume after safe recycles; unexpected exits start fresh.
   if (session.status === 'dead') {
     console.log(`[orchestrator-session] Auto-recovering dead session ${session.sessionName}`);
     session.status = 'ready';
-    session.claudeSessionId = null;
+    if (!w.resumeAfterKill) session.claudeSessionId = null;
+    w.resumeAfterKill = false;
     session.proc = null;
     w.procConfig = null;
   }
@@ -977,6 +966,7 @@ export async function sendToOrchestrator(
   if (session.status === 'busy') {
     throw new Error('Orchestrator session is busy');
   }
+  w.resumeUnavailable = false;
 
   // #1551 — preflight the repo path before ANY per-turn work (MCP config,
   // warm-proc spawn). Missing folder OR non-git folder fails with a
@@ -1024,12 +1014,11 @@ export async function sendToOrchestrator(
     carrierFingerprint: carrier.fingerprint,
   };
 
-  // Recycle the resident proc when its baked config no longer matches (model /
-  // permission mode / tool profile / effort / MCP-config content change).
+  // Recycle when the resident proc's baked config changes.
   if (session.proc && !procConfigMatches(w.procConfig, desiredConfig)) {
     const divergence = firstProcConfigDivergence(w.procConfig, desiredConfig);
     console.log(`[orchestrator-session] recycle ${session.sessionName} — config changed at ${divergence}`);
-    killOrchestratorProc(session, w);
+    killOrchestratorProc(session, w, true);
   }
 
   // Spawn a fresh proc when there's no warm one (first turn / after recycle).
@@ -1157,18 +1146,17 @@ export async function sendToOrchestrator(
         });
       }
 
-      // #624 — User interrupt. Kills the resident proc (sacrificed for the
-      // interrupt; the next turn spawns cold) and settles this turn.
+      // #624 — User interrupt settles this turn and recycles the resident proc.
       if (options.signal) {
         if (options.signal.aborted) {
           settleOrchestratorTurn(session, w, null);
-          killOrchestratorProc(session, w);
+          killOrchestratorProc(session, w, true);
           return;
         }
         turn.abortListener = () => {
           console.log(`[orchestrator-session] User interrupt — killing ${session.sessionName}`);
           settleOrchestratorTurn(session, w, null);
-          killOrchestratorProc(session, w);
+          killOrchestratorProc(session, w, true);
         };
         options.signal.addEventListener('abort', turn.abortListener, { once: true });
       }
@@ -1188,5 +1176,13 @@ export async function sendToOrchestrator(
     });
   };
 
-  return runTurnWithFalseDispatchRetry({ message, onEvent, runAttempt });
+  await runTurnWithFalseDispatchRetry({ message, onEvent, runAttempt });
+  if (!w.resumeUnavailable) return;
+  w.resumeUnavailable = false;
+  requestOrchestratorSessionReset(session.repoPath, session.threadId);
+  onEvent({
+    type: 'turn_retry', attempt: 2, reason: 'resume-unavailable',
+    notice: 'Claude could not load the saved session. Starting a new conversation and retrying your message once.',
+  });
+  return sendToOrchestrator(session, message, onEvent, options);
 }
