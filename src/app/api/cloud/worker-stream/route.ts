@@ -20,6 +20,7 @@ import { NextResponse } from 'next/server';
 import { buildErrorPayload } from '@/lib/api/error-format';
 import { verifyCloudWorkerKey } from '@/lib/cloud/worker-auth';
 import { appendJobEvent } from '@/lib/cloud/job-queue';
+import { recordCloudWorkerPresence } from '@/lib/cloud/worker-presence';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -113,6 +114,8 @@ export async function POST(request: Request) {
         { status: 409, headers: NO_STORE_HEADERS },
       );
     }
+
+    recordCloudWorkerPresence({ teamId: auth.teamId, keyId: auth.keyId, workerId });
 
     return NextResponse.json(
       {
