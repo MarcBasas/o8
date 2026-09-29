@@ -55,7 +55,9 @@ import {
   buildNewLlmChatTab,
   buildPersistedState,
   computeCheckpointRestore,
+  deferRemoteTerminalLaunch,
   flushPendingCliCommands,
+  flushQueuedRemoteLaunches,
   isAutoArchiveEligible,
   resolveRunCommandTarget,
   observeXtermHelperNames,
@@ -146,6 +148,7 @@ export function useWorkspaceTerminalController(
   const tabsRef = useRef<TerminalTab[]>([]);
   const panelRefs = useRef<Map<string, XtermPanelHandle>>(new Map());
   const pendingCliCommands = useRef<Map<string, string>>(new Map());
+  const queuedRemoteLaunchesRef = useRef<Map<string, string>>(new Map());
   const pendingRequestRef = useRef<Map<string, string>>(new Map());
   const pendingSessionsRef = useRef<Set<string>>(new Set());
   const restoredRef = useRef(false);
@@ -409,6 +412,7 @@ export function useWorkspaceTerminalController(
   }, [persistTabsNow]);
 
   const requestTerminalForTab = useCallback((tabId: string, command: string | undefined, caller: TerminalRequestCaller) => {
+    if (deferRemoteTerminalLaunch(tabsRef.current, queuedRemoteLaunchesRef.current, tabId, command, termWsConnectedRef.current)) return;
     const requestId = `workspace-${tabId}-${Date.now()}`;
     logTerminalBench('terminal-create-requested', {
       tabId,
@@ -842,19 +846,22 @@ export function useWorkspaceTerminalController(
   }, [applyPersistedState, autoCreateDefaultTab, createDefaultChatTab, createInitialChatTabs, createDefaultShellTab, defaultTab, requestTerminalForTab, restoreKey, splitCreated, stateScope]);
 
   useEffect(() => {
-    if (!termWsConnected || !restoreSettledRef.current || initialTerminalBootstrapRef.current) return;
-    initialTerminalBootstrapRef.current = true;
-    for (const tab of tabsRef.current) {
-      if (tab.kind !== 'terminal') continue;
-      if (tab.tmuxSession) {
-        sendTerminalAttach(tab.tmuxSession, 120, 30, tab.readOnly);
-        continue;
+    if (!termWsConnected || !restoreSettledRef.current) return;
+    if (!initialTerminalBootstrapRef.current) {
+      initialTerminalBootstrapRef.current = true;
+      for (const tab of tabsRef.current) {
+        if (tab.kind !== 'terminal') continue;
+        if (tab.tmuxSession) {
+          sendTerminalAttach(tab.tmuxSession, 120, 30, tab.readOnly);
+          continue;
+        }
+        if (tab.remoteMachine) continue;
+        const restoreCommand = tab.repo?.localPath ? `cd ${shellQuote(tab.repo.localPath)}` : undefined;
+        requestTerminalForTab(tab.id, restoreCommand, 'ws-bootstrap');
       }
-      if (tab.remoteMachine) continue;
-      const restoreCommand = tab.repo?.localPath ? `cd ${shellQuote(tab.repo.localPath)}` : undefined;
-      requestTerminalForTab(tab.id, restoreCommand, 'ws-bootstrap');
     }
-  }, [requestTerminalForTab, sendTerminalAttach, termWsConnected]);
+    flushQueuedRemoteLaunches(tabsRef.current, queuedRemoteLaunchesRef.current, requestTerminalForTab);
+  }, [requestTerminalForTab, restoreCompletedKey, sendTerminalAttach, termWsConnected]);
 
   useEffect(() => {
     if (tabs.length > 0 || !termWsConnected || splitCreated || !primaryRestoreSettled) return;

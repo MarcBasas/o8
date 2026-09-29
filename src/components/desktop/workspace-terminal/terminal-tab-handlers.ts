@@ -572,6 +572,25 @@ export function isTabFinishedForCleanup(tab: TerminalTab): boolean {
 /*  flushPendingCliCommands                                            */
 /* ------------------------------------------------------------------ */
 
+export function deferRemoteTerminalLaunch(
+  tabs: TerminalTab[], queued: Map<string, string>, tabId: string,
+  command: string | undefined, connected: boolean,
+): boolean {
+  if (!command || connected || !tabs.some((tab) => tab.id === tabId && tab.remoteMachine)) return false;
+  queued.set(tabId, command);
+  return true;
+}
+
+export function flushQueuedRemoteLaunches(
+  tabs: TerminalTab[], queued: Map<string, string>,
+  launch: (tabId: string, command: string, caller: 'ws-bootstrap') => void,
+): void {
+  for (const [tabId, command] of queued) {
+    queued.delete(tabId);
+    if (tabs.some((tab) => tab.id === tabId && tab.remoteMachine && !tab.tmuxSession)) launch(tabId, command, 'ws-bootstrap');
+  }
+}
+
 export function flushPendingCliCommands(
   tabs: TerminalTab[],
   pendingCliCommands: Map<string, string>,

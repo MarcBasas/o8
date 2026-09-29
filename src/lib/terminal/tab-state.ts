@@ -234,7 +234,8 @@ function isClearlyDeadTab(tab: PersistedTab): boolean {
   if (kind === 'terminal') {
     const hasTmuxSession = Boolean(tab.tmuxSession?.trim());
     const hasRepoPath = Boolean(tab.repoPath?.trim());
-    return !hasTmuxSession && !hasRepoPath;
+    const hasRemoteMachine = Boolean(tab.remoteMachine?.id && tab.remoteMachine.sessionId);
+    return !hasTmuxSession && !hasRepoPath && !hasRemoteMachine;
   }
 
   return false;

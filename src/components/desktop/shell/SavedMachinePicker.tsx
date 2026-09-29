@@ -22,7 +22,15 @@ export function SavedMachinePicker({ workspaceId, onClose }: { workspaceId: stri
   const firstButtonRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const requestRef = useRef(0);
+  const openRequestRef = useRef(0);
+  const openingRef = useRef(false);
   const selectedRef = useRef<Machine | null>(null);
+  const closePicker = useCallback(() => {
+    requestRef.current += 1;
+    openRequestRef.current += 1;
+    openingRef.current = false;
+    onClose();
+  }, [onClose]);
 
   const refreshMachines = useCallback(async () => {
     const request = ++requestRef.current;
@@ -54,7 +62,10 @@ export function SavedMachinePicker({ workspaceId, onClose }: { workspaceId: stri
     setSelected(machine);
     setSessions([]);
     setError(null);
-    if (!machine.enabled) return;
+    if (!machine.enabled) {
+      setBusy(null);
+      return;
+    }
     setBusy('sessions');
     try {
       const payload = await readResponse<{ sessions: Session[] }>(await fetch(`/api/panel/ssh-machines?machine=${encodeURIComponent(machine.id)}`, { cache: 'no-store' }));
@@ -67,7 +78,9 @@ export function SavedMachinePicker({ workspaceId, onClose }: { workspaceId: stri
   }, []);
 
   const openSession = useCallback(async (session: Session) => {
-    if (!selected) return;
+    if (!selected || openingRef.current) return;
+    const request = ++openRequestRef.current;
+    openingRef.current = true;
     setBusy('opening');
     setError(null);
     try {
@@ -76,17 +89,25 @@ export function SavedMachinePicker({ workspaceId, onClose }: { workspaceId: stri
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ machineId: selected.id, sessionId: session.id }),
       }));
+      if (request !== openRequestRef.current) return;
       window.dispatchEvent(new CustomEvent('o8:request-open-remote-terminal', {
         detail: { workspaceId, command: payload.command, machineId: payload.machine.id, machineLabel: payload.machine.label, sessionId: payload.sessionId },
       }));
-      onClose();
+      closePicker();
     } catch (cause) {
+      if (request !== openRequestRef.current) return;
       setError(cause instanceof Error ? cause.message : 'Could not open this terminal.');
       setBusy(null);
+      openingRef.current = false;
     }
-  }, [onClose, selected, workspaceId]);
+  }, [closePicker, selected, workspaceId]);
 
   useEffect(() => { void refreshMachines(); }, [refreshMachines]);
+  useEffect(() => () => {
+    requestRef.current += 1;
+    openRequestRef.current += 1;
+    openingRef.current = false;
+  }, []);
   useEffect(() => { firstButtonRef.current?.focus(); }, []);
   useEffect(() => {
     setWaitStage(0);
@@ -97,7 +118,7 @@ export function SavedMachinePicker({ workspaceId, onClose }: { workspaceId: stri
   }, [busy]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { onClose(); return; }
+      if (event.key === 'Escape') { closePicker(); return; }
       if (event.key !== 'Tab') return;
       const buttons = Array.from(dialogRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? []);
       if (buttons.length === 0) return;
@@ -108,12 +129,12 @@ export function SavedMachinePicker({ workspaceId, onClose }: { workspaceId: stri
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [closePicker]);
 
   return createPortal(
     <div
       role="presentation"
-      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+      onMouseDown={(event) => { if (event.target === event.currentTarget) closePicker(); }}
       style={{ position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, zIndex: 150, display: 'flex', justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0, 0, 0, 0.38)' }}
     >
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Saved machines" data-no-drag style={{ width: 'min(620px, calc(100vw - 32px))', maxHeight: 'min(680px, calc(100vh - 40px))', overflow: 'auto', scrollbarWidth: 'none', borderRadius: 14, borderWidth: 1, borderStyle: 'solid', borderColor: 'var(--t-divider)', backgroundColor: 'var(--t-popover-surface)', boxShadow: '0 18px 60px rgba(0, 0, 0, 0.3)', color: 'var(--t-text)', fontFamily: 'var(--font-sans-system)' }}>
@@ -122,14 +143,14 @@ export function SavedMachinePicker({ workspaceId, onClose }: { workspaceId: stri
             <div style={{ fontSize: 16, fontWeight: 300 }}>Saved machines</div>
             <div style={{ fontSize: 12, color: 'var(--t-text-muted)', marginTop: 4 }}>Open an existing terminal on a trusted SSH host.</div>
           </div>
-          <button ref={firstButtonRef} type="button" onClick={onClose} aria-label="Close saved machines" style={{ borderWidth: 0, backgroundColor: 'transparent', color: 'var(--t-text-secondary)', cursor: 'pointer', paddingTop: 8, paddingBottom: 8, paddingLeft: 8, paddingRight: 8 }}>
+          <button ref={firstButtonRef} type="button" onClick={closePicker} aria-label="Close saved machines" style={{ borderWidth: 0, backgroundColor: 'transparent', color: 'var(--t-text-secondary)', cursor: 'pointer', paddingTop: 8, paddingBottom: 8, paddingLeft: 8, paddingRight: 8 }}>
             <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><path d="M5 5l14 14M19 5L5 19" /></svg>
           </button>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, 0.85fr) minmax(0, 1.15fr)', minHeight: 260 }}>
           <div style={{ borderRightWidth: 1, borderRightStyle: 'solid', borderRightColor: 'var(--t-divider)', paddingTop: 10, paddingBottom: 10, paddingLeft: 10, paddingRight: 10 }}>
             {machines.map((machine) => (
-              <button key={machine.id} type="button" onClick={() => { void selectMachine(machine); }} style={{ display: 'block', width: '100%', textAlign: 'left', paddingTop: 10, paddingBottom: 10, paddingLeft: 11, paddingRight: 11, marginBottom: 3, borderWidth: 0, borderRadius: 8, backgroundColor: selected?.id === machine.id ? 'var(--t-hover)' : 'transparent', color: 'var(--t-text)', cursor: 'pointer' }}>
+              <button key={machine.id} type="button" disabled={busy === 'opening'} onClick={() => { void selectMachine(machine); }} style={{ display: 'block', width: '100%', textAlign: 'left', paddingTop: 10, paddingBottom: 10, paddingLeft: 11, paddingRight: 11, marginBottom: 3, borderWidth: 0, borderRadius: 8, backgroundColor: selected?.id === machine.id ? 'var(--t-hover)' : 'transparent', color: 'var(--t-text)', cursor: busy === 'opening' ? 'default' : 'pointer' }}>
                 <span style={{ display: 'block', fontSize: 13, fontWeight: 300 }}>{machine.label}</span>
                 <span style={{ display: 'block', fontSize: 11, color: 'var(--t-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{machine.enabled ? machine.target : 'Disabled'}</span>
               </button>

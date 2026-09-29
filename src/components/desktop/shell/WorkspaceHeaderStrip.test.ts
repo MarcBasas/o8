@@ -149,6 +149,57 @@ describe('WorkspaceHeaderStrip session tabs (#2146)', () => {
     }
   });
 
+  it('does not open a saved-machine pane after its picker is closed mid-request', async () => {
+    const machine = { id: '12345678-1234-1234-1234-123456789abc', label: 'Studio', target: 'fixture@localhost', enabled: true };
+    let finishOpen: ((value: { ok: boolean; json: () => Promise<unknown> }) => void) | undefined;
+    const opening = new Promise<{ ok: boolean; json: () => Promise<unknown> }>((resolve) => { finishOpen = resolve; });
+    const originalFetch = globalThis.fetch;
+    Object.assign(globalThis, { fetch: vi.fn(async (input: string, init?: RequestInit) => {
+      if (init?.method === 'POST') return opening;
+      return { ok: true, json: async () => input.includes('?machine=') ? { sessions: [{ id: 'dash-1' }] } : { machines: [machine] } };
+    }) });
+    const opened: Event[] = [];
+    const onOpen = (event: Event) => opened.push(event);
+    window.addEventListener('o8:request-open-remote-terminal', onOpen);
+    try {
+      await act(async () => root.render(createElement(WorkspaceHeaderStrip, stripProps())));
+      await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Add pane (workspace)"]')?.click());
+      await act(async () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((item) => item.textContent === 'Saved machine…')?.click());
+      const dialog = document.querySelector('[role="dialog"][aria-label="Saved machines"]')!;
+      await act(async () => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Studio'))?.click());
+      await act(async () => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('dash-1'))?.click());
+      await act(async () => dialog.querySelector<HTMLButtonElement>('button[aria-label="Close saved machines"]')?.click());
+      await act(async () => finishOpen?.({ ok: true, json: async () => ({ machine: { id: machine.id, label: machine.label }, sessionId: 'dash-1', command: 'o8 machine attach fixture' }) }));
+      expect(opened).toHaveLength(0);
+    } finally {
+      window.removeEventListener('o8:request-open-remote-terminal', onOpen);
+      Object.assign(globalThis, { fetch: originalFetch });
+    }
+  });
+
+  it('clears machine loading when a disabled host replaces a pending inventory', async () => {
+    const machine = { id: '12345678-1234-1234-1234-123456789abc', label: 'Studio', target: 'fixture@localhost', enabled: true };
+    const disabled = { id: '12345678-1234-1234-1234-123456789abd', label: 'Offline', target: 'offline', enabled: false };
+    const originalFetch = globalThis.fetch;
+    Object.assign(globalThis, { fetch: vi.fn(async (input: string) => input.includes('?machine=')
+      ? new Promise(() => {})
+      : { ok: true, json: async () => ({ machines: [machine, disabled] }) }) });
+    try {
+      await act(async () => root.render(createElement(WorkspaceHeaderStrip, stripProps())));
+      await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Add pane (workspace)"]')?.click());
+      await act(async () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((item) => item.textContent === 'Saved machine…')?.click());
+      const dialog = document.querySelector('[role="dialog"][aria-label="Saved machines"]')!;
+      await act(async () => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Studio'))?.click());
+      expect(dialog.querySelector('[role="status"]')?.textContent).toContain('Connecting');
+      await act(async () => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Offline'))?.click());
+      expect(dialog.textContent).toContain('This machine is disabled.');
+      expect(dialog.querySelector('[role="status"]')).toBeNull();
+      expect(Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Refresh')?.disabled).toBe(false);
+    } finally {
+      Object.assign(globalThis, { fetch: originalFetch });
+    }
+  });
+
   it('refreshes the saved-machine catalog and clears a removed selection', async () => {
     const machine = { id: '12345678-1234-1234-1234-123456789abc', label: 'Studio', target: 'fixture@localhost', enabled: true };
     let catalog = [machine];
