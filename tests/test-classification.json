@@ -3344,6 +3344,16 @@
       ]
     },
     {
+      "path": "tests/terminal-output-wait-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "network-listener",
+        "process-signal",
+        "real-path",
+        "terminal-tool"
+      ]
+    },
+    {
       "path": "tests/terminal-rapid-generator.test.ts",
       "reasons": [
         "child-process",

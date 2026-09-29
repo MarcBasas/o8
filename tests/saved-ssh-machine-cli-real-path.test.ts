@@ -49,6 +49,7 @@ exec /bin/sh -c "$last"
 case "$2" in
   list) echo '{"schema":"o8/cli/terminal.list/v1","sessions":[{"id":"session-a"}]}' ;;
   show) echo '{"schema":"o8/cli/terminal.show/v1","text":"remote-only","session":{"id":"session-a"}}' ;;
+  wait) case "$*" in *NEVER*) echo '{"schema":"o8/cli/error/v1","error":{"code":"wait_timeout","message":"Remote wait timed out."}}' >&2; exit 5;; esac; echo '{"schema":"o8/cli/terminal.wait/v1","id":"session-a","match":"remote","line":"remote-match","source":"stream","waitedMs":1}' ;;
   control) echo '{"schema":"o8/cli/terminal.control/v1","event":"attached","id":"session-a"}'; read -r frame; echo '{"schema":"o8/cli/terminal.control/v1","event":"data","id":"session-a","text":"remote-reply"}' ;;
   *) exit 4 ;;
 esac
@@ -81,6 +82,15 @@ describe('saved SSH machine CLI through the bundled process and persisted catalo
     const shown = run(['terminal', 'show', 'session-a', '--machine', 'Build']);
     expect(shown.status).toBe(0);
     expect(JSON.parse(shown.stdout).text).toBe('remote-only');
+    const waited = run(['terminal', 'wait', 'session-a', '--match', 'remote', '--machine', 'Build']);
+    expect(waited.status).toBe(0);
+    expect(JSON.parse(waited.stdout).line).toBe('remote-match');
+    const humanWait = run(['--human', 'terminal', 'wait', 'session-a', '--match', 'remote', '--machine', 'Build']);
+    expect(humanWait.status).toBe(0);
+    expect(humanWait.stdout).toBe('remote-match\n');
+    const remoteTimeout = run(['terminal', 'wait', 'session-a', '--match', 'NEVER', '--timeout', '100', '--machine', 'Build']);
+    expect(remoteTimeout.status).toBe(5);
+    expect(JSON.parse(remoteTimeout.stderr).error.code).toBe('wait_timeout');
     const controlled = run(['terminal', 'control', 'session-a', '--machine', 'Build'], '{"type":"input","data":"hello"}\n');
     expect(controlled.status).toBe(0);
     expect(controlled.stdout).toContain('remote-reply');
