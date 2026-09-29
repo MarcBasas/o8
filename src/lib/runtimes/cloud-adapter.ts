@@ -5,9 +5,10 @@
  * outbound-only HTTPS to the o8 backend. They long-poll the job queue, pick
  * up dispatched jobs, and stream transcripts + diffs back over POST.
  *
- * This is the o8-side surface that makes the runtime dispatchable. The
- * worker CLI is a separate ship. Resume and diff retrieval stay unavailable
- * until that client can service them.
+ * This is the o8-side durable runtime surface. Mission dispatch remains
+ * gated until external worker availability is surfaced in its picker. The
+ * packaged worker lives in scripts/worker. In-flight Codex process resume is
+ * unsupported; durable transcript and diff retrieval use the job queue.
  *
  * Parallel to `codex.ts` and `claude-code.ts`. Registered under runtime id
  * `cloud` via `src/lib/runtimes/index.ts`.

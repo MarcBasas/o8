@@ -38,6 +38,11 @@ The worker stores its opaque worker ID and durable poll cursor in
 to move both this state file and per-attempt clones. Set `--worker-id <opaque-id>`
 only when the host needs a fixed external identity.
 
+The Cloud Workers settings screen lists authenticated workers seen in the last
+minute. An idle poll and an accepted event from a running job refresh the
+sighting; a revoked key disappears immediately. This shows recent contact,
+not a promise that a queued job can start or that the remote project is ready.
+
 Upgrade the o8 server and this worker together. Older worker builds using
 `/api/worker/*` are a separate, non-durable protocol and cannot consume jobs
 from `/api/cloud/*`. Existing legacy workers can finish their own jobs during
