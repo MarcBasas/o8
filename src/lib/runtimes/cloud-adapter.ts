@@ -34,6 +34,7 @@ import {
   readSessionJobEvents,
 } from '@/lib/cloud/job-queue';
 import { randomUUID } from 'node:crypto';
+import { resolveCloudRemoteSource } from '@/lib/cloud/remote-source';
 
 /**
  * Launch, discovery, transcript replay, and interrupt use the durable job
@@ -179,9 +180,19 @@ export const cloudRuntime: AgentRuntime = {
    * The SQLite insert commits before this method reports success.
    */
   async launch(opts: LaunchOptions): Promise<RuntimeActionResult> {
+    let remoteSource: Awaited<ReturnType<typeof resolveCloudRemoteSource>>;
+    try {
+      remoteSource = await resolveCloudRemoteSource(opts);
+    } catch (error) {
+      return {
+        ok: false,
+        note: error instanceof Error ? error.message : String(error),
+        sideEffect: 'none',
+      };
+    }
     try {
       const jobId = randomUUID();
-      const job = enqueueCloudJob(DEFAULT_TEAM_ID, jobId, opts);
+      const job = enqueueCloudJob(DEFAULT_TEAM_ID, jobId, { ...opts, remoteSource });
       return {
         ok: true,
         note: `Cloud job ${job.id} enqueued (cursor ${job.cursor}). Waiting for worker pickup.`,
@@ -195,10 +206,7 @@ export const cloudRuntime: AgentRuntime = {
           sessionKey: sessionKeyFor(error.activeJob.id),
         };
       }
-      return {
-        ok: false,
-        note: error instanceof Error ? error.message : String(error),
-      };
+      throw error;
     }
   },
 

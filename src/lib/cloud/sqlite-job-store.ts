@@ -426,7 +426,7 @@ export class SqliteCloudJobStore implements CloudJobStore {
         SELECT * FROM cloud_job_controls
         WHERE team_id = ? AND job_id = ?
           AND status IN ('pending', 'delivered')
-        ORDER BY sequence ASC
+        ORDER BY CASE WHEN control_type = 'abort' THEN 0 ELSE 1 END, sequence ASC
         LIMIT 1
       `).get(input.teamId, input.jobId) as CloudJobControlRow | undefined;
       if (!controlRow) return { accepted: true };

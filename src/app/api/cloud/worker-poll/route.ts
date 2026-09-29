@@ -22,6 +22,7 @@
 import { NextResponse } from 'next/server';
 import { buildErrorPayload } from '@/lib/api/error-format';
 import { verifyCloudWorkerKey } from '@/lib/cloud/worker-auth';
+import { workerLaunchPayload } from '@/lib/cloud/worker-payload';
 import {
   claimNextJob,
   cloudJobLeaseMs,
@@ -40,7 +41,9 @@ function jobPayload(job: CloudJob) {
   return {
     id: job.id,
     cursor: job.cursor,
-    launch: job.launch,
+    // The durable record keeps coordinator paths for operator views. Only the
+    // remote checkout contract and task fields cross the worker boundary.
+    launch: workerLaunchPayload(job.launch),
     enqueuedAt: job.enqueuedAt,
     claimedAt: job.claimedAt,
     claimedBy: job.claimedBy,
