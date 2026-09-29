@@ -1164,13 +1164,14 @@ export function useWorkspaceTerminalController(
     openWorkspaceLlmChatSession,
     openWorkspaceOrchestratorTab: spawnOrchestratorTab,
     openWorkspaceTerminalTab,
+    openRemoteTerminalTab,
     attachWorkspaceTerminalSession,
     openWorkspaceInspectorTab,
     persistTabsNow,
     recordTerminalActivity: terminalActivity.record,
     sendTerminalDetach,
     closeTabById: (tabId: string) => handleCloseTabRef.current(tabId),
-  }), [activeTabId, attachWorkspaceTerminalSession, handleSessionCreated, onOpenRepoDiff, onPreviewDetected, openWorkspaceCliChatSession, openWorkspaceInspectorTab, openWorkspaceLlmChatSession, openWorkspaceTerminalTab, persistTabsNow, preferredRepo, sendTerminalDetach, setActiveTabIdFromUser, spawnOrchestratorTab, stateScope, terminalActivity]);
+  }), [activeTabId, attachWorkspaceTerminalSession, handleSessionCreated, onOpenRepoDiff, onPreviewDetected, openRemoteTerminalTab, openWorkspaceCliChatSession, openWorkspaceInspectorTab, openWorkspaceLlmChatSession, openWorkspaceTerminalTab, persistTabsNow, preferredRepo, sendTerminalDetach, setActiveTabIdFromUser, spawnOrchestratorTab, stateScope, terminalActivity]);
 
   const handleRegisterRepo = useCallback((localPath: string) => {
     fetch('/api/panel/repos', {

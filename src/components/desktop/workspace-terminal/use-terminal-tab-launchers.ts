@@ -1,13 +1,6 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import { computeNewTerminalTab } from './terminal-tab-handlers';
-import type { RegisteredRepo, TerminalTab } from './types';
-
-type RemoteTerminalDetails = {
-  command: string;
-  machineId: string;
-  machineLabel: string;
-  sessionId: string;
-};
+import type { RegisteredRepo, RemoteTerminalDetails, TerminalTab } from './types';
 
 export function useTerminalTabLaunchers({
   tabsRef,

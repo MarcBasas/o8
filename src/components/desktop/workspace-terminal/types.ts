@@ -147,6 +147,13 @@ export interface TerminalTab {
   worktreePath?: string;
 }
 
+export interface RemoteTerminalDetails {
+  command: string;
+  machineId: string;
+  machineLabel: string;
+  sessionId: string;
+}
+
 export type LocalhostPreview = DetectedLocalhostPreview;
 export type { PreviewSelectionPayload };
 export type WorkspaceChatRuntime = OrchestratorRuntime | 'chat';
@@ -198,6 +205,7 @@ export interface TerminalTabHandle {
   }) => string;
   openOrchestratorTab: (repo?: RegisteredRepo | null) => string;
   openTerminalTab: (repo?: RegisteredRepo) => string;
+  openRemoteTerminalTab: (details: RemoteTerminalDetails) => string;
   focusTerminalSession: (sessionName: string) => boolean;
   openAttachedTerminalSession: (session: WorkspaceAttachedTerminalSession, repo: RegisteredRepo | null) => string;
   openHistoryChat: (
@@ -293,6 +301,7 @@ export interface WorkspaceTerminalProps {
   onLaunchWorkspaceTask?: (request: CanvasRepoTaskLaunchRequest) => Promise<void>;
   onSplitVertical?: (initialTab?: 'chat' | 'terminal') => void;
   onSplitHorizontal?: (initialTab?: 'chat' | 'terminal') => void;
+  onOpenRemoteTerminal?: (details: RemoteTerminalDetails) => void;
   canCloseTile?: boolean;
   onCloseTile?: () => void;
   conversationNavigation?: 'tabs' | 'sidebar';

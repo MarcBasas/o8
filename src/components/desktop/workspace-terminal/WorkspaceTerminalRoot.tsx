@@ -106,7 +106,7 @@ export const WorkspaceTerminalRoot = forwardRef<TerminalTabHandle, WorkspaceTerm
     const onSplitVertical = props.onSplitVertical;
     const onSplitHorizontal = props.onSplitHorizontal;
     const attachLiveRun = controller.attachWorkspaceTerminalSession;
-    const openRemoteTerminal = controller.openRemoteTerminalTab;
+    const openRemoteTerminal = props.onOpenRemoteTerminal ?? controller.openRemoteTerminalTab;
     const selectLiveRunTab = controller.handleSelectTab;
     const activeWorkspaceSurface = props.activeWorkspaceSurface === true;
     useEffect(() => {

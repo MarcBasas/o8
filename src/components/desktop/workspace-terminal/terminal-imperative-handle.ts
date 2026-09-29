@@ -47,6 +47,7 @@ export interface ImperativeHandleDeps {
   }) => string;
   openWorkspaceOrchestratorTab: (repo?: RegisteredRepo | null) => string;
   openWorkspaceTerminalTab: (agentId: string, repo?: RegisteredRepo) => string;
+  openRemoteTerminalTab: TerminalTabHandle['openRemoteTerminalTab'];
   attachWorkspaceTerminalSession: (session: Parameters<TerminalTabHandle['openAttachedTerminalSession']>[0], repo: RegisteredRepo | null) => string;
   openWorkspaceInspectorTab: (canvasTab: NonNullable<TerminalTab['canvasTab']>, options?: { repo?: RegisteredRepo; createNew?: boolean }) => string;
   persistTabsNow: (currentTabs: TerminalTab[], currentActiveId: string) => void;
@@ -124,6 +125,7 @@ export function buildTerminalTabHandle(deps: ImperativeHandleDeps): TerminalTabH
     openLlmChatSession: (options) => deps.openWorkspaceLlmChatSession(options ?? {}),
     openOrchestratorTab: (repo) => deps.openWorkspaceOrchestratorTab(repo),
     openTerminalTab: (repo) => deps.openWorkspaceTerminalTab('shell', repo),
+    openRemoteTerminalTab: deps.openRemoteTerminalTab,
     focusTerminalSession: (sessionName) => {
       const tab = deps.tabsRef.current.find((candidate) => (
         candidate.kind === 'terminal' && candidate.tmuxSession === sessionName
