@@ -33,6 +33,12 @@ import { buildOrchestratorSystemPrompt } from '@/lib/lane/orchestrator-system-pr
 import { fingerprintMcpConfig, firstMcpConfigDivergence } from '@/lib/lane/orchestrator-mcp-fingerprint';
 import { buildOrchestratorArgs } from '@/lib/lane/orchestrator-spawn-args';
 import {
+  orchestratorPromptFingerprint,
+  readDeliveredOrchestratorPrompt,
+  recordDeliveredOrchestratorPrompt,
+  withCurrentOrchestratorPrompt,
+} from '@/lib/lane/orchestrator-prompt-ledger';
+import {
   isFalseDispatchTurn,
   runTurnWithFalseDispatchRetry,
   type FalseDispatchAttemptResult,
@@ -235,6 +241,7 @@ function rehydrateInflightClaudeTurn(record: OrchestratorTurnRecord, options: Or
     launchAgentCallCount: 0,
     crashRecord: record,
     stopCrashTail: null,
+    promptFingerprint: null,
   };
   turn.captureEvent = (event) => {
     emit(event);
@@ -575,6 +582,8 @@ interface OrchestratorActiveTurn {
   launchAgentCallCount: number;
   crashRecord: OrchestratorTurnRecord | null;
   stopCrashTail: (() => void) | null;
+  /** Prompt fingerprint the Claude session holds once this turn completes (#2904). */
+  promptFingerprint: string | null;
 }
 interface WarmState {
   procConfig: OrchestratorProcConfig | null;
@@ -585,13 +594,15 @@ interface WarmState {
   lastUsedAt: number;
   crashStdoutPath: string | null;
   crashStderrPath: string | null;
+  /** Prompt fingerprint the live Claude session holds; null when unknown (#2904). */
+  sessionPrompt: string | null;
 }
 const warmStates = new Map<string, WarmState>();
 
 export function getWarmState(sessionName: string): WarmState {
   let w = warmStates.get(sessionName);
   if (!w) {
-    w = { procConfig: null, activeTurn: null, idleTimer: null, stdoutLineBuffer: '', stderrBuffer: '', lastUsedAt: Date.now(), crashStdoutPath: null, crashStderrPath: null };
+    w = { procConfig: null, activeTurn: null, idleTimer: null, stdoutLineBuffer: '', stderrBuffer: '', lastUsedAt: Date.now(), crashStdoutPath: null, crashStderrPath: null, sessionPrompt: null };
     warmStates.set(sessionName, w);
   }
   return w;
@@ -720,6 +731,11 @@ function settleOrchestratorTurn(
   w.activeTurn = null;
   w.lastUsedAt = Date.now();
   if (turn.turnSessionId) session.claudeSessionId = turn.turnSessionId;
+  // Only a turn the model finished proves the session read this turn's prompt.
+  if (completedResult && turn.turnSessionId && turn.promptFingerprint) {
+    w.sessionPrompt = turn.promptFingerprint;
+    recordDeliveredOrchestratorPrompt(turn.turnSessionId, turn.promptFingerprint);
+  }
 
   let falseDispatch = false;
   if (!error) {
@@ -857,7 +873,13 @@ export function attachOrchestratorProcHandlers(session: OrchestratorSession, w: 
 }
 
 /** Spawn a fresh resident proc with the baked config. First-turn cold. */
-function spawnOrchestratorProc(session: OrchestratorSession, w: WarmState, config: OrchestratorProcConfig, carrierEnv: Record<string, string>): void {
+function spawnOrchestratorProc(
+  session: OrchestratorSession,
+  w: WarmState,
+  config: OrchestratorProcConfig,
+  carrierEnv: Record<string, string>,
+  systemPrompt: string,
+): void {
   // Layer B — a Fable turn keeps `--dangerously-skip-permissions` (kept MCP tools
   // run autonomously) AND adds `--disallowedTools <native>` to strip Claude's
   // native read/write tools (the token lever). isFable takes precedence over the
@@ -871,7 +893,7 @@ function spawnOrchestratorProc(session: OrchestratorSession, w: WarmState, confi
     mcpConfigPath: config.mcpConfigPath,
     model: config.model,
     claudeSessionId: session.claudeSessionId,
-    systemPrompt: buildOrchestratorSystemPrompt(session.repoPath, { toolProfile: config.toolProfile }),
+    systemPrompt,
   });
 
   // The orchestrator must stay on the interactive REPL path for every carrier.
@@ -929,6 +951,10 @@ function spawnOrchestratorProc(session: OrchestratorSession, w: WarmState, confi
   }
   session.proc = proc;
   w.procConfig = config;
+  // A resumed session keeps the prompt it last received; a new one gets this one.
+  w.sessionPrompt = session.claudeSessionId
+    ? readDeliveredOrchestratorPrompt(session.claudeSessionId)
+    : orchestratorPromptFingerprint(systemPrompt);
   w.stdoutLineBuffer = '';
   w.stderrBuffer = '';
   attachOrchestratorProcHandlers(session, w);
@@ -1032,11 +1058,14 @@ export async function sendToOrchestrator(
     killOrchestratorProc(session, w);
   }
 
+  const systemPrompt = buildOrchestratorSystemPrompt(session.repoPath, { toolProfile });
+  const promptFingerprint = orchestratorPromptFingerprint(systemPrompt);
+
   // Spawn a fresh proc when there's no warm one (first turn / after recycle).
   if (!session.proc) {
     reapIdleForCapacity(session.sessionName);
     try {
-      spawnOrchestratorProc(session, w, desiredConfig, carrier.spawnEnv);
+      spawnOrchestratorProc(session, w, desiredConfig, carrier.spawnEnv, systemPrompt);
     } catch (error) {
       session.status = 'dead';
       const e = error instanceof Error ? error : new Error(String(error));
@@ -1123,6 +1152,7 @@ export async function sendToOrchestrator(
         launchAgentCallCount: 0,
         crashRecord,
         stopCrashTail: null,
+        promptFingerprint,
       };
       // Narrate-and-exit / false-dispatch telemetry state lives on the turn.
       turn.captureEvent = (e: OrchestratorEvent) => {
@@ -1188,5 +1218,10 @@ export async function sendToOrchestrator(
     });
   };
 
-  return runTurnWithFalseDispatchRetry({ message, onEvent, runAttempt });
+  // #2904 — Claude Code ignores --append-system-prompt on --resume, so a
+  // session holding an older prompt gets the current one in this turn.
+  const turnMessage = w.sessionPrompt === promptFingerprint
+    ? message
+    : withCurrentOrchestratorPrompt(message, systemPrompt);
+  return runTurnWithFalseDispatchRetry({ message: turnMessage, onEvent, runAttempt });
 }
