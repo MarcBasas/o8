@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { OrchestratorEvent } from './orchestrator-stream-events';
 
 const spawnMock = vi.hoisted(() => vi.fn());
 const configState = vi.hoisted(() => ({ reversed: false }));
@@ -52,8 +53,13 @@ process.env.CORTEX_IDE_DATA_DIR = dataDir;
 process.env.O8_CLAUDE_CODE_BIN = process.execPath;
 process.env.O8_CRASH_SURVIVABLE_ORCHESTRATOR = '0';
 
-const { ensureOrchestratorSession, sendToOrchestrator } = await import('./orchestrator-session');
-const { writeOrchestratorBackendSessionId } = await import('@/lib/mobile/orchestrator-thread-history');
+const {
+  ensureOrchestratorSession,
+  reloadOrchestratorSession,
+  requestOrchestratorSessionReset,
+  sendToOrchestrator,
+} = await import('./orchestrator-session');
+const { readOrchestratorBackendSessionId, writeOrchestratorBackendSessionId } = await import('@/lib/mobile/orchestrator-thread-history');
 const { readDeliveredOrchestratorPrompt } = await import('./orchestrator-prompt-ledger');
 
 function writtenTurnText(proc: FakeClaudeProc, call: number): string {
@@ -190,6 +196,105 @@ describe('warm orchestrator MCP config reuse', () => {
     await turn;
     proc.exitCode = 0;
     proc.emit('close', 0);
+  });
+
+  it('resumes after deliberate kills, while reset and unexpected exit start fresh (#2909)', async () => {
+    const repoPath = mkdtempSync(join(tmpdir(), 'o8-deliberate-resume-'));
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoPath });
+    const procs: FakeClaudeProc[] = [];
+    spawnMock.mockImplementation(() => {
+      const proc = new FakeClaudeProc();
+      procs.push(proc);
+      return proc as unknown as ChildProcess;
+    });
+    const threadId = `thoughts-deliberate-resume-${Date.now()}`;
+    const session = ensureOrchestratorSession(repoPath, threadId);
+    const complete = async (turn: Promise<void>, index: number, id: string) => {
+      await vi.waitFor(() => expect(procs[index]!.stdin.write).toHaveBeenCalledOnce());
+      procs[index]!.stdout.emit('data', Buffer.from(`{"type":"result","session_id":"${id}"}\n`));
+      await turn;
+    };
+    const resumeArg = (index: number) => {
+      const args = spawnMock.mock.calls[index]![1] as string[];
+      return args[args.indexOf('--resume') + 1];
+    };
+
+    const timerSpy = vi.spyOn(global, 'setTimeout');
+    await complete(sendToOrchestrator(session, 'first', () => {}), 0, 'deliberate-session');
+    const idleCallback = timerSpy.mock.calls.find(([, delay]) => delay === 30 * 60_000)?.[0];
+    timerSpy.mockRestore();
+    expect(idleCallback).toBeTypeOf('function');
+    idleCallback?.();
+    expect(session.status).toBe('dead');
+    await complete(sendToOrchestrator(session, 'after idle reap', () => {}), 1, 'deliberate-session');
+    expect(resumeArg(1)).toBe('deliberate-session');
+
+    reloadOrchestratorSession(repoPath, threadId);
+    expect(session.status).toBe('dead');
+    await complete(sendToOrchestrator(session, 'after reload', () => {}), 2, 'deliberate-session');
+    expect(resumeArg(2)).toBe('deliberate-session');
+
+    const controller = new AbortController();
+    const interrupted = sendToOrchestrator(session, 'interrupt this', () => {}, { signal: controller.signal });
+    await vi.waitFor(() => expect(procs[2]!.stdin.write).toHaveBeenCalledTimes(2));
+    controller.abort();
+    await interrupted;
+    expect(session.status).toBe('dead');
+    await complete(sendToOrchestrator(session, 'after interrupt', () => {}), 3, 'deliberate-session');
+    expect(resumeArg(3)).toBe('deliberate-session');
+
+    requestOrchestratorSessionReset(repoPath, threadId);
+    await complete(sendToOrchestrator(session, 'after reset', () => {}), 4, 'fresh-session');
+    expect((spawnMock.mock.calls[4]![1] as string[])).not.toContain('--resume');
+
+    procs[4]!.exitCode = 1;
+    procs[4]!.emit('close', 1);
+    expect(session.status).toBe('dead');
+    await complete(sendToOrchestrator(session, 'after crash', () => {}), 5, 'post-crash-session');
+    expect((spawnMock.mock.calls[5]![1] as string[])).not.toContain('--resume');
+    procs[5]!.exitCode = 0;
+    procs[5]!.emit('close', 0);
+  });
+
+  it('retries once with a fresh session when Claude cannot load the resumed one (#2909)', async () => {
+    const repoPath = mkdtempSync(join(tmpdir(), 'o8-missing-resume-'));
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoPath });
+    const threadId = `thoughts-missing-resume-${Date.now()}`;
+    const procs: FakeClaudeProc[] = [];
+    spawnMock.mockImplementation(() => {
+      const proc = new FakeClaudeProc();
+      procs.push(proc);
+      return proc as unknown as ChildProcess;
+    });
+    const session = ensureOrchestratorSession(repoPath, threadId);
+    const first = sendToOrchestrator(session, 'first', () => {});
+    await vi.waitFor(() => expect(procs[0]!.stdin.write).toHaveBeenCalledOnce());
+    procs[0]!.stdout.emit('data', Buffer.from('{"type":"result","session_id":"missing-resume"}\n'));
+    await first;
+    writeOrchestratorBackendSessionId(threadId, 'claude', 'missing-resume');
+    reloadOrchestratorSession(repoPath, threadId);
+
+    const events: OrchestratorEvent[] = [];
+    const turn = sendToOrchestrator(session, 'continue the work', (event) => events.push(event), { toolProfile: 'solo' });
+    await vi.waitFor(() => expect(procs[1]!.stdin.write).toHaveBeenCalledOnce());
+    expect((spawnMock.mock.calls[1]![1] as string[])).toContain('--resume');
+    expect(writtenTurnText(procs[1]!, 0)).toContain('<o8_orchestrator_prompt>');
+    procs[1]!.stdout.emit('data', Buffer.from(JSON.stringify({
+      type: 'result', subtype: 'error_during_execution', is_error: true,
+      session_id: 'missing-resume', errors: ['No conversation found with session ID: missing-resume'],
+    }) + '\n'));
+    await vi.waitFor(() => expect(procs[2]!.stdin.write).toHaveBeenCalledOnce());
+    expect((spawnMock.mock.calls[2]![1] as string[])).not.toContain('--resume');
+    expect(writtenTurnText(procs[2]!, 0)).toBe('continue the work');
+    expect(readOrchestratorBackendSessionId(threadId, 'claude')).toBeNull();
+    expect(events.some((event) => event.type === 'turn_retry' && event.reason === 'resume-unavailable')).toBe(true);
+    procs[2]!.stdout.emit('data', Buffer.from('{"type":"result","session_id":"fresh-session"}\n'));
+    await turn;
+    expect(events.filter((event) => event.type === 'done')).toHaveLength(1);
+    expect(events.filter((event) => event.type === 'error')).toHaveLength(0);
+    expect(spawnMock).toHaveBeenCalledTimes(3);
+    procs[2]!.exitCode = 0;
+    procs[2]!.emit('close', 0);
   });
 
   it('gives a resumed session the current prompt after a tool-profile change (#2904)', async () => {

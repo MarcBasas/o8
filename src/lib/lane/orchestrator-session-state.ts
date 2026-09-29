@@ -51,5 +51,7 @@ export interface WarmState {
   lastUsedAt: number;
   crashStdoutPath: string | null;
   crashStderrPath: string | null;
+  resumeAfterKill: boolean;
+  resumeUnavailable: boolean;
   sessionPrompt: string | null;
 }
