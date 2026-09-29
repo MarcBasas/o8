@@ -16,6 +16,7 @@ const installedCodex = (process.env.PATH ?? '')
   .split(delimiter)
   .map((entry) => join(entry, 'codex'))
   .find(existsSync);
+const installedChatGptCodex = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
 
 function tempRoot(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -43,6 +44,20 @@ async function runPrepared(
       else reject(new Error(stderr || `sandboxed launch exited ${code}`));
     });
   });
+}
+
+/** The ChatGPT app's Codex layout: a bin/ wrapper, the host, and the executable inside CodexCLI.app. */
+function chatGptCodexFixture(root: string): { wrapper: string; bundled: string } {
+  const cli = join(root, 'ChatGPT.app', 'Contents', 'Resources', 'codex-cli');
+  const macos = join(cli, 'CodexCLI.app', 'Contents', 'MacOS');
+  mkdirSync(join(cli, 'bin'), { recursive: true });
+  mkdirSync(macos, { recursive: true });
+  const bundled = join(macos, 'codex');
+  const wrapper = join(cli, 'bin', 'codex');
+  writeFileSync(bundled, '#!/bin/sh\nprintf bundled\n', { mode: 0o700 });
+  writeFileSync(wrapper, '#!/bin/sh\nexec "$(dirname "$0")/../CodexCLI.app/Contents/MacOS/codex" "$@"\n', { mode: 0o700 });
+  writeFileSync(join(cli, 'bin', 'codex-code-mode-host'), '#!/bin/sh\nprintf host\n', { mode: 0o700 });
+  return { wrapper, bundled };
 }
 
 afterEach(() => {
@@ -384,6 +399,59 @@ describe('Single orchestrator process boundary', () => {
       } finally {
         prepared.cleanup();
       }
+    },
+  );
+
+  it.skipIf(process.platform !== 'darwin')('refuses to relocate ChatGPT-bundled Codex and names the standalone CLI (#2911)', async () => {
+    const { wrapper, bundled } = chatGptCodexFixture(tempRoot('o8-single-chatgpt-only-'));
+    const env = {
+      ...process.env,
+      HOME: tempRoot('o8-single-chatgpt-only-home-'),
+      PATH: [dirname(wrapper), '/usr/bin', '/bin'].join(delimiter),
+    };
+    for (const binary of [wrapper, bundled]) {
+      await expect(prepareSingleOrchestratorLaunch({
+        repoPath: tempRoot('o8-single-chatgpt-only-repo-'),
+        codexHome: tempRoot('o8-single-chatgpt-only-codex-'),
+        binary,
+        args: [],
+        env,
+      })).rejects.toThrow('npm i -g @openai/codex');
+    }
+  });
+
+  it.skipIf(process.platform !== 'darwin')('runs a relocatable Codex on PATH when the selected one is ChatGPT-bundled (#2911)', async () => {
+    const { wrapper } = chatGptCodexFixture(tempRoot('o8-single-chatgpt-fallback-'));
+    const standalone = tempRoot('o8-single-standalone-');
+    writeFileSync(join(standalone, 'codex'), '#!/bin/sh\nprintf standalone\n', { mode: 0o700 });
+    const repo = tempRoot('o8-single-chatgpt-fallback-repo-');
+    const prepared = await prepareSingleOrchestratorLaunch({
+      repoPath: repo,
+      codexHome: tempRoot('o8-single-chatgpt-fallback-codex-'),
+      binary: wrapper,
+      args: [],
+      env: {
+        ...process.env,
+        HOME: tempRoot('o8-single-chatgpt-fallback-home-'),
+        PATH: [dirname(wrapper), standalone, '/usr/bin', '/bin'].join(delimiter),
+      },
+    });
+    try {
+      expect(await runPrepared(prepared, repo)).toBe('standalone');
+    } finally {
+      prepared.cleanup();
+    }
+  });
+
+  it.skipIf(process.platform !== 'darwin' || !existsSync(installedChatGptCodex))(
+    'does not relocate the installed ChatGPT-bundled Codex (#2911)', async () => {
+      await expect(prepareSingleOrchestratorLaunch({
+        repoPath: tempRoot('o8-single-installed-chatgpt-repo-'),
+        codexHome: tempRoot('o8-single-installed-chatgpt-codex-'),
+        binary: installedChatGptCodex,
+        args: ['--version'],
+        env: { ...process.env, HOME: tempRoot('o8-single-installed-chatgpt-home-'), PATH: ['/usr/bin', '/bin'].join(delimiter) },
+      })).rejects.toThrow('npm i -g @openai/codex');
     },
   );
 
