@@ -55,7 +55,6 @@ import {
   buildNewLlmChatTab,
   buildPersistedState,
   computeCheckpointRestore,
-  computeNewTerminalTab,
   flushPendingCliCommands,
   isAutoArchiveEligible,
   resolveRunCommandTarget,
@@ -67,6 +66,7 @@ import {
   computeUpdatedChatSessionKey,
 } from '@/components/desktop/workspace-terminal/terminal-tab-handlers';
 import { useWorkspaceTabCleanup } from '@/components/desktop/workspace-terminal/useWorkspaceTabCleanup';
+import { useTerminalTabLaunchers } from '@/components/desktop/workspace-terminal/use-terminal-tab-launchers';
 import type { WorkspaceAttachedTerminalSession } from '@/components/desktop/workspace-terminal/terminal-mode';
 import { useWorkspaceTabLabelUpdater } from '@/components/desktop/workspace-terminal/use-workspace-tab-label-updater';
 import { recordSpawnEvent, registerIntrospectionContributor } from '@/lib/feedback/workspace-introspect';
@@ -850,6 +850,7 @@ export function useWorkspaceTerminalController(
         sendTerminalAttach(tab.tmuxSession, 120, 30, tab.readOnly);
         continue;
       }
+      if (tab.remoteMachine) continue;
       const restoreCommand = tab.repo?.localPath ? `cd ${shellQuote(tab.repo.localPath)}` : undefined;
       requestTerminalForTab(tab.id, restoreCommand, 'ws-bootstrap');
     }
@@ -1112,20 +1113,9 @@ export function useWorkspaceTerminalController(
 
   const handleCloseTabRef = useRef<(tabId: string) => void>(() => undefined);
 
-  const openWorkspaceTerminalTab = useCallback((agentId: string, repo?: RegisteredRepo): string => {
-    // Pass the current tabs so `Terminal N` numbering picks the next free slot.
-    const result = computeNewTerminalTab(agentId, repo, tabsRef.current);
-    if (!result.newTab) return '';
-    if (result.cliCommand) {
-      pendingCliCommands.current.set(result.newTab.id, result.cliCommand);
-    }
-    const nextTabs = [result.newTab, ...tabsRef.current];
-    tabsRef.current = nextTabs;
-    setTabs(nextTabs);
-    setActiveTabIdFromUser(result.activeTabId);
-    requestTerminalForTab(result.newTab.id, result.cliCommand ?? undefined, 'new-tab');
-    return result.activeTabId;
-  }, [requestTerminalForTab, setActiveTabIdFromUser]);
+  const { openWorkspaceTerminalTab, openRemoteTerminalTab } = useTerminalTabLaunchers({
+    tabsRef, pendingCliCommands, setTabs, setActiveTabIdFromUser, requestTerminalForTab,
+  });
 
   const attachWorkspaceTerminalSession = useCallback((
     session: WorkspaceAttachedTerminalSession,
@@ -1428,6 +1418,7 @@ export function useWorkspaceTerminalController(
     handleNewChatTab,
     handleNewLLMChatTab,
     handleNewTab,
+    openRemoteTerminalTab,
     handleOpenHistoryChat,
     handleReorderTabs,
     handleOpenWorkspaceCommitTab,

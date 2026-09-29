@@ -114,6 +114,66 @@ describe('WorkspaceHeaderStrip session tabs (#2146)', () => {
     }
   });
 
+  it('opens a saved-machine terminal in the owning workspace from the native header', async () => {
+    const machine = { id: '12345678-1234-1234-1234-123456789abc', label: 'Studio', target: 'fixture@localhost', enabled: true };
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => ({
+      ok: true,
+      json: async () => init?.method === 'POST'
+        ? { machine: { id: machine.id, label: machine.label }, sessionId: 'dash-1', command: "exec '/path/o8' --human terminal control 'dash-1' --machine 'machine'" }
+        : input.includes('?machine=') ? { sessions: [{ id: 'dash-1' }] } : { machines: [machine] },
+    }));
+    const originalFetch = globalThis.fetch;
+    Object.assign(globalThis, { fetch: fetchMock });
+    const opened: Array<{ workspaceId: string; machineId: string; sessionId: string }> = [];
+    const onOpen = (event: Event) => opened.push((event as CustomEvent<{ workspaceId: string; machineId: string; sessionId: string }>).detail);
+    window.addEventListener('o8:request-open-remote-terminal', onOpen);
+    try {
+      await act(async () => root.render(createElement(WorkspaceHeaderStrip, stripProps())));
+      await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Add pane (workspace)"]')?.click());
+      const menu = document.querySelector('[role="menu"][aria-label="Add pane options (workspace)"]')!;
+      await act(async () => Array.from(menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((item) => item.textContent === 'Saved machine…')?.click());
+      const dialog = document.querySelector('[role="dialog"][aria-label="Saved machines"]')!;
+      expect(dialog).not.toBeNull();
+      expect(document.activeElement?.getAttribute('aria-label')).toBe('Close saved machines');
+      await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true })));
+      expect(document.activeElement?.textContent).toBe('Refresh');
+      await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true })));
+      expect(document.activeElement?.getAttribute('aria-label')).toBe('Close saved machines');
+      await act(async () => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Studio'))?.click());
+      await act(async () => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('dash-1'))?.click());
+      expect(opened).toMatchObject([{ workspaceId: 'ws-1', machineId: machine.id, sessionId: 'dash-1' }]);
+      expect(document.querySelector('[role="dialog"][aria-label="Saved machines"]')).toBeNull();
+    } finally {
+      window.removeEventListener('o8:request-open-remote-terminal', onOpen);
+      Object.assign(globalThis, { fetch: originalFetch });
+    }
+  });
+
+  it('refreshes the saved-machine catalog and clears a removed selection', async () => {
+    const machine = { id: '12345678-1234-1234-1234-123456789abc', label: 'Studio', target: 'fixture@localhost', enabled: true };
+    let catalog = [machine];
+    const originalFetch = globalThis.fetch;
+    Object.assign(globalThis, { fetch: vi.fn(async (input: string) => ({
+      ok: true,
+      json: async () => input.includes('?machine=') ? { sessions: [{ id: 'dash-1' }] } : { machines: catalog },
+    })) });
+    try {
+      await act(async () => root.render(createElement(WorkspaceHeaderStrip, stripProps())));
+      await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Add pane (workspace)"]')?.click());
+      const menu = document.querySelector('[role="menu"][aria-label="Add pane options (workspace)"]')!;
+      await act(async () => Array.from(menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((item) => item.textContent === 'Saved machine…')?.click());
+      const dialog = document.querySelector('[role="dialog"][aria-label="Saved machines"]')!;
+      await act(async () => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Studio'))?.click());
+      expect(dialog.textContent).toContain('dash-1');
+      catalog = [];
+      await act(async () => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Refresh')?.click());
+      expect(dialog.textContent).toContain('No saved machines');
+      expect(dialog.textContent).not.toContain('dash-1');
+    } finally {
+      Object.assign(globalThis, { fetch: originalFetch });
+    }
+  });
+
   it.each([2, 4])('keeps one Add and no Close in the top header for %i panes', async (count) => {
     await act(async () => root.render(createElement(WorkspaceHeaderStrip, stripProps({
       paneCount: count,

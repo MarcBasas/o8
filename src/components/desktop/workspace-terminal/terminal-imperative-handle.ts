@@ -103,6 +103,16 @@ export function buildTerminalTabHandle(deps: ImperativeHandleDeps): TerminalTabH
     },
     setTermExited: (sessionName) => {
       deps.panelRefs.current.get(sessionName)?.setExited();
+      const remoteTab = deps.tabsRef.current.find((tab) => (
+        tab.kind === 'terminal' && tab.tmuxSession === sessionName && tab.remoteMachine && !tab.readOnly
+      ));
+      if (remoteTab) {
+        const nextTabs = deps.tabsRef.current.map((tab) => (
+          tab.id === remoteTab.id ? { ...tab, readOnly: true } : tab
+        ));
+        deps.tabsRef.current = nextTabs;
+        deps.setTabs(nextTabs);
+      }
     },
     onSessionCreated: deps.handleSessionCreated,
     clearDetectedPreview: (port) => {

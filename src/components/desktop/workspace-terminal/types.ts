@@ -69,6 +69,8 @@ export interface TerminalTab {
   tmuxSession: string | null;
   /** Live run views attach to an existing PTY but must never send it input. */
   readOnly?: boolean;
+  /** Saved SSH target behind a local control shell. Retained after exit or reload. */
+  remoteMachine?: { id: string; label: string; sessionId: string };
   cliAgent?: string;
   repo?: RegisteredRepo;
   createdAt: number;

@@ -30,6 +30,7 @@ export interface PersistedTab {
   repoPath?: string;
   tmuxSession?: string; // last known tmux session name (may still be alive)
   readOnly?: boolean; // live run view: never send input to an attached PTY
+  remoteMachine?: { id: string; label: string; sessionId: string };
   chatRuntime?: OrchestratorRuntime; // for kind='chat' (CLI Session)
   chatSessionKey?: string; // for kind='chat' (CLI Session)
   /** Stable lane identity behind a dispatched chat tab (#1553) — survives the

@@ -651,7 +651,7 @@ const PendingTerminalPanel = memo(function PendingTerminalPanel({
   termWsConnected: boolean;
   active: boolean;
 }) {
-  const state = termWsConnected ? 'awaiting-created' : 'ws-disconnected';
+  const state = tab.remoteMachine ? 'remote-disconnected' : termWsConnected ? 'awaiting-created' : 'ws-disconnected';
   return (
     <div
       data-o8-term-state={state}
@@ -675,10 +675,12 @@ const PendingTerminalPanel = memo(function PendingTerminalPanel({
     >
       <TerminalIcon size={14} />
       <div style={{ fontWeight: 600, color: 'var(--t-text-secondary)' }}>
-        {termWsConnected ? 'Starting workspace lane...' : 'Waiting for the workspace bridge...'}
+        {tab.remoteMachine ? `${tab.remoteMachine.label} is disconnected` : termWsConnected ? 'Starting workspace lane...' : 'Waiting for the workspace bridge...'}
       </div>
       <div style={{ fontSize: 12, lineHeight: 1.5, maxWidth: 420 }}>
-        {tab.repo?.localPath
+        {tab.remoteMachine
+          ? 'This saved terminal is read-only until you open a fresh attachment from Saved machine.'
+          : tab.repo?.localPath
           ? `Restoring ${tab.repo.name} in ${shortenPath(tab.repo.localPath)} and replaying the saved repo context.`
           : 'This tab will attach automatically as soon as the runtime is available.'}
       </div>
