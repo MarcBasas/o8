@@ -94,6 +94,7 @@ o8 machine check Build
 o8 terminal list --machine Build
 o8 terminal show <id> --machine Build
 o8 terminal control <id> --machine Build
+o8 --human terminal control <id> --machine Build
 ```
 
 `machine add` accepts `--port`, `--ssh-config /absolute/path`, and
@@ -103,8 +104,10 @@ or passwords. OpenSSH handles authentication and verifies the host key. The
 remote o8 installation uses its own local operator credential. A disabled,
 missing, or unreachable target fails without sending the command to Local.
 Use `o8 machine rename <id> --label <name>`, `disable`, `enable`, or `remove`
-to manage a profile. Remote `control` uses the JSON stream; interactive
-`--human` control and native workspace switching are not in this CLI slice.
+to manage a profile. Remote control supports both the JSON stream and the
+interactive terminal. Ctrl-] releases the attachment without ending the remote
+shell. A connection failure never changes the selected machine or routes input
+to Local. Native workspace switching is a separate app feature.
 
 ## Exit codes
 
