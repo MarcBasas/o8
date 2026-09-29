@@ -44,6 +44,11 @@ the transition; do not reuse a legacy credential as a cloud worker key.
 
 ## Runtime protocol
 
+- Dispatch through `POST /api/runtime/launch` with `runtime: "cloud"`, a real
+  packet ID, the registered repository, and the assigned branch. The route
+  creates or binds a governed cloud lane and returns its ID with the durable
+  session key. The general mission picker remains disabled for cloud until it
+  can show external-worker availability accurately.
 - Long-polls `GET /api/cloud/worker-poll` with the persisted cursor and worker
   ID. A returned job includes a worker-bound lease token.
 - Requires `launch.remoteSource` with `repoUrl`, `baseSha`, and `branch`. The

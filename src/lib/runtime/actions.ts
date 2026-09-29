@@ -344,6 +344,29 @@ export async function launchRuntimeSurface(payload: RuntimeLaunchRequest): Promi
   }
 
   const cwd = launchWorktree?.cwd ?? repoPath;
+  if (remoteManagedWorktree && payload.existingLaneId) {
+    const lane = listLanes().find((candidate) => candidate.id === payload.existingLaneId);
+    if (!lane
+      || lane.packetId !== payload.packetId
+      || lane.runtime !== 'cloud'
+      || lane.status !== 'launching'
+      || lane.sessionKey !== null
+      || lane.repoPath !== repoPath
+      || lane.branch !== payload.branchName) {
+      const note = 'Remote execution requires an exact unbound cloud lane for this packet and branch.';
+      return {
+        ok: false,
+        runtime: runtimeId,
+        clientMutationId: payload.clientMutationId,
+        surfaceId: '',
+        note,
+        cwd,
+        repoPath,
+        worktree: null,
+        laneId: payload.existingLaneId,
+      };
+    }
+  }
   if (packetNeedsWorktree && payload.existingLaneId && payload.packetId && launchWorktree?.worktree) {
     const lane = listLanes().find((candidate) => candidate.id === payload.existingLaneId);
     if (!lane

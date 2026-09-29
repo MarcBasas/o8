@@ -26,6 +26,7 @@ const { createCloudWorkerKey, revokeCloudWorkerKey } = await import('@/lib/cloud
 const { getJob, getLatestSessionJob, getJobDrainStatus, listJobControls, listJobs } = await import('@/lib/cloud/job-queue');
 const { closeDb } = await import('@/lib/db');
 const { cloudRuntime } = await import('@/lib/runtimes/cloud-adapter');
+const { createLane, getLane, setLaneStatus } = await import('@/lib/lane/registry');
 const { addRepo, findRepoByLocalPath } = await import('@/lib/repos/registry');
 const { readOrchestratorControlPlaneState, writeOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
 const packetIds = [
@@ -38,6 +39,7 @@ const packetIds = [
   'packet-cloud-worker-restart',
   'packet-cloud-worker-abort',
   'packet-cloud-invalid-source',
+  'packet-cloud-prebound-lane',
 ];
 
 beforeAll(async () => {
@@ -282,6 +284,60 @@ afterAll(() => {
 });
 
 describe('durable cloud execution through the runtime launch path', () => {
+  it('binds the exact packet lane to the persisted cloud job', async () => {
+    const packetId = 'packet-cloud-prebound-lane';
+    const branchName = 'o8/cloud-prebound';
+    const lane = createLane({
+      repoPath,
+      branch: branchName,
+      baseBranch: 'main',
+      runtime: 'cloud',
+      packetId,
+      ownership: 'managed',
+    });
+    setLaneStatus(lane.id, 'launching', 'system', 'dispatch');
+    const before = listJobs('team_default').length;
+    const mismatched = await runtimeLaunch({
+      runtime: 'cloud',
+      prompt: 'Do not attach a different branch.',
+      cwd: repoPath,
+      repoPath,
+      branchName: 'o8/cloud-wrong-branch',
+      existingLaneId: lane.id,
+      packetId,
+      skipSetup: true,
+      clientMutationId: 'cloud-prebound-lane-mismatch',
+    });
+    expect(mismatched.status).toBe(400);
+    expect(listJobs('team_default')).toHaveLength(before);
+    const launch = await runtimeLaunch({
+      runtime: 'cloud',
+      prompt: 'Run on this exact governed lane.',
+      cwd: repoPath,
+      repoPath,
+      branchName,
+      existingLaneId: lane.id,
+      packetId,
+      skipSetup: true,
+      clientMutationId: 'cloud-prebound-lane-1',
+    });
+    expect(launch.status).toBe(200);
+    const result = await launch.json() as { surfaceId: string; laneId: string };
+    expect(result.laneId).toBe(lane.id);
+    expect(getLane(lane.id)).toMatchObject({
+      packetId,
+      runtime: 'cloud',
+      branch: branchName,
+      sessionKey: result.surfaceId,
+      status: 'running',
+    });
+    expect(getJob('team_default', result.surfaceId.replace(/^cloud:/, ''))).toMatchObject({
+      packetId,
+      launch: { laneId: lane.id, branchName },
+    });
+    await expect(cloudRuntime.interrupt(result.surfaceId)).resolves.toMatchObject({ ok: true });
+  });
+
   it('rejects invalid remote source before enqueueing a worker job', async () => {
     const before = listJobs('team_default').length;
     const response = await runtimeLaunch({
@@ -316,8 +372,13 @@ describe('durable cloud execution through the runtime launch path', () => {
       clientMutationId: 'cloud-spine-launch-1',
     });
     expect(launch.status).toBe(200);
-    const launchBody = await launch.json() as { surfaceId: string };
+    const launchBody = await launch.json() as { surfaceId: string; laneId: string };
     const jobId = launchBody.surfaceId.replace(/^cloud:/, '');
+    expect(getLane(launchBody.laneId)).toMatchObject({
+      packetId,
+      runtime: 'cloud',
+      sessionKey: launchBody.surfaceId,
+    });
 
     const duplicatePacket = await runtimeLaunch({
       runtime: 'cloud',
