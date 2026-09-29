@@ -36,6 +36,8 @@ export interface OrchestratorRuntimeCapability<
   shortLabel: string;
   /** Can this runtime receive dispatched packets via mission control? */
   dispatchable: boolean;
+  /** Adapter can launch through an explicit governed route but is not offered in mission pickers. */
+  explicitLaunchOnly?: boolean;
   /** Does it require a --model flag to be picked before launch? */
   requiresModel: boolean;
   /** Default model if user doesn't pick one */
@@ -117,6 +119,7 @@ export const ORCHESTRATOR_RUNTIMES = {
     // The durable adapter is usable through the runtime launch route. Mission
     // dispatch stays hidden until external-worker availability is surfaced.
     dispatchable: false,
+    explicitLaunchOnly: true,
     requiresModel: false,
     defaultModel: MODEL_IDS.codexWorkerDefault,
     accentColor: '#2563eb',
