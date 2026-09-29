@@ -1,10 +1,11 @@
-import { execFile, execFileSync, type ChildProcess } from 'node:child_process';
+import { execFile, execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer, type Server } from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
+import { build } from 'esbuild';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { dashSessionNameForOwnerKey, dashTmuxArgs } from '@/lib/ws-server/dash-terminal-persistence';
 import { renderTerminalBytes } from './helpers/headless-terminal';
@@ -34,12 +35,14 @@ const ownerKey = `workspace:terminal-visibility-real-path-${process.pid}`;
 const sessionName = dashSessionNameForOwnerKey(ownerKey)!;
 const duplicateOwnerKey = `workspace:terminal-visibility-duplicate-${process.pid}`;
 const duplicateSessionName = dashSessionNameForOwnerKey(duplicateOwnerKey)!;
+const cliSessionName = dashSessionNameForOwnerKey(`workspace:terminal-cli-${process.pid}`)!;
 const observerSessionName = `cortex-observer-${process.pid}`;
 const plainSessionName = `cortex-plain-visibility-${process.pid}`;
 const OVERFLOW_TERMINAL = { cols: 120, rows: 30 } as const;
 const DUPLICATE_TERMINAL = { cols: 120, rows: 40 } as const;
 const dataDir = mkdtempSync(join(tmpdir(), 'o8-terminal-visibility-'));
 const token = `terminal-visibility-${process.pid}`;
+const cliBundle = join(dataDir, 'o8.mjs');
 const sockets = new Set<WebSocket>();
 let apiServer: Server;
 let apiPort = 0;
@@ -245,6 +248,20 @@ beforeAll(async () => {
   if (!tmuxAvailable) return;
   mkdirSync(dataDir, { recursive: true });
   writeFileSync(join(dataDir, 'ws-token'), `${token}\n`, { mode: 0o600 });
+  await build({
+    entryPoints: [join(process.cwd(), 'cli/src/index.ts')],
+    outfile: cliBundle,
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    target: 'node22',
+    define: { __O8_CLI_VERSION__: JSON.stringify('test-fixture') },
+    banner: { js: `import { createRequire as __o8_createRequire } from 'node:module';
+import { fileURLToPath as __o8_fileURLToPath } from 'node:url';
+import { dirname as __o8_dirname } from 'node:path';
+const require = __o8_createRequire(import.meta.url); globalThis.require = require;
+const __filename = __o8_fileURLToPath(import.meta.url); const __dirname = __o8_dirname(__filename);` },
+  });
   apiPort = await freePort();
   wsPort = await freePort();
   apiServer = createServer((_request, response) => {
@@ -262,6 +279,7 @@ afterAll(async () => {
   if (apiServer?.listening) await new Promise<void>((resolve) => apiServer.close(() => resolve()));
   try { execFileSync('tmux', dashTmuxArgs('kill-session', '-t', sessionName), { stdio: 'ignore' }); } catch { /* not created */ }
   try { execFileSync('tmux', dashTmuxArgs('kill-session', '-t', duplicateSessionName), { stdio: 'ignore' }); } catch { /* not created */ }
+  try { execFileSync('tmux', dashTmuxArgs('kill-session', '-t', cliSessionName), { stdio: 'ignore' }); } catch { /* not created */ }
   try { execFileSync('tmux', ['kill-session', '-t', observerSessionName], { stdio: 'ignore' }); } catch { /* not created */ }
   rmSync(dataDir, { recursive: true, force: true });
 });
@@ -561,4 +579,86 @@ describe.runIf(tmuxAvailable)('terminal visibility through the real WebSocket an
     expect(replayed).toContain('O8_PLAIN_DONE');
     expect((await spawnOrReadPty(plainSessionName)).pid).toBe(spawned.pid);
   }, 30_000);
+
+  it('lists, snapshots, and observes the same detached shell after a server restart through the CLI', async () => {
+    const writer = await connectClient();
+    writer.socket.send(JSON.stringify({
+      type: 'terminal-create', ownerKey: `workspace:terminal-cli-${process.pid}`,
+      requestId: 'cli-create', cols: 100, rows: 30,
+    }));
+    await waitFor(() => writer.received.some(({ frame }) => (
+      frame.event === 'created' && frame.data?.sessionName === cliSessionName
+    )), 'CLI fixture session reservation');
+    writer.socket.send(JSON.stringify({ type: 'terminal-attach', sessionName: cliSessionName, cols: 100, rows: 30 }));
+    await waitFor(() => writer.received.some(({ frame }) => (
+      frame.event === 'attached' && frame.data?.sessionName === cliSessionName
+    )), 'CLI fixture terminal attachment');
+    writer.socket.send(JSON.stringify({
+      type: 'terminal-input', sessionName: cliSessionName, data: "printf 'O8_CLI_BEFORE_RESTART\\n'\r",
+    }));
+    await waitFor(() => capturePane(cliSessionName).includes('O8_CLI_BEFORE_RESTART'), 'CLI fixture shell output');
+    writer.socket.close();
+    await stopWsServer();
+    await startWsServer();
+
+    const cliEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      O8_DATA_DIR: dataDir,
+      O8_API_PORT: String(apiPort),
+      O8_WS_PORT: String(wsPort),
+      O8_API_TOKEN: token,
+    };
+    delete cliEnv.O8_WORKER_TOKEN;
+    const cli = (...args: string[]) => execFileSync(
+      process.execPath,
+      [cliBundle, 'terminal', ...args],
+      { cwd: process.cwd(), env: cliEnv, encoding: 'utf8', timeout: 15_000 },
+    );
+    const listed = JSON.parse(cli('list')) as { sessions: Array<{ id: string }> };
+    expect(listed.sessions.some((session) => session.id === cliSessionName)).toBe(true);
+    const snapshot = JSON.parse(cli('show', cliSessionName, '--lines', '80')) as {
+      session: { id: string; cols: number; rows: number }; text: string;
+    };
+    expect(snapshot.session.id).toBe(cliSessionName);
+    expect(snapshot.session.cols).toBeGreaterThan(0);
+    expect(snapshot.text).toContain('O8_CLI_BEFORE_RESTART');
+    const oneLine = JSON.parse(cli('show', cliSessionName, '--lines', '1')) as { text: string };
+    expect(oneLine.text.trimEnd().split('\n')).toHaveLength(1);
+
+    const observed = spawn(process.execPath, [
+      cliBundle, 'terminal', 'observe', cliSessionName,
+    ], { cwd: process.cwd(), env: cliEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+    const observedClosed = once(observed, 'close');
+    let observedText = '';
+    observed.stdout.on('data', (chunk) => { observedText += String(chunk); });
+    try {
+      await waitFor(() => observedText.includes('"event":"attached"'), 'CLI observer attachment');
+      execFileSync('tmux', dashTmuxArgs(
+        'send-keys', '-t', cliSessionName, "printf 'O8_CLI_AFTER_RESTART\\n'", 'Enter',
+      ));
+      await waitFor(() => observedText.includes('O8_CLI_AFTER_RESTART'), 'CLI live terminal output');
+      expect(tmuxWindowDimensions(cliSessionName)).toBe('100 30');
+      execFileSync('tmux', dashTmuxArgs('kill-session', '-t', cliSessionName));
+      await waitFor(() => observedText.includes('"event":"exited"'), 'CLI terminal exit');
+      expect((await observedClosed)[0]).toBe(0);
+    } finally {
+      if (observed.exitCode === null) observed.kill('SIGTERM');
+      await observedClosed;
+    }
+    const missing = spawnSync(process.execPath, [cliBundle, 'terminal', 'show', 'cortex-dash-does-not-exist'], {
+      cwd: process.cwd(), env: cliEnv, encoding: 'utf8',
+    });
+    expect(missing.status).toBe(4);
+    const worker = spawnSync(process.execPath, [cliBundle, 'terminal', 'list'], {
+      cwd: process.cwd(), env: { ...cliEnv, O8_WORKER_TOKEN: 'worker-token' }, encoding: 'utf8',
+    });
+    expect(worker.status).toBe(3);
+    expect(worker.stderr).toContain('operator_required');
+    const anonymous = await fetch(`http://127.0.0.1:${wsPort}/terminal-snapshot?sessionName=${cliSessionName}`);
+    expect(anonymous.status).toBe(401);
+    const foreign = await fetch(`http://127.0.0.1:${wsPort}/terminal-snapshot?sessionName=${observerSessionName}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(foreign.status).toBe(404);
+  }, 60_000);
 });

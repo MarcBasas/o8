@@ -10,7 +10,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import WebSocket, { type RawData } from 'ws';
-import type { ResolvedConfig } from './config.js';
+import { resolveCliDataDir, type ResolvedConfig } from './config.js';
 
 export const EXIT = {
   OK: 0,
@@ -188,13 +188,13 @@ function readPortFile(dir: string | null, name: string): number | null {
   }
 }
 
-function resolveWsBase(cfg: ResolvedConfig): string {
+export function resolveWsBase(cfg: ResolvedConfig): string {
   const envPort = (process.env.O8_WS_PORT && Number.parseInt(process.env.O8_WS_PORT, 10))
     || (process.env.WS_PORT && Number.parseInt(process.env.WS_PORT, 10))
     || null;
   const wsPort = envPort && Number.isInteger(envPort) && envPort > 0 && envPort < 65536
     ? envPort
-    : readPortFile(cfg.dataDir, 'ws-port') ?? 3002;
+    : readPortFile(cfg.dataDir ?? resolveCliDataDir(), 'ws-port') ?? 3002;
   return `ws://127.0.0.1:${wsPort}`;
 }
 

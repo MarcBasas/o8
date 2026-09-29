@@ -52,6 +52,7 @@ import { runProblem } from './commands/problem.js';
 import { runStatus } from './commands/status.js';
 import { runSession } from './commands/session.js';
 import { runRun } from './commands/run.js';
+import { runTerminal } from './commands/terminal.js';
 import { runServe } from './commands/serve.js';
 import { runVersion } from './commands/version.js';
 import { runWorkerLogin } from './commands/worker-login.js';
@@ -227,6 +228,9 @@ commands:
   run --list           list managed runs (running + recent, with exit codes)
   run --last           show the latest command, start, exit receipt, and retained log
   run stop <runId>     stop a managed run from o8 run --list
+  terminal list        list live dashboard terminal session IDs, including detached shells
+  terminal show <id> [--lines N]  bounded snapshot of an existing terminal
+  terminal observe <id>  read-only live stream from an existing terminal
   serve                start the headless API, WebSocket layer, and supervisor daemon
   serve status         report the daemon pid, ports, health, and launch mode
   serve stop           stop the daemon and reap its server children
@@ -384,6 +388,8 @@ async function dispatch(args: ParsedArgs): Promise<number> {
       return runConnect(args.mode, 'disconnect', secondary ? [secondary, ...args.rest] : args.rest);
     case 'run':
       return runRun(args.mode, args.rest);
+    case 'terminal':
+      return runTerminal(args.mode, secondary, args.rest);
     case 'serve':
       return runServe(args.mode, secondary, args.rest);
     case 'ask':

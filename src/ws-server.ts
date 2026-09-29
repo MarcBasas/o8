@@ -7661,6 +7661,65 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
+  if (req.url?.startsWith('/terminal-snapshot?') && req.method === 'GET') {
+    if (!isAuthorizedInternalRequest(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    const url = new URL(req.url, `http://127.0.0.1:${WS_PORT}`);
+    const sessionName = url.searchParams.get('sessionName')?.trim() ?? '';
+    const rawLines = url.searchParams.get('lines') ?? '200';
+    const lines = Number(rawLines);
+    if (!Number.isSafeInteger(lines) || lines < 1 || lines > 1000) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'lines must be between 1 and 1000' }));
+      return;
+    }
+    const attachment = terminalAttachments.get(sessionName);
+    const attachedDash = attachment?.kind === 'dash-shell';
+    const durableDash = isDashTerminalSession(sessionName)
+      && dashPersistentTerminalsEnabled()
+      && listDashTmuxSessionsWithAge().some((session) => session.name === sessionName);
+    if (!sessionName || (!attachedDash && !durableDash)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'terminal session not found' }));
+      return;
+    }
+    try {
+      let text = '';
+      let dimensions = attachment ? { cols: attachment.cols, rows: attachment.rows } : null;
+      const boundedLines = (source: string) => {
+        const content = source.endsWith('\n') ? source.slice(0, -1) : source;
+        return content ? `${content.split('\n').slice(-lines).join('\n')}\n` : '';
+      };
+      if (durableDash) {
+        const captured = execFileSync(
+          resolveTmuxBinary(),
+          dashTmuxArgs('capture-pane', '-p', '-S', `-${lines}`, '-t', sessionName),
+          {
+            windowsHide: true,
+            timeout: 4000,
+            encoding: 'utf-8',
+            maxBuffer: 1024 * 1024,
+            stdio: ['ignore', 'pipe', 'ignore'],
+            env: sanitizePtyEnv() as NodeJS.ProcessEnv,
+          },
+        );
+        text = boundedLines(captured);
+        dimensions = tmuxSessionDimensions(sessionName);
+      } else if (attachment) {
+        text = boundedLines(attachment.scrollbackChunks.join(''));
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ session: { id: sessionName, ...dimensions }, text }));
+    } catch {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'terminal snapshot unavailable' }));
+    }
+    return;
+  }
+
   // Native Symon tools use this o8-internal-only inventory rather than
   // automating Terminal.app/iTerm. Keep `/terminal-sessions` unchanged for
   // existing dashboard restore clients.
