@@ -39,7 +39,9 @@ export async function resolveCloudRemoteSource(opts: LaunchOptions) {
   if (!validRef(opts.branchName)) throw new Error('The assigned remote branch is invalid.');
   const baseRef = opts.baseBranch?.trim() || 'HEAD';
   if (baseRef !== 'HEAD' && !validRef(baseRef)) throw new Error('The remote base ref is invalid.');
-  const canonicalSource = realpathSync.native(opts.sourceRepoPath);
+  let canonicalSource: string;
+  try { canonicalSource = realpathSync.native(opts.sourceRepoPath); }
+  catch { throw new Error('The registered remote source directory is unavailable.'); }
   const repo = await findRepoByLocalPath(canonicalSource);
   if (!repo?.isGitRepo || !repo.remoteUrl || !validRemoteUrl(repo.remoteUrl)) {
     throw new Error('Remote execution requires a registered Git repository with a credential-free HTTPS or SSH origin.');
