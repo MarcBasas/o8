@@ -4,6 +4,7 @@ import { CliError, EXIT, resolveWsBase } from '../api.js';
 import { resolveConfig, type ResolvedConfig } from '../config.js';
 import { printJson, type OutputMode } from '../output.js';
 import { runRemoteTerminal } from './machine.js';
+import { waitForTerminalOutput } from './terminal-wait.js';
 
 interface TerminalSession { id: string; cols?: number; rows?: number }
 
@@ -296,8 +297,8 @@ function observe(cfg: ResolvedConfig, id: string, mode: OutputMode): Promise<num
 }
 
 export async function runTerminal(mode: OutputMode, sub: string | undefined, rest: string[]): Promise<number> {
-  if (!['list', 'show', 'observe', 'control'].includes(sub ?? '')) {
-    throw new CliError('invalid_args', 'Use `o8 terminal list|show <id>|observe <id>|control <id>`.', EXIT.INVALID_ARGS);
+  if (!['list', 'show', 'observe', 'control', 'wait'].includes(sub ?? '')) {
+    throw new CliError('invalid_args', 'Use `o8 terminal list|show|observe|control|wait`.', EXIT.INVALID_ARGS);
   }
   const machineAt = rest.indexOf('--machine');
   if (machineAt >= 0) {
@@ -318,6 +319,24 @@ export async function runTerminal(mode: OutputMode, sub: string | undefined, res
   }
   const id = rest[0]?.trim();
   if (!id) throw new CliError('invalid_args', `terminal ${sub} requires an exact session ID.`, EXIT.INVALID_ARGS);
+  if (sub === 'wait') {
+    let match: string | null = null;
+    let timeoutMs = 30_000;
+    if ((rest.length - 1) % 2 !== 0) {
+      throw new CliError('invalid_args', 'Use `terminal wait <id> --match <text> [--timeout ms]`.', EXIT.INVALID_ARGS);
+    }
+    for (let i = 1; i < rest.length; i += 2) {
+      if (rest[i] === '--match' && match === null) match = rest[i + 1];
+      else if (rest[i] === '--timeout' && /^\d+$/.test(rest[i + 1] ?? '')) timeoutMs = Number(rest[i + 1]);
+      else throw new CliError('invalid_args', 'Use one --match and optional --timeout.', EXIT.INVALID_ARGS);
+    }
+    if (!match || match.length > 256 || !Number.isSafeInteger(timeoutMs)
+      || timeoutMs < 1 || timeoutMs > 600_000) {
+      throw new CliError('invalid_args', '--match must be 1..256 characters and --timeout 1..600000 ms.', EXIT.INVALID_ARGS);
+    }
+    await requireLiveSession(cfg, id);
+    return waitForTerminalOutput(cfg, id, match, timeoutMs, mode);
+  }
   if (sub === 'observe' || sub === 'control') {
     if (rest.length !== 1) throw new CliError('invalid_args', `terminal ${sub} takes one session ID.`, EXIT.INVALID_ARGS);
     await requireLiveSession(cfg, id);

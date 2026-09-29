@@ -74,6 +74,15 @@ Input is sent as terminal bytes, so a command needs a carriage return to run.
 Closing stdin or disconnecting releases the writer slot. The shell and its
 saved history remain available for later attachments.
 
+`o8 terminal wait <id> --match <text> [--timeout ms]` attempts to check existing
+visible terminal text, then follows the same live shell read-only for new output. It defaults to a
+30-second wait and never takes the writer slot or resizes the shell. A match
+returns the matching line and elapsed time; timeout exits 5 with a specific
+`wait_timeout` error. A timeout says only that no matching output was observed,
+so inspect the shell before retrying the command that should have produced it.
+The same command accepts `--machine <label-or-id>` for a saved SSH target when
+the remote o8 CLI also supports `terminal wait`.
+
 ### Saved SSH machines
 
 Save a machine only after its remote o8 terminal host is already running:

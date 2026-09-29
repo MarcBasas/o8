@@ -136,7 +136,7 @@ function remoteCommand(profile: MachineProfile, sub: string, rest: string[], mod
   return [profile.remoteCli, 'terminal', sub, ...rest, ...(mode.human ? ['--human'] : [])];
 }
 
-async function sshRun(profile: MachineProfile, command: string[], stream = false): Promise<{ code: number; output: string }> {
+async function sshRun(profile: MachineProfile, command: string[], stream = false, timeoutMs = 15_000): Promise<{ code: number; output: string; error: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn('ssh', sshArgs(profile, command), { stdio: ['pipe', 'pipe', 'pipe'] });
     let output = '';
@@ -159,7 +159,7 @@ async function sshRun(profile: MachineProfile, command: string[], stream = false
       } else if (code === 255 || code === -1) {
         reject(new CliError('machine_unreachable', `SSH machine ${profile.label} is unavailable: ${error.trim().slice(0, 400) || 'connection failed'}`, EXIT.CONNECTION_REFUSED));
       } else {
-        resolve({ code, output });
+        resolve({ code, output, error });
       }
     };
     const stop = () => { child.kill('SIGTERM'); finish(stream ? EXIT.OK : EXIT.CONNECTION_REFUSED); };
@@ -181,7 +181,7 @@ async function sshRun(profile: MachineProfile, command: string[], stream = false
     });
     if (stream) process.stdin.pipe(child.stdin);
     else child.stdin.end();
-    if (!stream) timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); }, 15_000);
+    if (!stream) timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); }, timeoutMs);
   });
 }
 
@@ -306,8 +306,23 @@ export async function runRemoteTerminal(mode: OutputMode, sub: string, rest: str
     throw new CliError('invalid_args', 'Remote terminal control currently uses the JSON stream; omit --human.', EXIT.INVALID_ARGS);
   }
   const stream = sub === 'observe' || sub === 'control';
-  const result = await sshRun(profile, remoteCommand(profile, sub, rest, stream ? mode : { ...mode, human: false }), stream);
+  const requestedTimeout = sub === 'wait' && rest.includes('--timeout')
+    ? Number(rest[rest.indexOf('--timeout') + 1]) : 30_000;
+  const timeoutMs = sub === 'wait' && Number.isSafeInteger(requestedTimeout)
+    && requestedTimeout >= 1 && requestedTimeout <= 600_000 ? requestedTimeout + 10_000 : 15_000;
+  const result = await sshRun(profile, remoteCommand(profile, sub, rest, stream ? mode : { ...mode, human: false }), stream, timeoutMs);
   if (result.code !== 0) {
+    if (sub === 'wait' && result.code === EXIT.CONFLICT) {
+      try {
+        const remoteError = JSON.parse(result.error) as { error?: { code?: string; message?: string; hint?: string } };
+        if (remoteError.error?.code === 'wait_timeout') {
+          throw new CliError('wait_timeout', remoteError.error.message ?? 'Remote terminal output wait timed out.',
+            EXIT.CONFLICT, remoteError.error.hint);
+        }
+      } catch (error) {
+        if (error instanceof CliError) throw error;
+      }
+    }
     throw new CliError('remote_terminal_error', `Remote terminal command failed on ${profile.label} (${result.code}).`,
       result.code >= 1 && result.code <= 6 ? result.code as typeof EXIT.INVALID_ARGS : EXIT.CONFLICT);
   }
@@ -318,11 +333,13 @@ export async function runRemoteTerminal(mode: OutputMode, sub: string, rest: str
       if (payload.schema !== `o8/cli/terminal.${sub}/v1`) throw new Error('wrong schema');
       if (sub === 'list' && !Array.isArray(payload.sessions)) throw new Error('missing sessions');
       if (sub === 'show' && typeof payload.text !== 'string') throw new Error('missing snapshot');
+      if (sub === 'wait' && typeof payload.line !== 'string') throw new Error('missing match');
     } catch {
       throw new CliError('invalid_remote_response', `Remote o8 on ${profile.label} returned an invalid terminal response.`, EXIT.CONFLICT);
     }
     if (mode.human) {
       if (sub === 'show') process.stdout.write(payload.text as string);
+      else if (sub === 'wait') process.stdout.write(`${payload.line as string}\n`);
       else process.stdout.write((payload.sessions as Array<{ id: string }>).map((session) => session.id).join('\n') + '\n');
     } else printJson({ ...payload, machine: { id: profile.id, label: profile.label } });
   }
