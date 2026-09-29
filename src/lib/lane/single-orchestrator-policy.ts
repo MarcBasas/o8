@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  accessSync,
   chmodSync,
   closeSync,
   constants as fsConstants,
@@ -51,6 +52,16 @@ export function singleOrchestratorEnvironment(
  */
 function isAppBundleExecutable(path: string): boolean {
   return /\.app\/Contents\/MacOS\/[^/]+$/.test(path);
+}
+
+function isExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const SOLO_BUNDLED_CODEX_MESSAGE = 'Solo mode cannot use the Codex CLI bundled in the ChatGPT app: '
@@ -117,7 +128,9 @@ function selectSoloCodexBinary(binary: string, env: NodeJS.ProcessEnv): string {
   ].filter(existsSync));
   const alternate = alternates.find((candidate) => {
     try {
-      return !isAppBundleExecutable(resolvePrivateCodexSource(candidate).nativeBinary);
+      if (!isExecutableFile(candidate)) return false;
+      const source = resolvePrivateCodexSource(candidate);
+      return isExecutableFile(source.nativeBinary) && !isAppBundleExecutable(source.nativeBinary);
     } catch {
       return false;
     }

@@ -60,6 +60,22 @@ function chatGptCodexFixture(root: string): { wrapper: string; bundled: string }
   return { wrapper, bundled };
 }
 
+function codexWithNonExecutableNativeFixture(root: string): string {
+  const packageRoot = join(root, 'package');
+  const pathDir = join(root, 'bin');
+  const wrapper = join(packageRoot, 'bin', 'codex.js');
+  const packageArch = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const target = process.arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+  const native = join(packageRoot, 'node_modules', '@openai', `codex-darwin-${packageArch}`, 'vendor', target, 'bin', 'codex');
+  mkdirSync(dirname(wrapper), { recursive: true });
+  mkdirSync(dirname(native), { recursive: true });
+  mkdirSync(pathDir, { recursive: true });
+  writeFileSync(wrapper, '#!/bin/sh\nprintf wrapper\n', { mode: 0o700 });
+  writeFileSync(native, '#!/bin/sh\nprintf invalid-native\n', { mode: 0o600 });
+  symlinkSync(wrapper, join(pathDir, 'codex'));
+  return pathDir;
+}
+
 afterEach(() => {
   if (originalDataDir === undefined) delete process.env.CORTEX_IDE_DATA_DIR;
   else process.env.CORTEX_IDE_DATA_DIR = originalDataDir;
@@ -434,6 +450,57 @@ describe('Single orchestrator process boundary', () => {
         ...process.env,
         HOME: tempRoot('o8-single-chatgpt-fallback-home-'),
         PATH: [dirname(wrapper), standalone, '/usr/bin', '/bin'].join(delimiter),
+      },
+    });
+    try {
+      expect(await runPrepared(prepared, repo)).toBe('standalone');
+    } finally {
+      prepared.cleanup();
+    }
+  });
+
+  it.skipIf(process.platform !== 'darwin')('skips a non-executable Codex on PATH for a later relocatable install (#2911)', async () => {
+    const { wrapper } = chatGptCodexFixture(tempRoot('o8-single-chatgpt-invalid-fallback-'));
+    const invalid = tempRoot('o8-single-invalid-codex-');
+    writeFileSync(join(invalid, 'codex'), '#!/bin/sh\nprintf invalid\n', { mode: 0o600 });
+    const standalone = tempRoot('o8-single-valid-codex-');
+    writeFileSync(join(standalone, 'codex'), '#!/bin/sh\nprintf standalone\n', { mode: 0o700 });
+    const repo = tempRoot('o8-single-chatgpt-valid-fallback-repo-');
+    const prepared = await prepareSingleOrchestratorLaunch({
+      repoPath: repo,
+      codexHome: tempRoot('o8-single-chatgpt-valid-fallback-codex-'),
+      binary: wrapper,
+      args: [],
+      env: {
+        ...process.env,
+        HOME: tempRoot('o8-single-chatgpt-valid-fallback-home-'),
+        PATH: [dirname(wrapper), invalid, standalone, '/usr/bin', '/bin'].join(delimiter),
+      },
+    });
+    try {
+      expect(await runPrepared(prepared, repo)).toBe('standalone');
+    } finally {
+      prepared.cleanup();
+    }
+  });
+
+  it.skipIf(process.platform !== 'darwin')('skips directory and unusable native Codex candidates on PATH (#2911)', async () => {
+    const { wrapper } = chatGptCodexFixture(tempRoot('o8-single-chatgpt-unusable-fallback-'));
+    const directoryCandidate = tempRoot('o8-single-directory-codex-');
+    mkdirSync(join(directoryCandidate, 'codex'));
+    const invalidNative = codexWithNonExecutableNativeFixture(tempRoot('o8-single-invalid-native-'));
+    const standalone = tempRoot('o8-single-usable-codex-');
+    writeFileSync(join(standalone, 'codex'), '#!/bin/sh\nprintf standalone\n', { mode: 0o700 });
+    const repo = tempRoot('o8-single-chatgpt-usable-fallback-repo-');
+    const prepared = await prepareSingleOrchestratorLaunch({
+      repoPath: repo,
+      codexHome: tempRoot('o8-single-chatgpt-usable-fallback-codex-'),
+      binary: wrapper,
+      args: [],
+      env: {
+        ...process.env,
+        HOME: tempRoot('o8-single-chatgpt-usable-fallback-home-'),
+        PATH: [dirname(wrapper), directoryCandidate, invalidNative, standalone, '/usr/bin', '/bin'].join(delimiter),
       },
     });
     try {
