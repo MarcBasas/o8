@@ -38,6 +38,7 @@ const packetIds = [
   'packet-cloud-worker-process',
   'packet-cloud-worker-restart',
   'packet-cloud-worker-abort',
+  'packet-cloud-worker-reject-push',
   'packet-cloud-invalid-source',
   'packet-cloud-prebound-lane',
 ];
@@ -822,6 +823,39 @@ describe('durable cloud execution through the runtime launch path', () => {
           worker.stderr.on('data', (chunk: Buffer) => { workerOutput += chunk.toString(); });
         }
       }
+      const rejectHook = join(bareRemotePath, 'hooks', 'pre-receive');
+      writeFileSync(rejectHook, [
+        '#!/bin/sh',
+        'while read old new ref; do',
+        '  if [ "$ref" = "refs/heads/o8/worker-process-reject" ]; then exit 1; fi',
+        'done',
+        'exit 0',
+      ].join('\n'));
+      chmodSync(rejectHook, 0o755);
+      const rejectedLaunch = await runtimeLaunch({
+        runtime: 'cloud', prompt: 'push rejected task', cwd: repoPath, repoPath,
+        branchName: 'o8/worker-process-reject', packetId: 'packet-cloud-worker-reject-push',
+        skipSetup: true, clientMutationId: 'cloud-worker-process-reject-push',
+      });
+      expect(rejectedLaunch.status).toBe(200);
+      const rejectedId = (await rejectedLaunch.json() as { surfaceId: string }).surfaceId.replace(/^cloud:/, '');
+      const rejectDeadline = Date.now() + 20_000;
+      while (getJob('team_default', rejectedId)?.status !== 'parked' && Date.now() < rejectDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(getJob('team_default', rejectedId)).toMatchObject({
+        status: 'parked',
+        executionAttempts: 3,
+        lastError: expect.stringContaining('git push failed'),
+      });
+      const rejectedEvents = (await jobStatus(rejectedId).then((status) => status.json())) as {
+        events: Array<{ type: string }>;
+      };
+      expect(rejectedEvents.events.some((event) => event.type === 'completed')).toBe(false);
+      expect(() => execFileSync('git', [
+        '--git-dir', bareRemotePath, 'rev-parse', '--verify', 'refs/heads/o8/worker-process-reject',
+      ], { stdio: 'pipe' })).toThrow();
+
       const abortLaunch = await runtimeLaunch({
         runtime: 'cloud', prompt: 'abort remote task', cwd: repoPath, repoPath,
         branchName: 'o8/worker-process-abort', packetId: 'packet-cloud-worker-abort',

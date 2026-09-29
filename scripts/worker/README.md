@@ -25,7 +25,8 @@ The repeatable local integration check is
 `npx vitest run tests/cloud-job-spine-real-path.test.ts`. It starts the built
 worker as a child process against a local HTTP bridge, a Git remote fixture,
 and a fake Codex executable. It verifies clone, push, exact result commit,
-transcript, changed files, restart, lease recovery, scoped auth, and abort.
+transcript, changed files, restart, lease recovery, scoped auth, rejected
+pushes, and abort.
 It does not establish that a worker can keep running while the operator's
 laptop is disconnected; that requires a separate host and reachable o8 URL.
 
