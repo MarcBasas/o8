@@ -4,6 +4,7 @@ import { resolveWorkerRouting } from '@/lib/agents/routing';
 import { reconcileOrchestratorControlPlaneState, withLockedState, writeOrchestratorControlPlaneState } from '@/lib/orchestrator/control-plane';
 import { buildDagMetadata, buildDependencyGraph } from '@/lib/orchestrator/dag';
 import { applyPacketScopePolicy, buildRemainingLaunchBudget, computePredictedFiles, runDispatchTick } from '@/lib/orchestrator/dispatch';
+import { fanOutComparisonPackets } from '@/lib/orchestrator/comparison-fanout';
 import { findLaneByPacket, getLaneEvents, listLanes } from '@/lib/lane/registry';
 import { assertOrchestratorRepoPath } from '@/lib/lane/repo-preflight';
 import { recoveryInfoFromLaneEvents } from '@/lib/lane/recovery-info';
@@ -54,12 +55,7 @@ import {
   missionAgentKeys,
   normalizeLoadedIssue,
 } from './shared';
-import type {
-  CreateMissionInput,
-  DispatchMissionInput,
-  LoadedIssue,
-  MissionStatusInput,
-} from './types';
+import type { CreateMissionInput, DispatchMissionInput, MissionStatusInput } from './types';
 
 const INLINE_BRANCH_MAX_LENGTH = 60;
 export const MISSION_CREATE_LOCK_WAIT_MS = 30_000;
@@ -425,7 +421,7 @@ export async function dispatchMission(input: DispatchMissionInput) {
   const currentMissionId = before.missionId?.trim() ?? '';
 
   if (requestedMissionId && requestedMissionId !== currentMissionId) {
-    const { result, state: finalState } = await withMissionRegistryState(requestedMissionId, async (stored) => {
+    const { result: beforeDispatch } = await withMissionRegistryState(requestedMissionId, async (stored) => {
       assertOrchestratorRepoPath(stored.repoPath);
       const registryBefore = releaseAbandonedMissionLifecycleHold(
         reconcileOrchestratorControlPlaneState(stored),
@@ -433,10 +429,12 @@ export async function dispatchMission(input: DispatchMissionInput) {
       );
       const beforeDispatch = structuredClone(registryBefore);
       if (!registryBefore.lifecycleHold) preparePacketsForExplicitDispatch(registryBefore, input.runtime);
-      const afterDispatch = await runDispatchTick(registryBefore, { launchBudget: buildRemainingLaunchBudget() });
+      return { state: fanOutComparisonPackets(registryBefore), result: beforeDispatch };
+    });
+    const { result, state: finalState } = await withMissionRegistryState(requestedMissionId, async (durableReady) => {
+      const afterDispatch = await runDispatchTick(durableReady, { launchBudget: buildRemainingLaunchBudget() });
       return { state: afterDispatch, result: summarizeDispatchMission(beforeDispatch, afterDispatch) };
     });
-
     const packetIds = new Set(finalState.packets.map((packet) => packet.id));
     const dag = buildDagMetadata(finalState.packets);
     log(`Dispatched mission ${finalState.missionId || requestedMissionId} with ${result.dispatched} packet launches.`);
@@ -458,7 +456,13 @@ export async function dispatchMission(input: DispatchMissionInput) {
     // opting back in, so promote held -> queued here before dispatching.
     Object.assign(current, releaseAbandonedMissionLifecycleHold(current, { allowOwnerTakeover: true }));
     if (!current.lifecycleHold) preparePacketsForExplicitDispatch(current, input.runtime);
-    const afterDispatch = await runDispatchTick(current, { launchBudget: buildRemainingLaunchBudget() });
+    const dispatchReady = fanOutComparisonPackets(current);
+    if (dispatchReady !== current) {
+      // The fail-closed launch guard reads durable state, so checkpoint new packet ids first.
+      Object.assign(current, dispatchReady);
+      writeOrchestratorControlPlaneState(dispatchReady);
+    }
+    const afterDispatch = await runDispatchTick(dispatchReady, { launchBudget: buildRemainingLaunchBudget() });
     // #1293 — make withLockedState's end-of-lock reconcile+write use the
     // post-dispatch state, not the unmutated pre-callback `current`. Without this
     // a best-of-N seed survives the dispatch (its candidate lanes don't map back

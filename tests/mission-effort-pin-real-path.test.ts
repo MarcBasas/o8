@@ -239,6 +239,23 @@ function missionResultFromMcp(result: { content: Array<{ type: string; text?: st
   return { missionId: payload.missionId ?? '', packetId: payload.packets?.[0]?.id ?? '' };
 }
 
+const qualitySearchTaskContract = {
+  version: 1 as const,
+  requirements: [{
+    id: 'R1',
+    source: 'write the verification artifact',
+    expectedBehavior: 'The verification artifact exists.',
+    productionPath: 'verification.txt',
+    verification: 'inspect the committed artifact',
+  }],
+  smallestRoute: [{
+    path: 'verification.txt',
+    requirements: ['R1'],
+    reason: 'The requested artifact is the complete change.',
+  }],
+  exclusions: [],
+};
+
 async function rejectEffortPin(body: Record<string, unknown>) {
   const { readOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
   const beforeMissionId = readOrchestratorControlPlaneState().missionId ?? null;
@@ -626,6 +643,111 @@ describe('mission effort pin — public route', () => {
     for (const args of launches) {
       expect(args).toContain('model_reasoning_effort=high');
     }
+  }, 30_000);
+
+  it('persists inline quality-search candidates before explicit dispatch reaches the launch guard', async () => {
+    const repoPath = makeRepo();
+    const response = await createMissionViaRoute({
+      repoPath,
+      runtime: 'codex',
+      requestedRuntime: 'codex',
+      requestedModel: 'gpt-5.6-terra',
+      requestedEffort: 'medium',
+      dispatchOnCreate: false,
+      qualitySearch: { taskContract: qualitySearchTaskContract },
+      issues: [{
+        number: 900_118,
+        title: 'inline quality search durable launch',
+        body: 'Create verification.txt.',
+        url: '',
+      }],
+    });
+    expect(response.status).toBe(201);
+    const created = await response.json() as {
+      result: { missionId: string };
+    };
+
+    const before = readArgvCalls().length;
+    const dispatchRoute = await import('@/app/api/orchestrator/dispatch/route');
+    const dispatchResponse = await dispatchRoute.POST(routeRequest('/api/orchestrator/dispatch', {
+      missionId: created.result.missionId,
+      wait: true,
+    }));
+    expect(dispatchResponse.status).toBe(200);
+    const dispatched = await dispatchResponse.json() as { result: { dispatched: number } };
+    const launch = await waitForLaunchContaining(before, 'inline quality search durable launch');
+    const { readOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
+    const { resolvePacketWorkMode } = await import('@/lib/orchestrator/packet-launch-context');
+    const persisted = readOrchestratorControlPlaneState();
+    const candidates = persisted.packets.filter((packet) => packet.comparisonGroupId);
+
+    expect(dispatched.result.dispatched).toBeGreaterThan(0);
+    expect(launch).toContain('gpt-5.6-terra');
+    expect(candidates).toHaveLength(2);
+    expect(candidates.every((packet) => resolvePacketWorkMode(packet.id).found)).toBe(true);
+    expect(candidates.every((packet) => !packet.blockedReason?.includes('not found in durable state'))).toBe(true);
+  }, 30_000);
+
+  it('launches a saved inline quality-search mission once when explicit dispatch overlaps the scheduler', async () => {
+    const repoPath = makeRepo();
+    const qualityResponse = await createMissionViaRoute({
+      repoPath,
+      runtime: 'codex',
+      requestedRuntime: 'codex',
+      requestedModel: 'gpt-5.6-terra',
+      requestedEffort: 'medium',
+      dispatchOnCreate: false,
+      qualitySearch: { taskContract: qualitySearchTaskContract },
+      issues: [{
+        number: 900_119,
+        title: 'saved inline quality search concurrent launch',
+        body: 'Create verification.txt.',
+        url: '',
+      }],
+    });
+    expect(qualityResponse.status).toBe(201);
+    const qualityMission = await qualityResponse.json() as { result: { missionId: string } };
+
+    // Move the quality-search mission into the durable registry so explicit
+    // dispatch and the headless registry scheduler contend on the real locks.
+    const replacementResponse = await createMissionViaRoute({
+      repoPath,
+      runtime: 'codex',
+      requestedRuntime: 'codex',
+      dispatchOnCreate: false,
+      issues: [{
+        number: 900_120,
+        title: 'current held control mission',
+        body: 'Remain held.',
+        url: '',
+      }],
+    });
+    expect(replacementResponse.status).toBe(201);
+
+    const before = readArgvCalls().length;
+    const dispatchRoute = await import('@/app/api/orchestrator/dispatch/route');
+    const { runHeadlessSprintTick } = await import('@/lib/orchestrator/headless-loop');
+    const [dispatchResponse] = await Promise.all([
+      dispatchRoute.POST(routeRequest('/api/orchestrator/dispatch', {
+        missionId: qualityMission.result.missionId,
+        wait: true,
+      })),
+      runHeadlessSprintTick(),
+    ]);
+    expect(dispatchResponse.status).toBe(200);
+    const dispatchResult = await dispatchResponse.json() as { result: { dispatched: number } };
+    const launches = await waitForLaunchesContaining(before, 'saved inline quality search concurrent launch', 2);
+    const { readMissionRegistryEntry } = await import('@/lib/orchestrator/mission-registry');
+    const { listLanes } = await import('@/lib/lane/registry');
+    const saved = readMissionRegistryEntry(qualityMission.result.missionId, { includeArchived: true });
+    const candidateIds = saved?.mission.packets.map((packet) => packet.id) ?? [];
+    const candidateLanes = listLanes().filter((lane) => lane.packetId && candidateIds.includes(lane.packetId));
+
+    expect(dispatchResult.result.dispatched).toBe(2);
+    expect(launches).toHaveLength(2);
+    expect(candidateIds).toHaveLength(2);
+    expect(candidateLanes).toHaveLength(2);
+    expect(new Set(candidateLanes.map((lane) => lane.packetId)).size).toBe(2);
   }, 30_000);
 
   it('replaces a Claude seed carrier model for each comparison candidate at launch', async () => {
