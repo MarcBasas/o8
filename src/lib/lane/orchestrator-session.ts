@@ -702,8 +702,8 @@ export function detectPermissionRequest(raw: Record<string, unknown>): boolean {
  *  the narrate-and-exit / false-dispatch telemetry, resolve, and (if the proc is
  *  still alive) leave it READY + schedule the idle reap.
  *
- *  `completedResult` (#2142) means this settle came from a real stream `result`
- *  — the model finished the turn on its own. It defaults to FALSE so every other
+ *  `successfulResult` (#2142) means this settle came from a successful stream
+ *  `result` — the model finished the turn on its own. It defaults to FALSE so every other
  *  call site (watchdog timeout, user abort, stdin write failure, plan-mode
  *  LOCKOUT, crash-tail end, proc close, dead rehydrated turn) is excluded from
  *  false-dispatch handling by construction. Those turns are already abnormal;
@@ -713,7 +713,7 @@ function settleOrchestratorTurn(
   session: OrchestratorSession,
   w: WarmState,
   error: Error | null,
-  completedResult = false,
+  successfulResult = false,
 ): void {
   const turn = w.activeTurn;
   if (!turn || turn.settled) return;
@@ -731,8 +731,8 @@ function settleOrchestratorTurn(
   w.activeTurn = null;
   w.lastUsedAt = Date.now();
   if (turn.turnSessionId) session.claudeSessionId = turn.turnSessionId;
-  // Only a turn the model finished proves the session read this turn's prompt.
-  if (completedResult && turn.turnSessionId && turn.promptFingerprint) {
+  // Only a successful turn proves the session received this turn's prompt.
+  if (successfulResult && turn.turnSessionId && turn.promptFingerprint) {
     w.sessionPrompt = turn.promptFingerprint;
     recordDeliveredOrchestratorPrompt(turn.turnSessionId, turn.promptFingerprint);
   }
@@ -752,7 +752,7 @@ function settleOrchestratorTurn(
       console.warn(`[orchestrator-session] narrate-and-exit suspected for ${session.sessionName}: sawToolUseAfterText=${turn.sawToolUseAfterText} hasSummaryMarker=${hasSummaryMarker} tailLen=${tail.length}`);
     }
     falseDispatch = isFalseDispatchTurn({
-      completedResult,
+      completedResult: successfulResult,
       error,
       launchAgentCallCount: turn.launchAgentCallCount,
       assistantText: turn.lastAssistantText,
@@ -796,9 +796,11 @@ function handleClaudeJsonLine(session: OrchestratorSession, w: WarmState, line: 
   processStreamEvent(raw, turn.captureEvent, (id) => { turn.turnSessionId = id; }, (c) => { turn.cost = c; }, turn.toolTracker);
   if (raw.type === 'result') {
     turn.usage = parseOrchestratorTurnUsage(raw);
-    // The ONLY settle that passes completedResult — the model ran the turn to
-    // completion itself, so its claims are its own and the detector applies.
-    settleOrchestratorTurn(session, w, null, true);
+    const subtype = typeof raw.subtype === 'string' ? raw.subtype : '';
+    const successfulResult = raw.is_error !== true && !subtype.startsWith('error_');
+    // The ONLY settle that passes successfulResult — the model ran the turn to
+    // successful completion itself, so its claims are its own and the detector applies.
+    settleOrchestratorTurn(session, w, null, successfulResult);
     return false;
   }
   return true;

@@ -54,6 +54,7 @@ process.env.O8_CRASH_SURVIVABLE_ORCHESTRATOR = '0';
 
 const { ensureOrchestratorSession, sendToOrchestrator } = await import('./orchestrator-session');
 const { writeOrchestratorBackendSessionId } = await import('@/lib/mobile/orchestrator-thread-history');
+const { readDeliveredOrchestratorPrompt } = await import('./orchestrator-prompt-ledger');
 
 function writtenTurnText(proc: FakeClaudeProc, call: number): string {
   const payload = JSON.parse(String((proc.stdin.write.mock.calls[call] as unknown[])[0])) as {
@@ -261,6 +262,43 @@ describe('warm orchestrator MCP config reuse', () => {
     expect(writtenTurnText(proc, 1)).toBe('next');
     proc.stdout.emit('data', Buffer.from('{"type":"result","session_id":"legacy-claude-session"}\n'));
     await secondTurn;
+    proc.exitCode = 0;
+    proc.emit('close', 0);
+  });
+
+  it.each([
+    ['an is_error result', { type: 'result', subtype: 'success', is_error: true, result: 'provider failed' }],
+    ['an error subtype result', { type: 'result', subtype: 'error_during_execution', is_error: false, result: 'provider failed' }],
+  ])('keeps the current prompt pending after %s (#2904)', async (_label, failedResult) => {
+    const repoPath = mkdtempSync(join(tmpdir(), 'o8-failed-resume-prompt-'));
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoPath });
+    const uniqueId = `${Date.now()}-${Math.random()}`;
+    const threadId = `thoughts-failed-resume-${uniqueId}`;
+    const claudeSessionId = `failed-resume-session-${uniqueId}`;
+    writeOrchestratorBackendSessionId(threadId, 'claude', claudeSessionId);
+    const proc = new FakeClaudeProc();
+    spawnMock.mockReturnValue(proc as unknown as ChildProcess);
+    const session = ensureOrchestratorSession(repoPath, threadId);
+
+    const failedTurn = sendToOrchestrator(session, 'try the current prompt', () => {}, { toolProfile: 'solo' });
+    await vi.waitFor(() => expect(proc.stdin.write).toHaveBeenCalledOnce());
+    expect(writtenTurnText(proc, 0)).toContain('<o8_orchestrator_prompt>');
+    proc.stdout.emit('data', Buffer.from(`${JSON.stringify({ ...failedResult, session_id: claudeSessionId })}\n`));
+    await failedTurn;
+    expect(readDeliveredOrchestratorPrompt(claudeSessionId)).toBeNull();
+
+    const retryTurn = sendToOrchestrator(session, 'retry the current prompt', () => {}, { toolProfile: 'solo' });
+    await vi.waitFor(() => expect(proc.stdin.write).toHaveBeenCalledTimes(2));
+    expect(writtenTurnText(proc, 1)).toContain('<o8_orchestrator_prompt>');
+    proc.stdout.emit('data', Buffer.from(`${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: claudeSessionId })}\n`));
+    await retryTurn;
+    expect(readDeliveredOrchestratorPrompt(claudeSessionId)).not.toBeNull();
+
+    const acknowledgedTurn = sendToOrchestrator(session, 'continue', () => {}, { toolProfile: 'solo' });
+    await vi.waitFor(() => expect(proc.stdin.write).toHaveBeenCalledTimes(3));
+    expect(writtenTurnText(proc, 2)).toBe('continue');
+    proc.stdout.emit('data', Buffer.from(`${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: claudeSessionId })}\n`));
+    await acknowledgedTurn;
     proc.exitCode = 0;
     proc.emit('close', 0);
   });
