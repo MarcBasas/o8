@@ -1052,12 +1052,13 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
     }
   }, [chatStreamRequest, clearPolling, isChatMode, open, startPolling, waitingForReply]);
 
-  const resetRemoteSession = useCallback(async () => {
+  const resetRemoteSession = useCallback(async (targetThreadId: string | null) => {
+    if (!targetThreadId) return false;
     try {
       const response = await fetch('/api/orchestrator/reset-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(resolvedRepoPath ? { repoPath: resolvedRepoPath } : {}),
+        body: JSON.stringify({ repoPath: resolvedRepoPath, threadId: targetThreadId }),
       });
       return response.ok;
     } catch {
@@ -1602,6 +1603,9 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
   const runLocalOrchestratorSlash = useCallback(async (rawInput: string) => {
     if (!isOrchestratorMode || isChatMode) return false;
 
+    const commandThreadId = threadIdRef.current;
+    const commandGeneration = loadGenerationRef.current;
+    const isCurrentThread = () => threadIdRef.current === commandThreadId && loadGenerationRef.current === commandGeneration;
     const parsedCommand = parseOrchestratorSlashCommand(rawInput);
     const suppressCommandEntries = parsedCommand?.command.name === 'clear';
     const handled = await executeOrchestratorSlashCommand(rawInput, {
@@ -1610,29 +1614,21 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
       missionState,
       runningTotal: orchStream.runningTotal,
       currentModel: orchestratorModel,
-      setCurrentModel: (model) => {
-        writeStoredOrchestratorModel(resolvedRepoPath, model);
-        acceptOrchestratorModel(model);
-      },
-      replaceTranscript: orchStream.replaceTranscript,
+      setCurrentModel: (model) => { writeStoredOrchestratorModel(resolvedRepoPath, model); acceptOrchestratorModel(model); },
+      replaceTranscript: (entries) => { if (isCurrentThread()) orchStream.replaceTranscript(entries); },
       compactNow: orchStream.compactNow,
-      resetRemoteSession,
-      queuePrelude: (prelude, mode) => queueOrchestratorSessionPrelude(resolvedRepoPath, prelude, mode, threadIdRef.current),
+      isCurrentThread,
+      resetRemoteSession: () => isCurrentThread() ? resetRemoteSession(commandThreadId) : Promise.resolve(false),
+      queuePrelude: (prelude, mode) => { if (isCurrentThread()) queueOrchestratorSessionPrelude(resolvedRepoPath, prelude, mode, commandThreadId); },
       searchArchive: (query, limit) => searchOrchestratorArchive(resolvedRepoPath, query, limit),
       fetchTelemetry: async () => {
         const snapshot = await orchStream.fetchTelemetrySnapshot();
-        return {
-          totalTokens: snapshot.totalTokens,
-          estimatedCostUsd: snapshot.estimatedCostUsd,
-          model: snapshot.model,
-        };
+        return { totalTokens: snapshot.totalTokens, estimatedCostUsd: snapshot.estimatedCostUsd, model: snapshot.model };
       },
       startOrchestration: startSlashOrchestration,
-      appendEntries: suppressCommandEntries ? () => {} : orchStream.appendLocalEntries,
+      appendEntries: suppressCommandEntries ? () => {} : (entries) => { if (isCurrentThread()) orchStream.appendLocalEntries(entries); },
       clearThread: handleClearCommand,
-      // Session-rules add-path (Q ruling 2026-07-11) — `/rule` POSTs directly,
-      // `/rules` opens the manager. Both reach the chip via window events so
-      // there's no prop-drilling through the composer tree.
+      // `/rule` posts directly; `/rules` opens the manager through window events.
       addSessionRule: async (text: string) => {
         const threadId = threadIdRef.current;
         if (!threadId) return false;
@@ -1653,7 +1649,7 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
       openRulesManager: () => window.dispatchEvent(new CustomEvent('o8:open-session-rules')), openPromptLibrary: () => window.dispatchEvent(new CustomEvent('o8:prompt-library:open')),
     });
     if (!handled.handled) return false;
-    latestInputRef.current = '';
+    if (isCurrentThread()) latestInputRef.current = '';
     return true;
   }, [
     displayMessages,
@@ -1839,8 +1835,9 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
       return;
     }
 
+    const commandThreadId = threadIdRef.current;
     if (isOrchestratorMode && await runLocalOrchestratorSlash(wireMessage)) {
-      setInput('');
+      if (threadIdRef.current === commandThreadId) setInput('');
       return;
     }
 
@@ -1937,10 +1934,13 @@ export const ThoughtsChatPanel = forwardRef<ThoughtsChatPanelHandle, {
     }
     if (isOrchestratorMode) {
       if (orchStream.status === 'busy') return false;
+      const commandThreadId = threadIdRef.current;
       void (async () => {
         if (await runLocalOrchestratorSlash(msg)) {
-          setInput('');
-          latestInputRef.current = '';
+          if (threadIdRef.current === commandThreadId) {
+            setInput('');
+            latestInputRef.current = '';
+          }
           return;
         }
         setInput('');
