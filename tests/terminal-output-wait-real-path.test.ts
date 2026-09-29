@@ -1,4 +1,5 @@
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer, type Server } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -11,7 +12,7 @@ import { dashSessionNameForOwnerKey } from '@/lib/ws-server/dash-terminal-persis
 const dataDir = mkdtempSync(join(tmpdir(), 'o8-terminal-wait-'));
 const tmuxServer = `o8-wait-${process.pid}`;
 const session = dashSessionNameForOwnerKey(`workspace:terminal-output-wait-${process.pid}`)!;
-const token = `wait-token-${process.pid}`;
+const token = randomUUID();
 const cli = join(dataDir, 'o8.mjs');
 const failedSnapshotShim = join(dataDir, 'fail-snapshot.mjs');
 let api: Server;
