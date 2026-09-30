@@ -39,6 +39,13 @@
       ]
     },
     {
+      "path": "src/app/api/orchestrator/compact/thread-isolation-real-path.test.ts",
+      "reasons": [
+        "executable-fixture",
+        "real-path"
+      ]
+    },
+    {
       "path": "src/app/api/orchestrator/delegate/route.test.ts",
       "reasons": [
         "child-process",
@@ -1550,6 +1557,21 @@
       "path": "tests/cloud-job-spine-real-path.test.ts",
       "reasons": [
         "child-process",
+        "executable-fixture",
+        "git-cli",
+        "network-listener",
+        "process-signal",
+        "real-path"
+      ]
+    },
+    {
+      "path": "tests/cloud-worker-services-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli",
+        "network-listener",
+        "process-signal",
         "real-path"
       ]
     },
@@ -2601,6 +2623,13 @@
     {
       "path": "tests/owned-codex-transcript-ingestion-real-path.test.ts",
       "reasons": [
+        "real-path"
+      ]
+    },
+    {
+      "path": "tests/packaged-server-smoke-real-path.test.ts",
+      "reasons": [
+        "network-listener",
         "real-path"
       ]
     },
