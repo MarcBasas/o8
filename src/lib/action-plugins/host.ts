@@ -291,7 +291,7 @@ export async function invokeActionPlugin(id: string, actionId: string, actor = '
   } catch {
     safeResult = { ...result, stdout: '[redacted-output]', stderr: '[redacted-output]', error: result.error ? '[redacted-error]' : null };
   }
-  const receipt = { id: receiptId, pluginId: id, actionId, actor, revision: claimed.saved.revision, startedAt, finishedAt, ...safeResult };
+  const receipt = { id: receiptId, pluginId: id, actionId, actor, actorKind: 'authorization-class' as const, actorIdentity: null, revision: claimed.saved.revision, startedAt, finishedAt, ...safeResult };
   const finishDb = db();
   try { finishDb.prepare('UPDATE receipts SET status = ?, finished_at = ?, exit_code = ?, stdout = ?, stderr = ?, error = ? WHERE id = ?').run(safeResult.status, finishedAt, safeResult.exitCode, safeResult.stdout, safeResult.stderr, safeResult.error, receiptId); }
   finally { finishDb.close(); }
@@ -299,6 +299,9 @@ export async function invokeActionPlugin(id: string, actionId: string, actor = '
 }
 export function actionReceipts(id?: string) {
   const database = db();
-  try { return id ? database.prepare('SELECT * FROM receipts WHERE plugin_id = ? ORDER BY started_at DESC LIMIT 100').all(slug.parse(id)) : database.prepare('SELECT * FROM receipts ORDER BY started_at DESC LIMIT 100').all(); }
+  try {
+    const rows = id ? database.prepare('SELECT * FROM receipts WHERE plugin_id = ? ORDER BY started_at DESC LIMIT 100').all(slug.parse(id)) : database.prepare('SELECT * FROM receipts ORDER BY started_at DESC LIMIT 100').all();
+    return rows.map((row) => ({ ...(row as Record<string, unknown>), actorKind: 'authorization-class' as const, actorIdentity: null }));
+  }
   finally { database.close(); }
 }

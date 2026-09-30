@@ -69,3 +69,20 @@ accepts `review`, `link`, `invoke`, `enable`, `disable`, and `remove` operations
 Mutation and invocation requests include the reviewed revision; stale revisions
 fail instead of silently using different code. Each run has a durable receipt
 with actor, action, revision, start/end state, exit status, and capped output.
+
+The operator CLI exposes the same installed actions and receipts:
+
+```text
+o8 plugin list
+o8 plugin action list --plugin project-setup-check
+o8 plugin action invoke project-setup-check check --revision <sha256> --repo <registered-path>
+o8 plugin log list --plugin project-setup-check
+```
+
+The revision is required so a script cannot silently run a changed installation.
+The CLI sends the existing operator bearer and refuses worker or explicitly
+present spectator credentials. Plugin-specific logs filter before the receipt
+cap is applied. An action failure still prints its receipt and exits nonzero.
+Receipts label `actorKind: authorization-class` and `actorIdentity: null`:
+the local panel boundary authenticates an operator privilege class, not a
+specific person or agent. No client-provided actor label is accepted as proof.

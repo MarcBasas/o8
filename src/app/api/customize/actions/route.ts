@@ -26,7 +26,10 @@ function failure(error: unknown) {
 export async function GET(request: NextRequest) {
   const denied = requirePanelAuth(request);
   if (denied) return denied;
-  try { return NextResponse.json({ ok: true, ...listActionPlugins(), receipts: actionReceipts() }); }
+  try {
+    const plugin = request.nextUrl.searchParams.get('plugin');
+    return NextResponse.json({ ok: true, ...listActionPlugins(), receipts: actionReceipts(plugin ?? undefined) });
+  }
   catch (error) { return failure(error); }
 }
 
