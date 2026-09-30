@@ -105,7 +105,21 @@ describe('createOwnedSessionStore child exit recording', () => {
     attachSession(lane.id, launched.surfaceId, 'system');
     setLaneStatus(lane.id, 'running', 'system', 'session_launched');
     await waitForRecordedExit(launched.surfaceId);
-    const result = await relaunchSupervisedAgent('Add a note', repoPath, 'retry', launched.surfaceId);
+    const supervisor = await import('@/lib/supervisor/agent-supervisor');
+    const updates = vi.fn();
+    const relaunch = vi.fn(relaunchSupervisedAgent);
+    supervisor.startSupervisorLoop({
+      fetchFleetStatus: async () => [{ sessionKey: launched.surfaceId, status: 'failed' }],
+      fetchTranscript: async () => [], steerAgent: async () => {}, interruptAgent: async () => {},
+      relaunchAgent: relaunch, broadcastAgentUpdate: updates, queueOrchestratorEscalation: () => {},
+    });
+    supervisor.stopSupervisorLoop();
+    supervisor.registerWatchedAgent(launched.surfaceId, repoPath, 'auth-check', 'Add a note');
+    supervisor.getWatchedAgents(repoPath)[0].nextPollAt = 0;
+    await supervisor.runSupervisorTickForTesting();
+    const result = await relaunch.mock.results[0].value;
+    supervisor.stopSupervisorLoop();
+    for (const watch of supervisor.getWatchedAgents()) supervisor.unregisterWatchedAgent(watch.surfaceId);
 
     expect(result.status).toBe(expected);
     expect(fetchRuntimeLaunchMock).toHaveBeenCalledTimes(expected === 'held' ? 0 : 1);
@@ -117,8 +131,8 @@ describe('createOwnedSessionStore child exit recording', () => {
       expect(summary[0]?.failureMessage).toContain('codex login');
       const packet = {
         id: packetId, referenceLabel: 'auth-check', title: 'auth-check', summary: 'auth-check',
-        status: 'running', queueState: 'queued', releaseState: 'pending', runtime: 'codex',
-        wave: 1, dependencyPacketIds: [], dependencyLabels: [], blockedReason: null, lane: null, review: null,
+        status: 'failed', queueState: 'queued', releaseState: 'pending', runtime: 'codex',
+        wave: 1, dependencyPacketIds: [], dependencyLabels: [], blockedReason: 'runtime_process_exit', lane: null, review: null,
         workspaceTargetPath: repoPath, branchTarget: 'agent/auth-failure',
       } as OrchestratorPacket;
       const state = { ...createEmptyOrchestratorMissionState(), packets: [packet] };
@@ -126,6 +140,18 @@ describe('createOwnedSessionStore child exit recording', () => {
         laneSnapshots: [], runtimeTruth: [], domainLanes: summary,
       });
       expect(reconciled.packets[0]?.blockedReason).toContain('codex login');
+      expect(reconcileOrchestratorMissionState(state, {
+        laneSnapshots: [], runtimeTruth: [], domainLanes: summary.map((entry) => ({ ...entry, status: 'failed' })),
+      }).packets[0]?.blockedReason).toContain('codex login');
+      expect(updates).toHaveBeenCalledWith(expect.objectContaining({ status: 'awaiting_input', detail: result.reason }));
+      const customState = { ...state, packets: [{ ...packet, blockedReason: 'Merge conflict in README.md' }] };
+      expect(reconcileOrchestratorMissionState(customState, {
+        laneSnapshots: [], runtimeTruth: [], domainLanes: summary,
+      }).packets[0]?.blockedReason).toBe('Merge conflict in README.md');
+      attachSession(lane.id, launched.surfaceId, 'system');
+      expect(buildDomainLaneSummaries(new Set([packetId]))[0]?.failureMessage).toBeNull();
+      attachSession(lane.id, 'codex-owned:replacement-session', 'system');
+      expect(buildDomainLaneSummaries(new Set([packetId]))[0]?.failureMessage).toBeNull();
     } else {
       expect(summary[0]?.failureMessage).toBeNull();
     }
@@ -458,7 +484,7 @@ function childScript(kind: 'exit-1' | 'sigkill' | 'provider-error' | 'auth-failu
     return `process.stdout.write(${JSON.stringify(`${result}\n`)}); process.exit(0);`;
   }
   if (kind === 'auth-failure') {
-    return `process.stderr.write('Failed to refresh token: 401 refresh_token_reused\\n'); process.exit(1);`;
+    return `process.stderr.write('diagnostic '.repeat(600) + 'Failed to refresh token: 401 refresh_token_reused\\n'); process.exit(1);`;
   }
   return `process.stderr.write(${JSON.stringify(stderrLine)}); process.stderr.write('', () => process.kill(process.pid, 'SIGKILL'));`;
 }
