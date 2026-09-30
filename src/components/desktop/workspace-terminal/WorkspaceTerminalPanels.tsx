@@ -28,6 +28,8 @@ const LazyFleetCanvasTab = retryingLazy(() => import('@/components/desktop/works
 
 interface WorkspaceTerminalPanelsProps {
   workspaceId: string;
+  tileId?: string;
+  pendingRemotePane?: boolean;
   visibleTabs: TerminalTab[];
   /** True once the tab restore for the CURRENT restore key has landed. While
    *  false, a zero-tab workspace is "not restored yet", never "empty" — the
@@ -63,6 +65,8 @@ interface WorkspaceTerminalPanelsProps {
 
 function WorkspaceTerminalPanelsBase({
   workspaceId,
+  tileId,
+  pendingRemotePane = false,
   visibleTabs,
   effectiveActiveTabId,
   attachedTerminalSessions = [],
@@ -237,6 +241,7 @@ function WorkspaceTerminalPanelsBase({
             tabId={tab.id}
             tmuxSession={tab.tmuxSession}
             readOnly={tab.readOnly}
+            inputLocked={tab.remoteLaunchPending}
             panelRefs={panelRefs}
             sendTerminalAttach={sendTerminalAttach}
             sendTerminalInput={sendTerminalInput}
@@ -259,8 +264,36 @@ function WorkspaceTerminalPanelsBase({
       ) : null)}
 
       {visibleTabs.length === 0 ? (
-        <EmptyWorkspaceState hasEverHadTabs={hasEverHadTabs} restoreSettled={restoreSettled} />
+        pendingRemotePane
+          ? <RemotePaneState tileId={tileId ?? workspaceId} />
+          : <EmptyWorkspaceState hasEverHadTabs={hasEverHadTabs} restoreSettled={restoreSettled} />
       ) : null}
+    </div>
+  );
+}
+
+function RemotePaneState({ tileId }: { tileId: string }) {
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const onFailed = (event: Event) => {
+      const detail = (event as CustomEvent<{ tileId?: string; message?: string }>).detail;
+      if (detail?.tileId === tileId) setError(detail.message || 'Unable to connect to the saved machine.');
+    };
+    window.addEventListener('o8:remote-pane-open-failed', onFailed);
+    const timeout = window.setTimeout(() => setError((previous) => previous ?? 'The connection did not start. Close this pane and try again.'), 15000);
+    return () => {
+      window.removeEventListener('o8:remote-pane-open-failed', onFailed);
+      window.clearTimeout(timeout);
+    };
+  }, [tileId]);
+  return (
+    <div role="status" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 24, textAlign: 'center', color: 'var(--t-text-muted)' }}>
+      <div style={{ fontSize: 13, fontWeight: 400, color: 'var(--t-text)' }}>
+        {error ? 'Could not open saved machine' : 'Connecting to saved machine…'}
+      </div>
+      <div style={{ fontSize: 11, fontWeight: 300, lineHeight: 1.35 }}>
+        {error ?? 'Preparing the terminal in this pane.'}
+      </div>
     </div>
   );
 }
@@ -509,6 +542,7 @@ const TerminalResidentPanel = memo(function TerminalResidentPanel({
   tabId,
   tmuxSession,
   readOnly,
+  inputLocked,
   panelRefs,
   sendTerminalAttach,
   sendTerminalInput,
@@ -521,6 +555,7 @@ const TerminalResidentPanel = memo(function TerminalResidentPanel({
   tabId: string;
   tmuxSession: string;
   readOnly?: boolean;
+  inputLocked?: boolean;
   panelRefs: MutableRefObject<Map<string, XtermPanelHandle>>;
   sendTerminalAttach: WorkspaceTerminalPanelsProps['sendTerminalAttach'];
   sendTerminalInput: WorkspaceTerminalPanelsProps['sendTerminalInput'];
@@ -573,6 +608,7 @@ const TerminalResidentPanel = memo(function TerminalResidentPanel({
           }}
           tmuxSession={tmuxSession}
           readOnly={readOnly}
+          inputLocked={inputLocked}
           sendTerminalAttach={sendTerminalAttach}
           sendTerminalInput={sendTerminalInput}
           sendTerminalResize={sendTerminalResize}
@@ -651,7 +687,7 @@ const PendingTerminalPanel = memo(function PendingTerminalPanel({
   termWsConnected: boolean;
   active: boolean;
 }) {
-  const state = termWsConnected ? 'awaiting-created' : 'ws-disconnected';
+  const state = tab.remoteMachine ? 'remote-disconnected' : termWsConnected ? 'awaiting-created' : 'ws-disconnected';
   return (
     <div
       data-o8-term-state={state}
@@ -675,10 +711,12 @@ const PendingTerminalPanel = memo(function PendingTerminalPanel({
     >
       <TerminalIcon size={14} />
       <div style={{ fontWeight: 600, color: 'var(--t-text-secondary)' }}>
-        {termWsConnected ? 'Starting workspace lane...' : 'Waiting for the workspace bridge...'}
+        {tab.remoteMachine ? `${tab.remoteMachine.label} is disconnected` : termWsConnected ? 'Starting workspace lane...' : 'Waiting for the workspace bridge...'}
       </div>
       <div style={{ fontSize: 12, lineHeight: 1.5, maxWidth: 420 }}>
-        {tab.repo?.localPath
+        {tab.remoteMachine
+          ? 'This saved terminal is read-only until you open a fresh attachment from Saved machine.'
+          : tab.repo?.localPath
           ? `Restoring ${tab.repo.name} in ${shortenPath(tab.repo.localPath)} and replaying the saved repo context.`
           : 'This tab will attach automatically as soon as the runtime is available.'}
       </div>
