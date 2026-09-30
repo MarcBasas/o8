@@ -14,7 +14,7 @@ target repository's rules. Installing this plugin does not authorize work.
 1. Establish the authorized objective, repository path, scope, and observable
    done condition. Inspect `git status` in that repository before handing off
    edits, so existing work is identified and preserved.
-2. Run `o8 version --json` and `o8 setup status --json` to check availability.
+2. Run `o8 version --json` to check that the CLI can reach the running app.
    Preserve the user's backend, model, and effort from the current task. Lead
    admission currently supports the `codex` and `claude` backends. If routing
    is missing or unsupported, request the missing selection before launching.
