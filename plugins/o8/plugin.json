@@ -1,0 +1,42 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "o8",
+  "version": "0.1.0",
+  "description": "Check coding-agent status and hand off bounded repository work to your locally running o8 app.",
+  "author": {
+    "name": "Rainwater Logic LLC",
+    "email": "hello@o8.run",
+    "url": "https://o8.run"
+  },
+  "homepage": "https://o8.run",
+  "repository": "https://github.com/hurttlocker/o8",
+  "license": "MIT",
+  "keywords": ["coding agents", "developer tools", "task handoff", "code review"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "o8",
+        "shortDescription": "Direct your coding agents",
+        "longDescription": "Use o8 from a local Codex task to check running coding agents, see work awaiting review, and start or continue a scoped repository task. o8 keeps the task, selected runtime, review gates, and results in its desktop control room. These workflows use the installed o8 CLI and a running o8 app on the same machine. They require local command execution; this package does not provide a hosted connection for ChatGPT web or mobile. Agent runtimes such as Codex and Claude Code must already be installed and authenticated before starting work. Requests preserve the backend, model, and reasoning effort you select. Starting a task returns its identifier and status; completion is reported only when o8 records the result and supporting evidence. Approval, merge, and release actions keep the permissions configured in o8. This package contains workflow instructions and resources, with no remote MCP server, account sign-in flow, or checkout.",
+        "developerName": "Rainwater Logic LLC",
+        "category": "Developer Tools",
+        "capabilities": ["Read local agent status", "Start scoped coding work", "Continue an existing task"],
+        "websiteURL": "https://o8.run",
+        "supportURL": "https://github.com/hurttlocker/o8/issues",
+        "privacyPolicyURL": "https://o8.run/privacy",
+        "termsOfServiceURL": "https://o8.run/terms",
+        "defaultPrompt": [
+          "Check o8 and tell me what needs my attention.",
+          "Start a scoped coding task in o8 using my chosen backend, model, and effort.",
+          "Continue my existing o8 task with a follow-up."
+        ],
+        "composerIcon": "./assets/o8-icon.png",
+        "logo": "./assets/o8-icon.png"
+      },
+      "onboardingSkill": "./skills/check-status/SKILL.md",
+      "publication": {
+        "release_notes": "Initial local workflows for agent status, scoped task handoff, and replay-safe follow-ups. Hosted ChatGPT access is not included."
+      }
+    }
+  }
+}
