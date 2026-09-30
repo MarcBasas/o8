@@ -16,6 +16,14 @@
       ]
     },
     {
+      "path": "src/app/api/customize/actions/route.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli"
+      ]
+    },
+    {
       "path": "src/app/api/leases/route.test.ts",
       "reasons": [
         "apfs-tool",
