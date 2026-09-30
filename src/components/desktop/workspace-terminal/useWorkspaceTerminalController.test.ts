@@ -183,4 +183,47 @@ describe('useWorkspaceTerminalController restore acknowledgements', () => {
     ]);
     expect(sendTerminalCreate).toHaveBeenCalledTimes(2);
   });
+
+  it('starts a newly selected remote terminal after the workspace socket reconnects', async () => {
+    const sendTerminalCreate = vi.fn<WorkspaceTerminalProps['sendTerminalCreate']>();
+    const sendTerminalInput = vi.fn<WorkspaceTerminalProps['sendTerminalInput']>();
+    const fetchMock = vi.mocked(fetch);
+    const controllerRef = { current: null as TerminalTabHandle | null };
+    const props: WorkspaceTerminalProps = {
+      stateScope: 'remote-reconnect',
+      defaultTab: 'terminal',
+      autoCreateDefaultTab: false,
+      sendTerminalCreate,
+      sendTerminalAttach: vi.fn(),
+      sendTerminalInput,
+      sendTerminalResize: vi.fn(),
+      sendTerminalVisibility: vi.fn(),
+      sendTerminalDetach: vi.fn(),
+      termWsConnected: false,
+    };
+    await act(async () => root.render(createElement(ForwardedControllerHarness, { ref: controllerRef, props })));
+    await act(async () => Promise.resolve());
+    let tabId = '';
+    await act(async () => {
+      tabId = controllerRef.current?.openRemoteTerminalTab({
+        command: 'o8 machine attach fixture',
+        machineId: '12345678-1234-1234-1234-123456789abc',
+        machineLabel: 'Studio',
+        sessionId: 'dash-1',
+      }) ?? '';
+    });
+    expect(tabId).not.toBe('');
+    expect(sendTerminalCreate).not.toHaveBeenCalled();
+
+    await act(async () => root.render(createElement(ForwardedControllerHarness, { ref: controllerRef, props: { ...props, termWsConnected: true } })));
+    const remoteRequest = sendTerminalCreate.mock.calls.find((call) => String(call[2]).includes(tabId));
+    expect(remoteRequest).toBeDefined();
+    await act(async () => {
+      expect(controllerRef.current?.onSessionCreated('remote-live-session', remoteRequest?.[2])).toBe(true);
+    });
+    expect(fetchMock).toHaveBeenCalledWith('/api/panel/terminal-exec', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ sessionName: 'remote-live-session', command: 'o8 machine attach fixture' }),
+    }));
+  });
 });

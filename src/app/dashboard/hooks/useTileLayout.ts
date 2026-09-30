@@ -368,7 +368,7 @@ export function useTileLayout({
     });
   }, [setTileLayout, tileLayout]);
 
-  const handleSplitTile = useCallback((tileId: string, direction: 'horizontal' | 'vertical', initialTab?: 'chat' | 'terminal', placeBefore = false, exactPlacement = false) => {
+  const handleSplitTile = useCallback((tileId: string, direction: 'horizontal' | 'vertical', initialTab?: 'chat' | 'terminal' | 'remote', placeBefore = false, exactPlacement = false): string | null => {
     const ratio = direction === 'vertical' ? 0.55 : 0.62;
     // Split creates the same type: workspace splits → new terminal (chat), contextual splits → new contextual (shell)
     const sourceTile = findTile(tileLayout.root, tileId);
@@ -402,7 +402,7 @@ export function useTileLayout({
           exactPlacement || Boolean(largestPane),
         );
     if (!result.newTileId) {
-      return;
+      return null;
     }
     const nextLayout = {
       ...tileLayout,
@@ -410,6 +410,7 @@ export function useTileLayout({
     };
     setTileLayout(nextLayout);
     setActiveTileId(result.newTileId);
+    return result.newTileId;
   }, [setActiveTileId, setTileLayout, tileLayout]);
 
   const ensureTileKind = useCallback((
