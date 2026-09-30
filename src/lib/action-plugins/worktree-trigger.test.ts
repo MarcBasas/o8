@@ -28,7 +28,7 @@ const roots: string[] = [];
 function git(repo: string, args: string[]) {
   execFileSync('git', args, { cwd: repo, env: { ...process.env, GIT_AUTHOR_NAME: 'test', GIT_AUTHOR_EMAIL: 'test@example.invalid', GIT_COMMITTER_NAME: 'test', GIT_COMMITTER_EMAIL: 'test@example.invalid' } });
 }
-function fixture(delaySeconds = 0) {
+function fixture(delaySeconds = 0, exitCode = 0) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'o8-action-trigger-')));
   roots.push(root);
   const repo = path.join(root, 'repo');
@@ -42,7 +42,7 @@ function fixture(delaySeconds = 0) {
   writeFileSync(path.join(repo, 'README.md'), '# fixture\n');
   git(repo, ['add', 'README.md']); git(repo, ['commit', '-m', 'seed']);
   const output = path.join(root, 'events.jsonl');
-  const script = `#!/bin/sh\n${delaySeconds ? `sleep ${delaySeconds}\n` : ''}cat >> '${output}'\n`;
+  const script = `#!/bin/sh\n${delaySeconds ? `sleep ${delaySeconds}\n` : ''}cat >> '${output}'\nexit ${exitCode}\n`;
   writeFileSync(path.join(source, 'run.sh'), script); chmodSync(path.join(source, 'run.sh'), 0o700);
   writeFileSync(path.join(source, 'o8-actions.json'), JSON.stringify({
     format: 'o8-actions-v1', id: 'sample', name: 'Sample', version: '1.0.0', description: 'Trigger fixture',
@@ -116,6 +116,21 @@ describe('managed worktree action triggers', () => {
     const legacy = await new WorktreeManager(repo).create({ agentType: 'claude-code', taskName: 'metadata only', managed: false });
     expect(legacy.claudeManaged).toBe(true);
     expect(host.actionReceipts('sample')).toHaveLength(1);
+  }, 60_000);
+
+  it('keeps a created worktree ready when its action fails and records the failure', async () => {
+    const { repo, source, output } = fixture(0, 7);
+    const host = await import('./host');
+    const revision = (await host.reviewActionSource(source, repo)).revision;
+    await host.linkActionSource(source, revision, repo);
+    host.changeActionPluginTrigger('sample', revision, 'on-create', true);
+    const { WorktreeManager } = await import('@/lib/worktree/manager');
+    const created = await new WorktreeManager(repo).create({ agentType: 'codex', taskName: 'failed action', managed: true, skipSetup: true, baseBranch: 'main', isolationPreference: 'git-worktree' });
+    await host.recoverActionPluginTriggers();
+    const [receipt] = host.actionReceipts('sample');
+    expect(created.status).toBe('ready');
+    expect(receipt).toMatchObject({ status: 'failed', exit_code: 7, eventId: expect.any(String), triggerId: 'on-create' });
+    expect(JSON.parse(readFileSync(output, 'utf8'))).toMatchObject({ worktreeId: created.id, worktreePath: created.path });
   }, 60_000);
 
   it('does not run a pre-opt-in event if the trigger is enabled before its delayed delivery', async () => {
