@@ -2924,6 +2924,15 @@
       ]
     },
     {
+      "path": "tests/remote-task-dispatch-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "real-path",
+        "worktree-api"
+      ]
+    },
+    {
       "path": "tests/repo-package-manager-contract-real-path.test.ts",
       "reasons": [
         "child-process",
