@@ -22,7 +22,7 @@ select a registered project in Customize before review. The reviewed revision
 is bound to that project, and Run is enabled only while that same project is
 selected. The server resolves the repository from its registry; a
 browser-supplied path that is not registered cannot become the action's working
-   directory. A plugin that does not need project access declares
+directory. A plugin that does not need project access declares
 `workspace: "none"` and runs from its private installed snapshot. Review
 ignores the selected project for that mode; link and invoke do not accept a
 repository argument.
@@ -31,8 +31,10 @@ The manifest also declares `supportedPlatforms`, stable IDs, a version, exact
 file SHA-256 values, action entrypoints, fixed arguments, and timeouts. Paths
 inside the package are flat filenames. Unknown manifest fields, links,
 traversal, duplicate entries, missing or changed bytes, and unsupported
-platforms are rejected. Version 1 runs on macOS and Linux; Windows needs
-process-tree cancellation support before executable actions can run there.
+platforms are rejected. Declared files must be UTF-8 text without NUL bytes so
+the app can display the exact executable source before linking. Version 1 runs
+on macOS and Linux; Windows needs process-tree cancellation support before
+executable actions can run there.
 To edit an action, update its file digest and review
 the folder again. Version 1 does not have an in-place update command: remove
 the old installation, review the new revision, and link it explicitly.
@@ -40,9 +42,9 @@ the old installation, review the new revision, and link it explicitly.
 ## Operator flow
 
 1. Open Customize > Plugins and enter an absolute local source folder.
-2. Select **Review files**. Inspect the name, file list, revision, entrypoint,
-   fixed arguments, platform list, exact working directory, and environment
-   keys exposed to the child process.
+2. Select **Review files**. Expand the declared files and inspect their source,
+   SHA-256 values, revision, entrypoint, fixed arguments, platform list, exact
+   working directory, and environment keys exposed to the child process.
 3. Select **Link reviewed revision**. If any declared file changed after
    review, the link fails and a new review is required.
 4. Select a registered project if the action requests one, then select **Run**.
@@ -53,8 +55,9 @@ the old installation, review the new revision, and link it explicitly.
 
 Actions run as the current local user. The host limits runtime and output,
 uses an exact installed file snapshot, refuses concurrent runs of the same
-plugin, and records the authenticated operator's invocation. It is **not an OS
-sandbox**. A script can access files and services available to that user.
+plugin, and records the authenticated operator's invocation. A separate process
+watchdog terminates the action group if the app server disconnects. It is **not
+an OS sandbox**. A script can access files and services available to that user.
 Review source code before linking. Output redaction handles known credential
 patterns but cannot recognize every possible secret, so actions should avoid
 printing private values. The two example scripts print only tool versions,

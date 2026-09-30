@@ -77,7 +77,7 @@ describe('Customize extension views', () => {
     requests.mockImplementation(async (_url: string, init?: RequestInit) => {
       if (!init?.method) return { ok: true, json: async () => ({ installed, damaged: [], receipts }) };
       const body = JSON.parse(String(init.body)) as { action: string; directory?: string };
-      if (body.action === 'review') return { ok: true, json: async () => ({ review: { manifest, revision, files: [{ path: 'run.sh', bytes: 40 }], execution: { cwd: '/tmp/installed/sample-action', environmentKeys: ['PATH', 'NODE_ENV'], principal: 'local-user' } } }) };
+      if (body.action === 'review') return { ok: true, json: async () => ({ review: { manifest, revision, files: [{ path: 'run.sh', bytes: 40, sha256: 'b'.repeat(64), content: '#!/bin/sh\nprintf "ready\\n"\n' }], execution: { cwd: '/tmp/installed/sample-action', environmentKeys: ['PATH', 'NODE_ENV'], principal: 'local-user' } } }) };
       if (body.action === 'link') installed.push({ manifest, revision, enabled: true, linkedAt: new Date(0).toISOString() });
       if (body.action === 'disable') installed[0].enabled = false;
       if (body.action === 'invoke') receipts.push({ id: 'receipt-1', plugin_id: manifest.id, action_id: 'check', status: 'succeeded', started_at: new Date(0).toISOString(), exit_code: 0, stdout: 'ready', stderr: '', error: null });
@@ -92,6 +92,8 @@ describe('Customize extension views', () => {
     await click('Review files');
     expect(host.textContent).toContain(revision);
     expect(host.textContent).toContain('run.sh (40 bytes)');
+    expect(host.textContent).toContain('b'.repeat(64));
+    expect(host.textContent).toContain('printf "ready');
     expect(host.textContent).toContain('/tmp/installed/sample-action');
     expect(host.textContent).toContain('PATH, NODE_ENV');
     await click('Link reviewed revision');

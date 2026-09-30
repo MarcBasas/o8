@@ -50,7 +50,9 @@ describe('action plugin API and subprocess', () => {
     const { directory } = source();
     const review = await post({ action: 'review', directory });
     expect(review.status, JSON.stringify(await review.clone().json())).toBe(200);
-    const revision = (await review.json()).review.revision;
+    const reviewed = (await review.json()).review;
+    const revision = reviewed.revision;
+    expect(reviewed.files[0]).toMatchObject({ path: 'run.sh', content: '#!/bin/sh\nprintf "hello action\\n"\n', sha256: reviewed.manifest.files[0].sha256 });
     const withSelectedRepo = (await (await post({ action: 'review', directory, repo: '/unregistered-selected-repo' })).json()).review;
     expect(withSelectedRepo.revision).toBe(revision);
     expect(withSelectedRepo.execution.cwd).toContain('/customizations/actions/sample');
@@ -87,6 +89,16 @@ describe('action plugin API and subprocess', () => {
     rmSync(path.join(directory, 'run.sh'));
     symlinkSync(path.join(state.root, 'data'), path.join(directory, 'run.sh'));
     expect((await post({ action: 'review', directory })).status).toBe(400);
+  });
+
+  it('refuses executable files that cannot be inspected as text', async () => {
+    const { directory, manifest } = source();
+    const binary = Buffer.from([0x23, 0x21, 0x00, 0xff]);
+    writeFileSync(path.join(directory, 'run.sh'), binary);
+    writeFileSync(path.join(directory, 'o8-actions.json'), JSON.stringify({ ...manifest, files: [{ path: 'run.sh', sha256: createHash('sha256').update(binary).digest('hex') }] }));
+    const response = await post({ action: 'review', directory });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error.code).toBe('unreviewable_file');
   });
 
   it('rejects Windows action manifests until process-tree cleanup is supported', async () => {

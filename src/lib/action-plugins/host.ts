@@ -12,6 +12,27 @@ import { resolveScope } from '@/lib/customize/storage';
 const slug = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64);
 const fileName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/).max(128).refine((name) => name !== '.' && name !== '..' && name !== 'installed.json' && name !== 'o8-actions.json');
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
+// Keep the action in a separate process group, with an IPC watchdog that survives
+// the host long enough to terminate the group if the host exits unexpectedly.
+const actionRunner = String.raw`
+const { spawn } = require('node:child_process');
+const entry = process.argv[1];
+const args = process.argv.slice(2);
+const stop = () => { try { process.kill(-process.pid, 'SIGKILL'); } catch { process.exit(1); } };
+process.on('disconnect', stop);
+process.on('SIGTERM', stop);
+const timer = setTimeout(stop, Number(process.env.O8_ACTION_TIMEOUT_MS) + 1000);
+let action;
+try { action = spawn(entry, args, { stdio: ['ignore', 'inherit', 'inherit'], env: { PATH: process.env.PATH, NODE_ENV: process.env.NODE_ENV } }); }
+catch (error) { process.send?.({ type: 'spawn_error', message: error.message }, () => process.exit(1)); }
+if (action) {
+  action.on('error', (error) => process.send?.({ type: 'spawn_error', message: error.message }, () => process.exit(1)));
+  action.on('exit', (code) => {
+    clearTimeout(timer);
+    process.send?.({ type: 'complete', code }, stop);
+  });
+}
+`;
 export const actionManifestSchema = z.object({
   format: z.literal('o8-actions-v1'),
   id: slug,
@@ -82,7 +103,11 @@ export async function reviewActionSource(directory: string, repo?: string) {
   const files = manifest.files.map((file) => {
     const data = safeFile(dir, file.path, 1024 * 1024);
     if (sha(data) !== file.sha256) throw new ActionPluginError('digest_mismatch', `File ${file.path} changed or does not match its digest.`, 409);
-    return { path: file.path, bytes: data.length };
+    let content: string;
+    try { content = new TextDecoder('utf-8', { fatal: true }).decode(data); }
+    catch { throw new ActionPluginError('unreviewable_file', `File ${file.path} is not UTF-8 text and cannot be reviewed in this version.`); }
+    if (content.includes('\0')) throw new ActionPluginError('unreviewable_file', `File ${file.path} contains NUL bytes and cannot be reviewed in this version.`);
+    return { path: file.path, bytes: data.length, sha256: file.sha256, content };
   });
   return {
     manifest, revision: revisionFor(manifest, workspaceRoot, dir), files, sourceDirectory: dir,
@@ -211,7 +236,7 @@ export async function invokeActionPlugin(id: string, actionId: string, actor = '
   const result = await new Promise<{ status: string; exitCode: number | null; stdout: string; stderr: string; error: string | null }>((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(path.join(dir, action.entry), action.args, { cwd, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', NODE_ENV: process.env.NODE_ENV ?? 'production' }, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+      child = spawn(process.execPath, ['-e', actionRunner, path.join(dir, action.entry), ...action.args], { cwd, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', NODE_ENV: process.env.NODE_ENV ?? 'production', O8_ACTION_TIMEOUT_MS: String(action.timeoutMs) }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'], detached: true });
     } catch (error) {
       resolve({ status: 'spawn_error', exitCode: null, stdout: '', stderr: '', error: error instanceof Error ? error.message : 'Could not start action.' });
       return;
@@ -219,6 +244,7 @@ export async function invokeActionPlugin(id: string, actionId: string, actor = '
     let stdout = ''; let stderr = ''; let outputBytes = 0; let retainedBytes = 0; let done = false;
     let cause: 'timeout' | 'cancelled' | 'output_limit' | 'spawn_error' | null = null;
     let failureDetail: string | null = null;
+    let actionExitCode: number | null = null;
     const killGroup = () => {
       if (process.platform !== 'win32' && child.pid) {
         try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
@@ -243,12 +269,18 @@ export async function invokeActionPlugin(id: string, actionId: string, actor = '
     };
     child.stdout?.on('data', (chunk: Buffer) => collect('stdout', chunk));
     child.stderr?.on('data', (chunk: Buffer) => collect('stderr', chunk));
+    child.on('message', (message: unknown) => {
+      if (!message || typeof message !== 'object') return;
+      const report = message as { type?: string; code?: number | null; message?: string };
+      if (report.type === 'complete') actionExitCode = typeof report.code === 'number' ? report.code : null;
+      if (report.type === 'spawn_error') { cause = 'spawn_error'; failureDetail = report.message ?? 'Could not start action.'; }
+    });
     child.on('error', (error) => { cause = 'spawn_error'; failureDetail = error.message; });
     child.on('exit', () => { killGroup(); });
     child.on('close', (code) => {
       if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener('abort', aborted);
       killGroup();
-      resolve({ status: cause ?? (code === 0 ? 'succeeded' : 'failed'), exitCode: code, stdout, stderr, error: failureDetail ?? cause });
+      resolve({ status: cause ?? (actionExitCode === 0 ? 'succeeded' : 'failed'), exitCode: actionExitCode ?? code, stdout, stderr, error: failureDetail ?? cause });
     });
   });
   const finishedAt = new Date().toISOString();

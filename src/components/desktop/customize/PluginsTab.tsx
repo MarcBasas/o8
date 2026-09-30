@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from 're
 
 type PluginAction = { id: string; description: string; entry: string; args: string[]; timeoutMs: number };
 type Manifest = { id: string; name: string; version: string; description: string; supportedPlatforms: string[]; workspace: 'none' | 'registered-project'; actions: PluginAction[] };
-type Review = { manifest: Manifest; revision: string; files: Array<{ path: string; bytes: number }>; execution: { cwd: string; environmentKeys: string[]; principal: string } };
+type Review = { manifest: Manifest; revision: string; files: Array<{ path: string; bytes: number; sha256: string; content: string }>; execution: { cwd: string; environmentKeys: string[]; principal: string } };
 type Installed = { manifest: Manifest; revision: string; enabled: boolean; linkedAt: string; workspaceRoot?: string | null; sourceDirectory?: string };
 type Receipt = { id: string; plugin_id: string; action_id: string; status: string; started_at: string; exit_code: number | null; stdout: string | null; stderr: string | null; error: string | null };
 type Inventory = { installed: Installed[]; damaged: string[]; receipts: Receipt[] };
@@ -102,7 +102,11 @@ export default function PluginsTab({ repoPath }: { repoPath?: string | null }) {
         <div style={{ fontSize: 13, fontWeight: 300 }}>{review.manifest.name} · v{review.manifest.version}</div>
         <div style={{ ...metaStyle, marginTop: 4 }}>{review.manifest.description}</div>
         <div style={{ ...metaStyle, marginTop: 8 }}>Revision <code>{review.revision}</code></div>
-        <div style={{ ...metaStyle, marginTop: 8 }}>Reviewed files: {review.files.map((file) => `${file.path} (${file.bytes} bytes)`).join(', ')}</div>
+        <div style={{ ...metaStyle, marginTop: 8 }}>Review the executable text below before linking. These files run with your local user permissions.</div>
+        {review.files.map((file) => <details key={file.path} style={{ borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: 'var(--t-divider)', marginTop: 10, paddingTop: 10 }}>
+          <summary style={{ ...metaStyle, cursor: 'pointer' }}>{file.path} ({file.bytes} bytes) · SHA-256 {file.sha256}</summary>
+          <pre style={{ ...metaStyle, backgroundColor: 'var(--t-input-bg)', whiteSpace: 'pre', overflow: 'auto', scrollbarWidth: 'none', maxHeight: 360, paddingTop: 10, paddingBottom: 10, paddingLeft: 12, paddingRight: 12, borderRadius: 7 }}>{file.content}</pre>
+        </details>)}
         <div style={{ ...metaStyle, marginTop: 8 }}>Actions: {review.manifest.actions.map((action) => `${action.id} → ${action.entry}${action.args.length ? ` ${action.args.join(' ')}` : ''} (${action.timeoutMs} ms limit)`).join('; ')}</div>
         <div style={{ ...metaStyle, marginTop: 8 }}>Platforms: {review.manifest.supportedPlatforms.join(', ')}. Workspace: {review.manifest.workspace === 'none' ? 'private plugin folder' : 'selected registered project'}.</div>
         <div style={{ ...metaStyle, marginTop: 8 }}>Working directory: <code>{review.execution.cwd}</code></div>
