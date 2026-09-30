@@ -8,6 +8,7 @@ export interface DomainLaneSummary {
   status: string;
   sessionKey: string | null;
   lastEventLabel: string | null;
+  failureMessage?: string | null;
   recovery?: OrchestratorPacket['recovery'];
   contextObservation?: PacketContextObservation;
   branch?: string;

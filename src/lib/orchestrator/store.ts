@@ -1024,7 +1024,7 @@ export function reconcileOrchestratorMissionState(
       if (ds === 'recovering') { next.status = 'recovering'; next.blockedReason = domainLane.lastEventLabel ?? 'Lane recovering'; return next; }
       if (ds === 'failed') {
         next.status = 'failed';
-        next.blockedReason = packet.blockedReason ?? (domainLane.lastEventLabel === 'zero_diff_failed' ? 'no_changes_produced' : domainLane.lastEventLabel);
+        next.blockedReason = packet.blockedReason ?? domainLane.failureMessage ?? (domainLane.lastEventLabel === 'zero_diff_failed' ? 'no_changes_produced' : domainLane.lastEventLabel);
         return next;
       }
       if (ds === 'running') { next.status = 'running'; return next; }
@@ -1038,7 +1038,7 @@ export function reconcileOrchestratorMissionState(
         // operator staring at 'Awaiting operator input' while the actual
         // error lived only in next-server.log. Mirrors the
         // awaiting_orchestrator branch below.
-        next.blockedReason = packet.blockedReason
+        next.blockedReason = packet.blockedReason ?? domainLane.failureMessage
           ?? friendlyAwaitingInputReason(domainLane.lastEventLabel)
           ?? 'Awaiting operator input';
         return next;
