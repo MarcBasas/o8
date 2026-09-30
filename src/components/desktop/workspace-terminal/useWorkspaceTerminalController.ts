@@ -56,7 +56,6 @@ import {
   buildPersistedState,
   computeCheckpointRestore,
   deferRemoteTerminalLaunch,
-  flushPendingCliCommands,
   flushQueuedRemoteLaunches,
   isAutoArchiveEligible,
   resolveRunCommandTarget,
@@ -69,6 +68,7 @@ import {
 } from '@/components/desktop/workspace-terminal/terminal-tab-handlers';
 import { useWorkspaceTabCleanup } from '@/components/desktop/workspace-terminal/useWorkspaceTabCleanup';
 import { useTerminalTabLaunchers } from '@/components/desktop/workspace-terminal/use-terminal-tab-launchers';
+import { usePendingCliCommands } from '@/components/desktop/workspace-terminal/use-pending-cli-commands';
 import type { WorkspaceAttachedTerminalSession } from '@/components/desktop/workspace-terminal/terminal-mode';
 import { useWorkspaceTabLabelUpdater } from '@/components/desktop/workspace-terminal/use-workspace-tab-label-updater';
 import { recordSpawnEvent, registerIntrospectionContributor } from '@/lib/feedback/workspace-introspect';
@@ -1303,6 +1303,7 @@ export function useWorkspaceTerminalController(
     pendingRequestRef,
     pendingSessionsRef,
     sendTerminalDetach,
+    sendTerminalInput,
     setActiveTabIdFromUser,
     setPreviews,
     setTabs,
@@ -1328,9 +1329,7 @@ export function useWorkspaceTerminalController(
     }
     return () => { timers.forEach((id) => window.clearTimeout(id)); };
   }, [archiveWorkspaceTab, effectiveActiveTabId, tabs, terminalActivity]);
-  useEffect(() => {
-    flushPendingCliCommands(tabs, pendingCliCommands.current, sendTerminalInput);
-  }, [sendTerminalInput, tabs]);
+  usePendingCliCommands(tabs, pendingCliCommands.current, tabsRef, setTabs, sendTerminalInput);
 
   const handleDragStart = useCallback((event: ReactMouseEvent) => {
     event.preventDefault();

@@ -64,7 +64,7 @@ function sendBenchTerminalVisibility(
 }
 
 export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function XtermPanel(
-  { tmuxSession, readOnly = false, sendTerminalAttach, sendTerminalInput, sendTerminalResize, sendTerminalVisibility, sendTerminalDetach, visible, transparent, fontSize, lineHeight, connectionEpoch, spawnReveal, revealMinPlay, themeOverrides },
+  { tmuxSession, readOnly = false, inputLocked = false, sendTerminalAttach, sendTerminalInput, sendTerminalResize, sendTerminalVisibility, sendTerminalDetach, visible, transparent, fontSize, lineHeight, connectionEpoch, spawnReveal, revealMinPlay, themeOverrides },
   ref,
 ) {
   const { themeId } = useTheme();
@@ -77,6 +77,8 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
   const initCountRef = useRef(0);
   const tmuxSessionRef = useRef(tmuxSession);
   tmuxSessionRef.current = tmuxSession;
+  const inputLockedRef = useRef(inputLocked);
+  inputLockedRef.current = inputLocked;
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
   const revealCancelRef = useRef<((resetTerm: boolean) => void) | null>(null);
@@ -337,6 +339,10 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
   }, [tmuxSession, visible]);
 
   useEffect(() => {
+    if (termRef.current) termRef.current.options.disableStdin = readOnly || inputLocked;
+  }, [inputLocked, readOnly]);
+
+  useEffect(() => {
     if (!sendTerminalVisibility) return;
     const epoch = visibilityEpochRef.current + 1;
     visibilityEpochRef.current = epoch;
@@ -406,7 +412,7 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
           lineHeight: lineHeight ?? 1.45,
           cursorBlink: true,
           cursorStyle: 'block',
-          disableStdin: readOnly,
+          disableStdin: readOnly || inputLockedRef.current,
           allowTransparency: transparent === true,
           allowProposedApi: true,
           scrollback: TERMINAL_SCROLLBACK_LINES,
@@ -458,7 +464,7 @@ export const XtermPanel = forwardRef<XtermPanelHandle, XtermPanelProps>(function
           })
           : null;
         term.onData((data) => {
-          if (readOnly) return;
+          if (readOnly || inputLockedRef.current) return;
           if (awaitingVisibilityRef.current) {
             queuedInputRef.current.push(data);
             return;

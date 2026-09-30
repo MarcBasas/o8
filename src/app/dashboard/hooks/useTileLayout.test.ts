@@ -105,6 +105,7 @@ function LayoutRestoreHarness({
   onLayout,
   onReplaceLayout,
   onSplitTile,
+  onCloseTile,
   onResizeSplit,
   onUnverifiedIds,
   onTerminalHandles,
@@ -115,6 +116,7 @@ function LayoutRestoreHarness({
   onLayout: (layout: TileLayout, hydrated: boolean, validationState: string) => void;
   onReplaceLayout?: (replaceLayout: (layout: TileLayout) => void) => void;
   onSplitTile?: (split: (tileId: string, direction?: 'horizontal' | 'vertical', initialTab?: 'chat' | 'terminal' | 'remote', placeBefore?: boolean, exactPlacement?: boolean) => string | null) => void;
+  onCloseTile?: (close: (tileId: string) => void) => void;
   onResizeSplit?: (resize: (splitId: string, ratio: number) => void) => void;
   onUnverifiedIds?: (ids: ReadonlySet<string>) => void;
   onTerminalHandles?: (handles: Map<string, TerminalTabHandle>) => void;
@@ -162,6 +164,10 @@ function LayoutRestoreHarness({
   useEffect(() => {
     onSplitTile?.((tileId, direction = 'horizontal', initialTab, placeBefore, exactPlacement) => handleSplitTile(tileId, direction, initialTab, placeBefore, exactPlacement));
   }, [onSplitTile, handleSplitTile]);
+
+  useEffect(() => {
+    onCloseTile?.(restored.handleCloseTile);
+  }, [onCloseTile, restored.handleCloseTile]);
 
   useEffect(() => {
     onUnverifiedIds?.(restored.unverifiedRestoredRepoTileIds);
@@ -267,6 +273,29 @@ describe('useTileLayout browser-origin restore', () => {
     const restored = deserializeTileLayout(serializeTileLayout(latestLayout));
     expect(restored && collectLeafNodes(restored.root).find((leaf) => leaf.id === machinePaneId)?.content)
       .toMatchObject({ kind: 'terminal', initialTab: 'remote' });
+  });
+
+  it('releases saved-machine controls before removing their pane', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ repos: [], validatedRestorePaths: [] })));
+    let latestLayout = createDefaultTileLayout();
+    let splitTile: ((tileId: string, direction?: 'horizontal' | 'vertical', initialTab?: 'chat' | 'terminal' | 'remote') => string | null) | null = null;
+    let closePane: ((tileId: string) => void) | null = null;
+    const terminalHandles: { current: Map<string, TerminalTabHandle> | null } = { current: null };
+    await act(async () => root.render(createElement(LayoutRestoreHarness, {
+      onLayout: (layout) => { latestLayout = layout; },
+      onSplitTile: (split) => { splitTile = split; },
+      onCloseTile: (close) => { closePane = close; },
+      onTerminalHandles: (handles) => { terminalHandles.current = handles; },
+      registeredRepos: [],
+    })));
+    let paneId: string | null = null;
+    await act(async () => { paneId = splitTile?.('tile-root', 'vertical', 'remote') ?? null; });
+    expect(paneId).toBeTruthy();
+    const release = vi.fn();
+    terminalHandles.current?.set(paneId!, { closeRemoteTerminalTabs: release } as unknown as TerminalTabHandle);
+    await act(async () => closePane?.(paneId!));
+    expect(release).toHaveBeenCalledOnce();
+    expect(collectLeafNodes(latestLayout.root).some((leaf) => leaf.id === paneId)).toBe(false);
   });
 
   it('routes a saved-machine selection into the new pane handle', async () => {

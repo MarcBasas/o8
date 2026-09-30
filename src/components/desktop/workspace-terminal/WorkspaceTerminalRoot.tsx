@@ -428,6 +428,8 @@ export const WorkspaceTerminalRoot = forwardRef<TerminalTabHandle, WorkspaceTerm
 
         <WorkspaceTerminalPanels
           workspaceId={workspaceInstanceId}
+          tileId={props.stateScope}
+          pendingRemotePane={props.autoCreateDefaultTab === false && props.splitCreated === true}
           visibleTabs={controller.visibleTabs}
           attachedTerminalSessions={props.attachedTerminalSessions}
           terminalModeStatusEvidence={terminalMode.statusEvidence}

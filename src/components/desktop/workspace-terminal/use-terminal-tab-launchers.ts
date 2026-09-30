@@ -33,6 +33,8 @@ export function useTerminalTabLaunchers({
     const newTab: TerminalTab = {
       ...result.newTab,
       label: `${details.machineLabel} / ${details.sessionId}`,
+      // Keep the local PTY writable for the launch command while locking user input.
+      remoteLaunchPending: true,
       remoteMachine: { id: details.machineId, label: details.machineLabel, sessionId: details.sessionId },
     };
     const nextTabs = [newTab, ...tabsRef.current];

@@ -187,6 +187,7 @@ describe('useWorkspaceTerminalController restore acknowledgements', () => {
   it('starts a newly selected remote terminal after the workspace socket reconnects', async () => {
     const sendTerminalCreate = vi.fn<WorkspaceTerminalProps['sendTerminalCreate']>();
     const sendTerminalInput = vi.fn<WorkspaceTerminalProps['sendTerminalInput']>();
+    const sendTerminalDetach = vi.fn<WorkspaceTerminalProps['sendTerminalDetach']>();
     const fetchMock = vi.mocked(fetch);
     const controllerRef = { current: null as TerminalTabHandle | null };
     const props: WorkspaceTerminalProps = {
@@ -198,7 +199,7 @@ describe('useWorkspaceTerminalController restore acknowledgements', () => {
       sendTerminalInput,
       sendTerminalResize: vi.fn(),
       sendTerminalVisibility: vi.fn(),
-      sendTerminalDetach: vi.fn(),
+      sendTerminalDetach,
       termWsConnected: false,
     };
     await act(async () => root.render(createElement(ForwardedControllerHarness, { ref: controllerRef, props })));
@@ -225,5 +226,10 @@ describe('useWorkspaceTerminalController restore acknowledgements', () => {
       method: 'POST',
       body: JSON.stringify({ sessionName: 'remote-live-session', command: 'o8 machine attach fixture' }),
     }));
+    await act(async () => Promise.resolve());
+    await act(async () => expect(controllerRef.current?.closeActiveTab()).toBe(true));
+    expect(sendTerminalInput).toHaveBeenCalledWith('remote-live-session', '\x1d');
+    expect(sendTerminalDetach).toHaveBeenCalledWith('remote-live-session');
+    expect(sendTerminalInput.mock.invocationCallOrder[0]).toBeLessThan(sendTerminalDetach.mock.invocationCallOrder[0]);
   });
 });

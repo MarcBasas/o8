@@ -212,7 +212,11 @@ export function createTileRegistry({
         throw new Error('Unable to start the machine terminal in its new pane.');
       }
     }).catch((error) => {
-      toast(error instanceof Error ? error.message : 'Unable to open the machine terminal.');
+      const message = error instanceof Error ? error.message : 'Unable to open the machine terminal.';
+      window.dispatchEvent(new CustomEvent('o8:remote-pane-open-failed', {
+        detail: { tileId: newTileId, message },
+      }));
+      toast(message);
     });
   };
   return {

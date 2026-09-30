@@ -339,6 +339,9 @@ export function useTileLayout({
     if (!result.closed) {
       return;
     }
+    if (tile?.type === 'leaf' && tile.content.kind === 'terminal') {
+      workspaceTerminalHandlesRef.current.get(tileId)?.closeRemoteTerminalTabs();
+    }
     const allTerminalPanes = collectLeafNodes(tileLayout.root).every((leaf) => leaf.content.kind === 'terminal');
     setTileLayout({
       ...tileLayout,
@@ -359,7 +362,7 @@ export function useTileLayout({
       const nextActive = (sibling && findTile(result.root, sibling.id)) ? sibling.id : getFirstLeaf(result.root).id;
       setActiveTileId(nextActive);
     }
-  }, [activeTileId, setActiveTileId, setTileLayout, tileLayout]);
+  }, [activeTileId, setActiveTileId, setTileLayout, tileLayout, workspaceTerminalHandlesRef]);
 
   const handleResizeSplit = useCallback((splitId: string, ratio: number) => {
     setTileLayout({

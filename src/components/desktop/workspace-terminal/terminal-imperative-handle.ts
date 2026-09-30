@@ -248,6 +248,11 @@ export function buildTerminalTabHandle(deps: ImperativeHandleDeps): TerminalTabH
       deps.closeTabById(activeId);
       return true;
     },
+    closeRemoteTerminalTabs: () => {
+      for (const tab of deps.tabsRef.current.filter((candidate) => candidate.remoteMachine)) {
+        deps.closeTabById(tab.id);
+      }
+    },
     getTabsSnapshot: () => ({
       tabs: deps.tabsRef.current.map((tab) => ({
         id: tab.id,

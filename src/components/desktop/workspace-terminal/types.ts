@@ -69,6 +69,8 @@ export interface TerminalTab {
   tmuxSession: string | null;
   /** Live run views attach to an existing PTY but must never send it input. */
   readOnly?: boolean;
+  /** Prevent typing into a new local shell until its remote control starts. */
+  remoteLaunchPending?: boolean;
   /** Saved SSH target behind a local control shell. Retained after exit or reload. */
   remoteMachine?: { id: string; label: string; sessionId: string };
   cliAgent?: string;
@@ -235,6 +237,8 @@ export interface TerminalTabHandle {
   focusTabRelative: (delta: number) => boolean;
   focusTabAtIndex: (oneBasedIndex: number) => boolean;
   closeActiveTab: () => boolean;
+  /** Close remote control tabs before their containing pane unmounts. */
+  closeRemoteTerminalTabs: () => void;
   getTabsSnapshot: () => {
     tabs: Array<{
       id: string;
