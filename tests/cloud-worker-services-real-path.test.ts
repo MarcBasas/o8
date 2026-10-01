@@ -123,6 +123,7 @@ describe('leased remote workspace services', () => {
     await expect(resolveRemoteManifestHash(repo, baseSha)).rejects.toThrow('require approval');
     const unapproved = await cloudRuntime.launch({
       cwd: repo, sourceRepoPath: repo, prompt: 'Must not enqueue yet.',
+      model: 'gpt-6.1-sol', effort: 'medium',
       packetId: 'packet-service-unapproved', branchName: 'o8/service-unapproved', workMode: 'edit',
     });
     expect(unapproved).toMatchObject({ ok: false, sideEffect: 'none' });
@@ -134,6 +135,9 @@ describe('leased remote workspace services', () => {
     writeFileSync(fakeCodex, [
       '#!/usr/bin/env node',
       "if (process.env.O8_CLOUD_WORKER_KEY) process.exit(19);",
+      "const git=(...args)=>require('child_process').execFileSync('git',args,{encoding:'utf8'}).trim();",
+      "const checkout={shallow:git('rev-parse','--is-shallow-repository'),commits:git('rev-list','--all','--count'),base:git('rev-parse','HEAD')};",
+      "require('fs').writeFileSync('checkout-proof.json',JSON.stringify(checkout));",
       "process.stdin.resume(); process.stdin.on('end',()=>{",
       "  setTimeout(()=>{require('fs').writeFileSync('codex-proof.txt',JSON.stringify({args:process.argv.slice(2)}));",
       "    process.stdout.write(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'done'}})+'\\n');",
@@ -205,6 +209,8 @@ describe('leased remote workspace services', () => {
       expect(proof.args.filter((arg) => arg.startsWith('model_reasoning_effort=')))
         .toEqual(['model_reasoning_effort=medium']);
       expect(proof.args[proof.args.indexOf('model_reasoning_effort=medium') - 1]).toBe('-c');
+      expect(JSON.parse(execFileSync('git', ['--git-dir', bare, 'show', `refs/heads/${branch}:checkout-proof.json`], { encoding: 'utf8' })))
+        .toEqual({ shallow: 'true', commits: '1', base: baseSha });
       const stale = await streamRoute.POST(new NextRequest('http://localhost/api/cloud/worker-stream', {
         method: 'POST',
         headers: { authorization: `Bearer ${key.plaintext}`, 'content-type': 'application/json' },
