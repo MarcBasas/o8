@@ -15,7 +15,7 @@ import type {
   WorkerIntent,
   WorkerRouting,
 } from '@/lib/orchestrator/types';
-import { buildProjectTaskBrief, getProjectContext, type ProjectContext } from '@/lib/projects/context';
+import { buildProjectTaskBrief, getProjectContext, ProjectNotFoundError, type ProjectContext } from '@/lib/projects/context';
 
 export type TaskPoolGroup = 'ready' | 'running' | 'review' | 'blocked' | 'done';
 
@@ -238,17 +238,24 @@ function taskSortKey(task: TaskPoolTask): string {
 }
 
 async function resolveProjectContext(
-  cache: Map<string, ProjectContext>,
+  cache: Map<string, ProjectContext | null>,
   repoPath: string | null,
   projectId: string | null,
 ): Promise<ProjectContext | null> {
   if (!repoPath && !projectId) return null;
   const key = `${projectId ?? ''}::${repoPath ?? ''}`;
-  const cached = cache.get(key);
-  if (cached) return cached;
-  const context = await getProjectContext({ repoPath, projectId });
-  cache.set(key, context);
-  return context;
+  if (cache.has(key)) return cache.get(key) ?? null;
+  try {
+    const context = await getProjectContext({ repoPath, projectId });
+    cache.set(key, context);
+    return context;
+  } catch (error) {
+    // Historical lanes can outlive a project. Do not retarget them to the
+    // active project, or hide unrelated tasks behind one stale identity.
+    if (!(error instanceof ProjectNotFoundError)) throw error;
+    cache.set(key, null);
+    return null;
+  }
 }
 
 export async function getTaskPool(options: TaskPoolOptions = {}): Promise<TaskPool> {
@@ -258,7 +265,7 @@ export async function getTaskPool(options: TaskPoolOptions = {}): Promise<TaskPo
     lane.packetId ? [[lane.packetId, lane] as const] : []
   )));
   const packetIds = new Set(mission.packets.map((packet) => packet.id));
-  const projectCache = new Map<string, ProjectContext>();
+  const projectCache = new Map<string, ProjectContext | null>();
   const tasks: TaskPoolTask[] = [];
   const nowMs = Date.now();
 
