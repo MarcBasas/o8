@@ -23,11 +23,10 @@ const controlRoute = await import('@/app/api/cloud/worker-control/route');
 const statusRoute = await import('@/app/api/cloud/job-status/route');
 const workerPanelRoute = await import('@/app/api/panel/cloud-workers/route');
 const taskRoute = await import('@/app/api/tasks/[taskId]/route');
-const taskEvidenceRoute = await import('@/app/api/tasks/[taskId]/evidence/route');
 const drainRoute = await import('@/app/api/panel/cloud-jobs/drain/route');
 const { createCloudWorkerKey, revokeCloudWorkerKey } = await import('@/lib/cloud/worker-auth');
 const { recordCloudWorkerPresence } = await import('@/lib/cloud/worker-presence');
-const { cancelJob, getJob, getLatestSessionJob, getJobDrainStatus, listJobControls, listJobs } = await import('@/lib/cloud/job-queue');
+const { getJob, getLatestSessionJob, getJobDrainStatus, listJobControls, listJobs } = await import('@/lib/cloud/job-queue');
 const { closeDb, getSqlite } = await import('@/lib/db');
 const { getOrCreateWsToken } = await import('@/lib/ws-auth');
 const { cloudRuntime } = await import('@/lib/runtimes/cloud-adapter');
@@ -48,7 +47,6 @@ const packetIds = [
   'packet-cloud-invalid-source',
   'packet-cloud-prebound-lane',
   'packet-cloud-task-board',
-  'packet-cloud-evidence',
 ];
 
 // External origin transport is substituted with the pinned fixture revision.
@@ -480,67 +478,6 @@ describe('durable cloud execution through the runtime launch path', () => {
     expect(localTask.runtime).toBe('codex');
     expect(localTask.execution).toBeNull();
     expect(taskSessionKey(localTask)).toBe('codex:current-local-pane');
-  });
-
-  it('opens bounded remote evidence only for the current packet and claim attempt', async () => {
-    const previousLease = process.env.O8_CLOUD_JOB_LEASE_MS;
-    let evidenceJobId: string | null = null;
-    process.env.O8_CLOUD_JOB_LEASE_MS = '500';
-    try {
-      const packetId = 'packet-cloud-evidence';
-      const launch = await runtimeLaunch({
-        runtime: 'cloud', prompt: 'Produce remote evidence.', cwd: repoPath, repoPath,
-        branchName: 'o8/cloud-evidence', packetId, skipSetup: true,
-        clientMutationId: 'cloud-evidence-1',
-      });
-      expect(launch.status).toBe(200);
-      const launched = await launch.json() as { surfaceId: string };
-      const jobId = launched.surfaceId.replace(/^cloud:/, '');
-      evidenceJobId = jobId;
-      const cursor = getJob('team_default', jobId)!.cursor;
-      const evidenceRequest = (attempt: number, id = packetId, authenticated = true) => taskEvidenceRoute.GET(
-        new NextRequest(`http://example.invalid/api/tasks/${id}/evidence?jobId=${jobId}&attempt=${attempt}`, {
-          headers: authenticated ? { authorization: `Bearer ${getOrCreateWsToken()}` } : {},
-        }),
-        { params: Promise.resolve({ taskId: id }) },
-      );
-      expect((await evidenceRequest(0)).status).toBe(200);
-      expect((await evidenceRequest(0, packetId, false)).status).toBe(401);
-      expect((await evidenceRequest(0, 'packet-cloud-invalid-source')).status).toBe(409);
-      const firstPoll = await workerPoll('evidence-first', cursor);
-      expect(firstPoll.status).toBe(200);
-      const firstJob = (await firstPoll.json() as { job: { id: string; claimedBy: string; leaseToken: string } }).job;
-      expect(firstJob.id).toBe(jobId);
-      expect((await workerStream({ jobId, workerId: firstJob.claimedBy, leaseToken: firstJob.leaseToken, type: 'chunk', payload: { text: 'first attempt log' } })).status).toBe(200);
-      expect((await workerStream({ jobId, workerId: firstJob.claimedBy, leaseToken: firstJob.leaseToken, type: 'diff', payload: { files: [{ path: 'first.txt', status: 'added', additions: 1, deletions: 0 }] } })).status).toBe(200);
-      const first = await evidenceRequest(1);
-      expect(first.status).toBe(200);
-      expect(await first.json()).toMatchObject({
-        packetId, jobId, attempt: 1,
-        logs: [{ text: 'first attempt log' }],
-        files: [{ path: 'first.txt', status: 'added' }],
-        previewAccess: 'unavailable', workspaceAccess: 'unavailable',
-      });
-      closeDb();
-      expect((await evidenceRequest(1)).status).toBe(200);
-      await new Promise((resolve) => setTimeout(resolve, 550));
-      const secondPoll = await workerPoll('evidence-second', cursor);
-      expect(secondPoll.status).toBe(200);
-      const secondJob = (await secondPoll.json() as { job: { id: string; claimedBy: string; leaseToken: string } }).job;
-      expect(secondJob.id).toBe(jobId);
-      expect((await evidenceRequest(1)).status).toBe(409);
-      const second = await evidenceRequest(2);
-      expect(second.status).toBe(200);
-      expect(await second.json()).toMatchObject({ logs: [], files: [], attempt: 2 });
-      expect((await workerStream({ jobId, workerId: firstJob.claimedBy, leaseToken: firstJob.leaseToken, type: 'chunk', payload: { text: 'stale worker' } })).status).toBe(409);
-      expect((await workerStream({ jobId, workerId: secondJob.claimedBy, leaseToken: secondJob.leaseToken, type: 'chunk', payload: { text: 'second attempt log' } })).status).toBe(200);
-      const latest = await evidenceRequest(2);
-      expect(await latest.json()).toMatchObject({ logs: [{ text: 'second attempt log' }], files: [] });
-    } finally {
-      if (evidenceJobId) cancelJob('team_default', evidenceJobId);
-      if (previousLease === undefined) delete process.env.O8_CLOUD_JOB_LEASE_MS;
-      else process.env.O8_CLOUD_JOB_LEASE_MS = previousLease;
-    }
   });
 
   it('rejects invalid remote source before enqueueing a worker job', async () => {

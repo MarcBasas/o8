@@ -10,6 +10,7 @@ import { ActionButton, MenuActionRow, SectionLabel } from './shared';
 import { TaskRow } from './TaskRow';
 
 interface RemoteEvidencePayload {
+  packetId: string;
   jobId: string;
   attempt: number;
   status: string;
@@ -224,6 +225,7 @@ export function CollapsedTaskSection({
 
 export function TaskActionMenu({
   state,
+  boundaryElement,
   busyKey,
   onClose,
   onRefreshTask,
@@ -231,6 +233,7 @@ export function TaskActionMenu({
   onAction,
 }: {
   state: TaskActionMenuState;
+  boundaryElement?: HTMLElement | null;
   busyKey: string | null;
   onClose: () => void;
   onRefreshTask: () => Promise<void>;
@@ -246,16 +249,17 @@ export function TaskActionMenu({
   const task = state.task;
   const evidenceJobId = task.execution?.jobId;
   const evidenceAttempt = task.execution?.attempt;
-  const evidenceKey = `${evidenceJobId}:${evidenceAttempt}`;
-  const currentEvidence = evidence && evidence.jobId === evidenceJobId && evidence.attempt === evidenceAttempt ? evidence : null;
+  const evidenceKey = `${task.id}:${evidenceJobId}:${evidenceAttempt}`;
+  const currentEvidence = evidence && evidence.packetId === task.packetId && evidence.jobId === evidenceJobId && evidence.attempt === evidenceAttempt ? evidence : null;
   const currentError = evidenceError?.key === evidenceKey ? evidenceError.message : null;
 
   useEffect(() => {
     if (mode !== 'evidence' || !evidenceJobId || evidenceAttempt === undefined) return;
     let active = true;
-    const requestKey = `${evidenceJobId}:${evidenceAttempt}`;
+    const requestKey = `${task.id}:${evidenceJobId}:${evidenceAttempt}`;
+    const controller = new AbortController();
     const params = new URLSearchParams({ jobId: evidenceJobId, attempt: String(evidenceAttempt) });
-    void fetch(`/api/tasks/${encodeURIComponent(task.id)}/evidence?${params}`, { cache: 'no-store' })
+    void fetch(`/api/tasks/${encodeURIComponent(task.id)}/evidence?${params}`, { cache: 'no-store', signal: controller.signal })
       .then(async (response) => {
         const body = await response.json().catch(() => ({})) as RemoteEvidencePayload & { error?: string };
         if (!response.ok) throw new Error(body.error || 'Remote evidence is unavailable.');
@@ -263,7 +267,7 @@ export function TaskActionMenu({
       })
       .catch((error: unknown) => { if (active) setEvidenceError({ key: requestKey, message: error instanceof Error ? error.message : 'Remote evidence is unavailable.' }); })
       .finally(() => { if (active) setEvidenceLoading(false); });
-    return () => { active = false; };
+    return () => { active = false; controller.abort(); };
   }, [mode, task.id, evidenceJobId, evidenceAttempt, evidenceReload]);
 
   useEffect(() => {
@@ -279,13 +283,26 @@ export function TaskActionMenu({
   const viewportHeight = typeof window === 'undefined' ? 800 : window.innerHeight;
   const canUnqueue = state.task.group === 'ready' || state.task.group === 'blocked';
   const menuHeight = mode === 'evidence' ? 480 : mode === 'menu' ? (canUnqueue ? 299 : 266) : 214;
-  const panelRect = typeof document === 'undefined'
-    ? null
-    : document.querySelector('[data-o8-agent-panel="true"]')?.getBoundingClientRect() ?? null;
-  const boundaryLeft = panelRect?.left ?? 0;
-  const boundaryRight = panelRect?.right ?? viewportWidth;
-  const boundaryTop = panelRect?.top ?? 0;
-  const boundaryBottom = panelRect?.bottom ?? viewportHeight;
+  const panelRect = boundaryElement?.getBoundingClientRect();
+  let boundaryLeft = Math.max(0, panelRect?.left ?? 0);
+  let boundaryRight = Math.min(viewportWidth, panelRect?.right ?? viewportWidth);
+  let boundaryTop = Math.max(0, panelRect?.top ?? 0);
+  let boundaryBottom = Math.min(viewportHeight, panelRect?.bottom ?? viewportHeight);
+  // The board can extend beyond a scroll container or clipped project sheet.
+  // Keep the entire popup, including its actions, inside the visible portion.
+  for (let parent = boundaryElement?.parentElement; parent; parent = parent.parentElement) {
+    const style = window.getComputedStyle(parent);
+    const rect = parent.getBoundingClientRect();
+    const clipsBoth = Boolean(style.clipPath && style.clipPath !== 'none') || /paint|strict|content/.test(style.contain);
+    if (clipsBoth || /auto|scroll|hidden|clip/.test(style.overflowX || style.overflow)) {
+      boundaryLeft = Math.max(boundaryLeft, rect.left);
+      boundaryRight = Math.min(boundaryRight, rect.right);
+    }
+    if (clipsBoth || /auto|scroll|hidden|clip/.test(style.overflowY || style.overflow)) {
+      boundaryTop = Math.max(boundaryTop, rect.top);
+      boundaryBottom = Math.min(boundaryBottom, rect.bottom);
+    }
+  }
   const menuWidth = Math.min(mode === 'evidence' ? 480 : 248, Math.max(180, boundaryRight - boundaryLeft - 16));
   const minLeft = boundaryLeft + 8;
   const maxLeft = Math.max(minLeft, boundaryRight - menuWidth - 8);
@@ -427,7 +444,10 @@ export function TaskActionMenu({
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 10 }}>
               <ActionButton label="Back" onClick={() => setMode('menu')} />
               <ActionButton label="Refresh" disabled={evidenceLoading} onClick={() => {
-                void onRefreshTask().finally(() => setEvidenceReload((value) => value + 1));
+                setEvidenceLoading(true);
+                setEvidence(null);
+                setEvidenceError(null);
+                void onRefreshTask().catch(() => {}).finally(() => setEvidenceReload((value) => value + 1));
               }} />
             </div>
           </div>

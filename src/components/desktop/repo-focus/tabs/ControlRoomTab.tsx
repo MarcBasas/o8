@@ -765,6 +765,7 @@ export function ControlRoomTab({
       {actionMenu ? (
         <TaskActionMenu
           state={actionMenu}
+          boundaryElement={rootRef.current}
           busyKey={busyKey}
           onClose={() => setActionMenu(null)}
           onRefreshTask={() => refresh(true)}
