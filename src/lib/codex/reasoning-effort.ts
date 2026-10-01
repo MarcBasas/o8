@@ -21,6 +21,8 @@ const MAX_EFFORTS = ['max'] as const satisfies readonly ManualThinkingEffort[];
  */
 export const CODEX_HIGH_END_EFFORT_CATALOG: Readonly<Record<string, readonly ManualThinkingEffort[]>> = Object.freeze({
   'gpt-6-astra': HIGH_END_EFFORTS,
+  // Installed model catalog 0.159.0, observed 2026-10-01.
+  'gpt-6.1-sol': HIGH_END_EFFORTS,
   'gpt-6-sol': HIGH_END_EFFORTS,
   'gpt-6-luna': MAX_EFFORTS,
   'gpt-5.6-sol': HIGH_END_EFFORTS,

@@ -5,6 +5,7 @@
 export function formatModelLabel(model: string): string {
   return model
     // Vendor-prefixed model ids from runtime and config surfaces
+    .replace('openai-codex/gpt-6.1-sol', 'Codex GPT-6.1 Sol')
     .replace('openai-codex/gpt-6-astra', 'Codex GPT-6 Astra')
     .replace('openai-codex/gpt-6-sol', 'Codex GPT-6 Sol')
     .replace('openai-codex/gpt-6-luna', 'Codex GPT-6 Luna')
@@ -28,6 +29,7 @@ export function formatModelLabel(model: string): string {
     .replace('anthropic/claude-haiku-4-5-20251001', 'Haiku 4.5')
     .replace('google/gemini-3-flash-preview', 'Gemini 3 Flash')
     // Bare forms (from live sessions)
+    .replace('gpt-6.1-sol', 'GPT-6.1 Sol')
     .replace('gpt-6-astra', 'GPT-6 Astra')
     .replace('gpt-6-sol', 'GPT-6 Sol')
     .replace('gpt-6-luna', 'GPT-6 Luna')

@@ -19,6 +19,7 @@ const CURRENT_CLAUDE_FLAGSHIPS = [
 ] as const;
 
 const CURRENT_CODEX_FLAGSHIPS = [
+  'gpt-6.1-sol',
   MODEL_IDS.raw.openAiGpt6Astra,
   MODEL_IDS.raw.openAiGpt6Sol,
   MODEL_IDS.raw.openAiGpt6Luna,
@@ -66,4 +67,6 @@ it('formats current model IDs without dropping their minor versions', () => {
   expect(formatModelLabel('anthropic/claude-opus-5-5')).toBe('Opus 5.5');
   expect(formatModelLabel('claude-fable-5-1')).toBe('Fable 5.1');
   expect(formatModelLabel('gpt-6-sol')).toBe('GPT-6 Sol');
+  expect(formatModelLabel('gpt-6.1-sol')).toBe('GPT-6.1 Sol');
+  expect(formatModelLabel('openai-codex/gpt-6.1-sol')).toBe('Codex GPT-6.1 Sol');
 });
