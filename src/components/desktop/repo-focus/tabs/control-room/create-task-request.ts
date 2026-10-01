@@ -9,6 +9,7 @@ export async function createTaskRequest(input: {
   repoPath: string | null;
   workerIntent: string;
   requestedRuntime: TaskExecutionRuntime;
+  model?: string | null;
 }, dispatchAfterCreate: boolean): Promise<string> {
   const response = await fetch('/api/tasks', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),

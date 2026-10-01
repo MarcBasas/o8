@@ -206,7 +206,14 @@ async function syncPacketForLane(
       lastEventLabel,
     };
 
-    if (patch.status) nextPacket.status = patch.status;
+    if (patch.status) {
+      nextPacket.status = patch.status;
+      if ((patch.status === 'running' || patch.status === 'launching')
+        && nextPacket.queueState === 'held' && nextPacket.holdIntent === 'explicit-dispatch') {
+        nextPacket.queueState = 'queued';
+        nextPacket.holdIntent = undefined;
+      }
+    }
     if (patch.blockedReason !== undefined) nextPacket.blockedReason = patch.blockedReason;
 
     state.packets = state.packets.map((candidate, candidateIndex) => (

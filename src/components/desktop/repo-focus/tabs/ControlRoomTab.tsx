@@ -315,7 +315,7 @@ export function ControlRoomTab({
     }
   }, [loadIssueIntake, project.id, refresh, selectedRepo?.localPath]);
 
-  const createControlTask = useCallback(async (dispatchAfterCreate = false, requestedRuntime: TaskExecutionRuntime = 'codex') => {
+  const createControlTask = useCallback(async (dispatchAfterCreate = false, requestedRuntime: TaskExecutionRuntime = 'codex', model: string | null = null) => {
     const title = newTaskTitle.trim();
     if (!title) {
       setNotice('Add a short task title first.');
@@ -331,6 +331,7 @@ export function ControlRoomTab({
         repoPath: newTaskRepoPath || selectedRepo?.localPath || null,
         workerIntent: newTaskIntent,
         requestedRuntime,
+        model,
       }, dispatchAfterCreate);
       setNewTaskTitle('');
       setNewTaskSummary('');
@@ -607,8 +608,8 @@ export function ControlRoomTab({
           onRepoPathChange={setNewTaskRepoPath}
           onWorkerIntentChange={setNewTaskIntent}
           onCancel={() => setComposerOpen(false)}
-          onCreate={(runtime) => { void createControlTask(false, runtime); }}
-          onCreateAndDispatch={(runtime) => { void createControlTask(true, runtime); }}
+          onCreate={(runtime, model) => { void createControlTask(false, runtime, model); }}
+          onCreateAndDispatch={(runtime, model) => { void createControlTask(true, runtime, model); }}
         />
       ) : null}
 

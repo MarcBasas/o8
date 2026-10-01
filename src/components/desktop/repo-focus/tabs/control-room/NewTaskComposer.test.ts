@@ -40,15 +40,17 @@ describe('task execution placement', () => {
     expect(container.textContent).toContain('No remote worker connected.');
     expect(button('Add + dispatch').disabled).toBe(true);
     act(() => button('Add').click());
-    expect(onCreate).toHaveBeenCalledWith('cloud');
+    expect(onCreate).toHaveBeenCalledWith('cloud', null);
     expect(onDispatch).not.toHaveBeenCalled();
   });
 
   it('passes remote placement when the operator dispatches to a connected pool', async () => {
     await show(true);
     expect(button('Add + dispatch').disabled).toBe(false);
+    const model = container.querySelector<HTMLSelectElement>('select[aria-label="Task model"]')!;
+    act(() => { model.value = 'gpt-6-sol'; model.dispatchEvent(new Event('change', { bubbles: true })); });
     act(() => button('Add + dispatch').click());
-    expect(onDispatch).toHaveBeenCalledWith('cloud');
+    expect(onDispatch).toHaveBeenCalledWith('cloud', 'gpt-6-sol');
   });
 
   it('preserves placement across create and dispatch, and surfaces a server refusal without retrying locally', async () => {
@@ -56,9 +58,9 @@ describe('task execution placement', () => {
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, taskId: 'task-remote' }) })
       .mockResolvedValueOnce({ ok: false, json: async () => ({ error: 'Remote worker disconnected.' }) });
     vi.stubGlobal('fetch', fetchMock);
-    await expect(createTaskRequest({ title: 'Task', summary: null, repoPath: '/tmp/fixture', projectId: 'project', workerIntent: 'light_worker', requestedRuntime: 'cloud' }, true))
+    await expect(createTaskRequest({ title: 'Task', summary: null, repoPath: '/tmp/fixture', projectId: 'project', workerIntent: 'light_worker', requestedRuntime: 'cloud', model: 'gpt-6-sol' }, true))
       .rejects.toThrow('Remote worker disconnected.');
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body).requestedRuntime).toBe('cloud');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ requestedRuntime: 'cloud', model: 'gpt-6-sol' });
     expect(fetchMock.mock.calls[1][0]).toBe('/api/tasks/task-remote/dispatch');
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });

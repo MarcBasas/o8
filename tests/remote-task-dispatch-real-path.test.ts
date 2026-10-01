@@ -25,13 +25,14 @@ const { cloudRuntime } = await import('@/lib/runtimes/cloud-adapter');
 const { addRepo } = await import('@/lib/repos/registry');
 const { createCloudWorkerKey, revokeCloudWorkerKey } = await import('@/lib/cloud/worker-auth');
 const { recordCloudWorkerPresence } = await import('@/lib/cloud/worker-presence');
-const { getJob, cancelJob } = await import('@/lib/cloud/job-queue');
-const { getLane } = await import('@/lib/lane/registry');
+const { getJob } = await import('@/lib/cloud/job-queue');
+const { getLane, reconcileLanesWithSessions, detachSession, setLaneStatus } = await import('@/lib/lane/registry');
+const { reconcileCloudJobLanes } = await import('@/lib/lane/cloud-reconciliation');
 const { closeDb } = await import('@/lib/db');
 const { getRuntime } = await import('@/lib/runtimes');
 const { getOrCreateWsToken } = await import('@/lib/ws-auth');
 const { getWorktreeManager } = await import('@/lib/worktree');
-const { readOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
+const { readOrchestratorControlPlaneState, writeOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
 
 function git(...args: string[]) {
   return execFileSync('git', args, { stdio: 'pipe' }).toString().trim();
@@ -60,6 +61,10 @@ async function run(taskId: string) {
     params: Promise.resolve({ taskId }),
   });
 }
+
+// External origin transport is substituted with the pinned fixture revision.
+const published = await import('@/lib/cloud/published-base');
+vi.spyOn(published, 'resolvePublishedCloudBase').mockImplementation(async () => git('-C', repoPath, 'rev-parse', 'main'));
 
 beforeAll(async () => {
   mkdirSync(repoPath);
@@ -120,6 +125,8 @@ describe('remote placement through ordinary authenticated task routes', () => {
     expect(response.status).toBe(200);
     expect(body.ok, body.note).toBe(true);
     expect(body.workerRouting).toMatchObject({ selectedRuntime: 'cloud', selectedModel: 'gpt-6-sol' });
+    expect(readOrchestratorControlPlaneState().packets.find((packet) => packet.id === taskId))
+      .toMatchObject({ queueState: 'queued' });
     const lane = getLane(body.laneId)!;
     expect(lane).toMatchObject({ runtime: 'cloud', worktreePath: null, packetId: body.packetId, model: 'gpt-6-sol' });
     expect(lane.sessionKey).toMatch(/^cloud:/);
@@ -132,6 +139,15 @@ describe('remote placement through ordinary authenticated task routes', () => {
     expect(claimedResponse.status).toBe(200);
     const claimed = (await claimedResponse.json()).job;
     expect(claimed.id).toBe(job.id);
+    // Replay the historical pre-dispatch marker without changing the job.
+    const state = readOrchestratorControlPlaneState();
+    writeOrchestratorControlPlaneState({ ...state, packets: state.packets.map((packet) => packet.id === taskId
+      ? { ...packet, status: 'blocked', queueState: 'held', holdIntent: 'explicit-dispatch', blockedReason: 'Awaiting explicit dispatch' }
+      : packet) });
+    closeDb();
+    const running = await (await tasks.GET(request('/api/tasks?includeDone=true'))).json();
+    expect(running.tasks.find((task: { id: string }) => task.id === taskId))
+      .toMatchObject({ group: 'running', blockedReason: null });
     const output = await stream.POST(new NextRequest('http://localhost/api/cloud/worker-stream', {
       method: 'POST', headers: { Authorization: `Bearer ${key.plaintext}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ jobId: job.id, workerId: 'remote-fixture', leaseToken: claimed.leaseToken, type: 'chunk', payload: { text: 'Task worker receipt' } }),
@@ -143,7 +159,27 @@ describe('remote placement through ordinary authenticated task routes', () => {
     expect(git('-C', repoPath, 'worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(1);
     expect(localLaunch).not.toHaveBeenCalled();
     expect((await run(await create('claude-invalid-model'))).status).toBe(409);
-    cancelJob('team_default', job.id);
+    const completed = await stream.POST(new NextRequest('http://localhost/api/cloud/worker-stream', {
+      method: 'POST', headers: { Authorization: `Bearer ${key.plaintext}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId: job.id, workerId: 'remote-fixture', leaseToken: claimed.leaseToken, type: 'completed', payload: { result: 'done', commitSha: git('-C', repoPath, 'rev-parse', 'main') } }),
+    }));
+    expect(completed.status).toBe(200);
+    // Local CLI inventory cannot detach a durable remote session.
+    reconcileLanesWithSessions([]);
+    expect(getLane(lane.id)?.sessionKey).toBe(lane.sessionKey);
+    // Repair historical session loss from the exact job/lane/branch identity.
+    detachSession(lane.id, 'system');
+    setLaneStatus(lane.id, 'paused', 'system', 'operator_detach');
+    reconcileCloudJobLanes();
+    expect(getLane(lane.id)?.sessionKey).toBeNull();
+    setLaneStatus(lane.id, 'paused', 'system', 'session_lost');
+    closeDb();
+    reconcileCloudJobLanes();
+    expect(getLane(lane.id)).toMatchObject({ status: 'reviewing', sessionKey: lane.sessionKey, worktreePath: null });
+    closeDb();
+    const reviewed = await (await tasks.GET(request('/api/tasks?includeDone=true'))).json();
+    expect(reviewed.tasks.find((task: { id: string }) => task.id === taskId))
+      .toMatchObject({ group: 'review', blockedReason: null });
     localLaunch.mockRestore();
     revokeCloudWorkerKey(key.record.id);
     expect((await run(await create())).status).toBe(409);
