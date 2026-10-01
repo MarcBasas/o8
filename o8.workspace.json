@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "services": [
+    {
+      "name": "acceptance",
+      "command": "node tests/fixtures/remote-preview-acceptance/server.mjs",
+      "port": {
+        "preferred": 42179,
+        "env": "PORT"
+      },
+      "health": {
+        "http": "http://127.0.0.1:{{port}}/health",
+        "timeoutMs": 15000
+      }
+    }
+  ],
+  "preview": {
+    "url": "http://127.0.0.1:42179/"
+  }
+}
