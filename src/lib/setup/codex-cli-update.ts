@@ -119,7 +119,14 @@ export async function updateSelectedCodex() {
       await rm(configDir, { recursive: true, force: true });
     }
     invalidateCliCache('codex');
-    const verified = await resolveCli(spec);
+    let verified = await resolveCli(spec);
+    // A cold executable may miss the first bounded version probe after install.
+    // Retry once only while both selected paths still identify the same binary.
+    if (!verified.version && verified.path === selected.path
+      && await realpath(verified.path) === install.binary) {
+      invalidateCliCache('codex');
+      verified = await resolveCli(spec);
+    }
     if (verified.path !== selected.path || await realpath(verified.path) !== install.binary || verified.version !== tool.latestVersion) {
       throw new CodexUpdateRefusal('verification-failed', 'The update finished, but the selected Codex version could not be verified. Check the selected installation before retrying.', 503);
     }
