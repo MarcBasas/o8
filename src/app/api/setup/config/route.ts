@@ -103,7 +103,7 @@ export async function POST(request: NextRequest) {
 
   if (projectRoot && (updated.setupComplete || updated.completedAt)) {
     try {
-      installClaudeCodePreToolHook(projectRoot);
+      await installClaudeCodePreToolHook(projectRoot);
     } catch {
       // Hook installation is best-effort during onboarding.
     }
