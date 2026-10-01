@@ -48,11 +48,13 @@ export function NativeRemotePreview({ id, url, onError }: { id: string; url: str
     window.addEventListener('scroll', tick, true);
     // Also tracks overlay occlusion and a workspace hidden without unmounting.
     const timer = window.setInterval(tick, 200);
-    tick();
+    // Strict Mode replays effects before this microtask. A one-use bootstrap
+    // must not open a window that the replay cleanup immediately destroys.
+    queueMicrotask(tick);
     return () => {
       active = false; observer.disconnect(); window.clearInterval(timer);
       window.removeEventListener('resize', tick); window.removeEventListener('scroll', tick, true);
-      void remotePreviewClose(id).catch(() => {});
+      if (opened) void remotePreviewClose(id).catch(() => {});
     };
   }, [id, url]);
   return <div ref={ref} aria-label="Remote task preview" style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }} />;
