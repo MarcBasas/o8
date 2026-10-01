@@ -1579,6 +1579,12 @@
       ]
     },
     {
+      "path": "tests/cloud-worker-poll-revocation-real-path.test.ts",
+      "reasons": [
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/cloud-worker-services-real-path.test.ts",
       "reasons": [
         "child-process",
