@@ -2,10 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SupervisorInboxItem } from '@/lib/supervisor/inbox';
-import { AlertCircle, Archive, CheckCircle2, Clock, ShieldCheck } from '../../lucide-shims';
-import {
-  REPO_FOCUS_FONT,
-} from '../utils';
+import { AlertCircle, Archive, CheckCircle2, Clock } from '../../lucide-shims';
+import { REPO_FOCUS_FONT } from '../utils';
 import type {
   ControlRoomTabProps,
   GitHubIssueIntake,
@@ -31,6 +29,7 @@ import {
 } from './control-room/helpers';
 import {
   CollapsedTaskSection,
+  DispatchLockStrip,
   GitHubIntakeSection,
   NewTaskComposer,
   StatusMessage,
@@ -203,6 +202,11 @@ export function ControlRoomTab({
       const payload = await response.json() as TaskPoolPayload;
       if (cancelled?.()) return;
       setTasks(payload.tasks ?? []);
+      setActionMenu((current) => {
+        if (!current) return current;
+        const latest = payload.tasks?.find((task) => task.id === current.task.id);
+        return latest ? { ...current, task: latest } : current;
+      });
       setError(null);
     } catch (err) {
       if (cancelled?.()) return;
@@ -646,27 +650,7 @@ export function ControlRoomTab({
         onRefresh={() => { void refresh(false); }}
       />
 
-      <div
-        style={{
-          marginTop: 7,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          minHeight: 28,
-          borderBottom: '1px solid var(--t-divider-subtle)',
-          color: 'var(--t-text-muted)',
-          fontSize: 10.5,
-          lineHeight: '14px',
-        }}
-      >
-        <ShieldCheck size={14} strokeWidth={2} style={{ color: 'var(--t-accent)', flexShrink: 0 }} />
-        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          Codex-only dispatch lock
-        </span>
-        <span style={{ color: 'var(--t-text-faint)', flexShrink: 0 }}>
-          {activeLocks} locks - {sessionBound} open
-        </span>
-      </div>
+      <DispatchLockStrip activeLocks={activeLocks} sessionBound={sessionBound} />
 
       <div style={isWide ? { display: 'flex', gap: 14, alignItems: 'flex-start', marginTop: 4 } : { marginTop: 4 }}>
         <div style={isWide ? { flex: '1.6 1 0', minWidth: 0 } : undefined}>
@@ -781,8 +765,10 @@ export function ControlRoomTab({
       {actionMenu ? (
         <TaskActionMenu
           state={actionMenu}
+          boundaryElement={rootRef.current}
           busyKey={busyKey}
           onClose={() => setActionMenu(null)}
+          onRefreshTask={() => refresh(true)}
           onSelectSession={onSelectSession}
           onAction={(task, action, body) => { void mutateTask(task, action, body); }}
         />
