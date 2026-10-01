@@ -2,8 +2,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, symlinkSync, readFile
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { invalidateCliCache } from '@/lib/runtimes/shared/cli-resolver';
 
-const fixture = vi.hoisted(() => ({ prefix: '', toolchain: '', selected: '', version: '0.144.1', source: 'which', busy: false, fail: false, wrongVersion: false, externalBusy: false, unrelatedBusy: false, changedPath: false, commands: [] as string[], calls: [] as string[][] }));
+const fixture = vi.hoisted(() => ({ prefix: '', toolchain: '', selected: '', version: '0.144.1', source: 'which', busy: false, fail: false, wrongVersion: false, externalBusy: false, unrelatedBusy: false, changedPath: false, changedRealpath: false, missingProbes: 0, postProbes: 0, changeOnRecovery: '' as '' | 'path' | 'realpath', commands: [] as string[], calls: [] as string[][] }));
 const root = mkdtempSync(join(tmpdir(), 'o8-codex-update-'));
 process.env.CORTEX_IDE_DATA_DIR = join(root, 'data');
 mkdirSync(process.env.CORTEX_IDE_DATA_DIR, { recursive: true });
@@ -14,16 +15,28 @@ vi.mock('@/lib/app-update/idle-window', () => ({ getUpdateIdleWindow: async () =
 vi.mock('@/lib/runtimes/shared/cli-resolver', () => ({
   invalidateCliCache: vi.fn(),
   compareCliVersions: (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true }),
-  resolveCli: async (spec: { runtimeId: string }) => spec.runtimeId === 'codex'
-    ? ({ path: fixture.selected, version: fixture.version, source: fixture.source })
-    : ({ path: join(fixture.toolchain, 'bin', spec.runtimeId), version: spec.runtimeId === 'node' ? '22.23.1' : '11.8.0', source: spec.runtimeId === 'node' && process.env.O8_NODE_BIN ? 'env' : 'which' }),
+  resolveCli: async (spec: { runtimeId: string }) => {
+    if (spec.runtimeId !== 'codex') {
+      return { path: join(fixture.toolchain, 'bin', spec.runtimeId), version: spec.runtimeId === 'node' ? '22.23.1' : '11.8.0', source: spec.runtimeId === 'node' && process.env.O8_NODE_BIN ? 'env' : 'which' };
+    }
+    if (fixture.calls.length > 0) {
+      fixture.postProbes += 1;
+      if (fixture.postProbes === 2 && fixture.changeOnRecovery) {
+        const other = join(fixture.prefix, 'bin/other-codex');
+        writeFileSync(other, 'fixture');
+        if (fixture.changeOnRecovery === 'path') fixture.selected = other;
+        else { rmSync(fixture.selected); symlinkSync(other, fixture.selected); }
+      }
+    }
+    return { path: fixture.selected, version: fixture.calls.length > 0 && fixture.postProbes <= fixture.missingProbes ? undefined : fixture.version, source: fixture.source };
+  },
 }));
 vi.mock('node:child_process', () => ({ execFile: (command: string, args: string[], _options: unknown, callback: (error: Error | null, result?: { stdout: string; stderr: string }) => void) => {
   if (command === '/bin/ps') { callback(null, { stdout: fixture.externalBusy ? 'codex codex exec' : '', stderr: '' }); return; }
   fixture.commands.push(command);
   fixture.calls.push(args);
   if (fixture.fail) callback(new Error('install failed'));
-  else { if (fixture.changedPath) fixture.selected = join(fixture.prefix, 'bin/other-codex'); if (!fixture.wrongVersion) fixture.version = '0.159.3'; callback(null, { stdout: '', stderr: '' }); }
+  else { if (fixture.changedRealpath) { const other = join(fixture.prefix, 'bin/other-codex'); writeFileSync(other, 'fixture'); rmSync(fixture.selected); symlinkSync(other, fixture.selected); } if (fixture.changedPath) fixture.selected = join(fixture.prefix, 'bin/other-codex'); if (!fixture.wrongVersion) fixture.version = '0.159.3'; callback(null, { stdout: '', stderr: '' }); }
 } }));
 const route = await import('@/app/api/setup/cli-updates/route');
 const post = (body: unknown = {}, token = 'operator-test-token') => {
@@ -43,12 +56,13 @@ beforeEach(() => {
     const file = join(packageRoot, 'bin', binary === 'npm' ? 'npm-cli.js' : 'codex.js');
     writeFileSync(file, 'fixture');
     writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name, version: '0.144.1' }));
-    try { symlinkSync(file, join(fixture.prefix, 'bin', binary)); } catch { /* same fixture */ }
+    rmSync(join(fixture.prefix, 'bin', binary), { force: true });
+    symlinkSync(file, join(fixture.prefix, 'bin', binary));
   }
   writeFileSync(join(fixture.prefix, 'bin/node'), 'fixture');
   chmodSync(join(fixture.prefix, 'bin/node'), 0o700);
   fixture.selected = join(fixture.prefix, 'bin/codex');
-  fixture.version = '0.144.1'; fixture.source = 'which'; fixture.busy = false; fixture.fail = false; fixture.wrongVersion = false; fixture.unrelatedBusy = false; fixture.externalBusy = false; fixture.changedPath = false; fixture.commands = []; fixture.calls = [];
+  fixture.version = '0.144.1'; fixture.source = 'which'; fixture.busy = false; fixture.fail = false; fixture.wrongVersion = false; fixture.unrelatedBusy = false; fixture.externalBusy = false; fixture.changedPath = false; fixture.changedRealpath = false; fixture.missingProbes = 0; fixture.postProbes = 0; fixture.changeOnRecovery = ''; vi.mocked(invalidateCliCache).mockClear(); fixture.commands = []; fixture.calls = [];
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ version: '0.159.3' }), { status: 200 })));
 });
 afterAll(() => {
@@ -71,6 +85,49 @@ describe('Codex update through the operator route', () => {
     expect(fixture.calls[0]).toContain('--@openai:registry=https://registry.npmjs.org');
     const receipt = JSON.parse(readFileSync(join(process.env.CORTEX_IDE_DATA_DIR!, 'codex-cli-update.json'), 'utf8'));
     expect(receipt).toMatchObject({ status: 'succeeded', selectedPath: fixture.selected, targetVersion: '0.159.3' });
+  });
+  it('recovers one missing version with a fresh probe and persists verified success', async () => {
+    fixture.missingProbes = 1;
+    const response = await post();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ status: 'succeeded', installedVersion: '0.159.3' });
+    expect(fixture.postProbes).toBe(2);
+    expect(fixture.calls).toHaveLength(1);
+    expect(vi.mocked(invalidateCliCache).mock.calls.filter(([runtime]) => runtime === 'codex')).toHaveLength(3);
+    const receipt = JSON.parse(readFileSync(join(process.env.CORTEX_IDE_DATA_DIR!, 'codex-cli-update.json'), 'utf8'));
+    expect(receipt).toMatchObject({ status: 'succeeded', selectedPath: fixture.selected, targetVersion: '0.159.3' });
+  });
+  it('bounds missing-version recovery and persists verification failure', async () => {
+    fixture.missingProbes = 3;
+    const response = await post();
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: 'verification-failed' });
+    expect(fixture.postProbes).toBe(2);
+    expect(fixture.calls).toHaveLength(1);
+    const receipt = JSON.parse(readFileSync(join(process.env.CORTEX_IDE_DATA_DIR!, 'codex-cli-update.json'), 'utf8'));
+    expect(receipt).toMatchObject({ status: 'failed', targetVersion: '0.159.3' });
+  });
+  it.each(['changedPath', 'changedRealpath', 'wrongVersion'] as const)('refuses %s during missing-version recovery', async (change) => {
+    fixture.missingProbes = 1;
+    fixture[change] = true;
+    const response = await post();
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: 'verification-failed' });
+    expect(fixture.postProbes).toBe(change === 'wrongVersion' ? 2 : 1);
+    expect(fixture.calls).toHaveLength(1);
+    const receipt = JSON.parse(readFileSync(join(process.env.CORTEX_IDE_DATA_DIR!, 'codex-cli-update.json'), 'utf8'));
+    expect(receipt.status).toBe('failed');
+  });
+  it.each(['path', 'realpath'] as const)('refuses a changed %s on the recovery probe', async (change) => {
+    fixture.missingProbes = 1;
+    fixture.changeOnRecovery = change;
+    const response = await post();
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: 'verification-failed' });
+    expect(fixture.postProbes).toBe(2);
+    expect(fixture.calls).toHaveLength(1);
+    const receipt = JSON.parse(readFileSync(join(process.env.CORTEX_IDE_DATA_DIR!, 'codex-cli-update.json'), 'utf8'));
+    expect(receipt.status).toBe('failed');
   });
   it('uses the running Node with packaged O8_NODE_BIN and separate npm/Codex prefixes', async () => {
     process.env.O8_NODE_BIN = process.execPath;
@@ -129,7 +186,7 @@ describe('Codex update through the operator route', () => {
     fixture.fail = true; expect((await post()).status).toBe(503);
   });
   it('requires verification of the selected version', async () => {
-    fixture.wrongVersion = true; expect((await post()).status).toBe(503);
+    fixture.wrongVersion = true; expect((await post()).status).toBe(503); expect(fixture.postProbes).toBe(1);
   });
   it('rejects unstable release metadata', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ version: '0.159.3-beta.1' }))));
