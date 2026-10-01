@@ -3566,6 +3566,15 @@
       ]
     },
     {
+      "path": "tests/terminal-release-durable-mission-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "real-path",
+        "terminal-tool"
+      ]
+    },
+    {
       "path": "tests/terminal-visibility-real-path.test.ts",
       "reasons": [
         "child-process",
