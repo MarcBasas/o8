@@ -14,6 +14,7 @@ export interface DomainLaneSummary {
   sessionKey: string | null;
   lastEventLabel: string | null;
   failureMessage?: string | null;
+  authRecoveryRequired?: boolean;
   recovery?: OrchestratorPacket['recovery'];
   contextObservation?: PacketContextObservation;
   branch?: string;

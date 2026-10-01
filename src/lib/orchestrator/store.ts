@@ -1030,7 +1030,7 @@ export function reconcileOrchestratorMissionState(
       if (ds === 'running') { next.status = 'running'; return next; }
       if (ds === 'launching') { next.status = 'launching'; return next; }
       if (ds === 'awaiting_input') {
-        next.status = 'blocked';
+        next.status = 'blocked'; if (domainLane.authRecoveryRequired) next.queueState = 'held';
         // #1469 — preserve the REAL reason. The dag fold-back and the
         // rebase-conflict path both set a truthful blockedReason (conflicting
         // files, fetch failure) before the lane parks awaiting_input;
