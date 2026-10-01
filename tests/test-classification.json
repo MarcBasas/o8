@@ -3186,6 +3186,12 @@
       ]
     },
     {
+      "path": "tests/runtime-carrier-conformance.integration.test.ts",
+      "reasons": [
+        "child-process"
+      ]
+    },
+    {
       "path": "tests/runtime-launch-idempotency-real-path.test.ts",
       "reasons": [
         "real-path"
