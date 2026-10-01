@@ -37,8 +37,7 @@ export function CodexCliUpdateNotice({ settings = false }: { settings?: boolean 
   const update = async () => {
     if (inFlight.current) return;
     inFlight.current = true;
-    setPending(true); setMessage('Checking the selected installation and waiting for an idle runtime…');
-    const stage = window.setTimeout(() => setMessage('Updating the selected installation. Verifying its version before success…'), 3_500);
+    setPending(true); setMessage('Updating Codex. Checking the selected installation and runtime activity, then verifying its version…');
     try {
       const response = await fetch('/api/setup/cli-updates', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
@@ -53,7 +52,7 @@ export function CodexCliUpdateNotice({ settings = false }: { settings?: boolean 
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Codex could not be updated.');
     } finally {
-      window.clearTimeout(stage); setPending(false); inFlight.current = false;
+      setPending(false); inFlight.current = false;
     }
   };
 

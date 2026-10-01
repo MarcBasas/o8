@@ -32,11 +32,18 @@ async function selectedNpmInstall(selectedPath: string, source: string) {
     const prefix = binary.slice(0, -(suffix.length + 1));
     const packageRoot = path.join(prefix, 'lib/node_modules/@openai/codex');
     const metadata = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8')) as { name?: string };
-    const npm = path.join(prefix, 'lib/node_modules/npm/bin/npm-cli.js');
-    const node = path.join(prefix, 'bin/node');
     if (metadata.name !== '@openai/codex'
-      || await realpath(path.join(prefix, 'bin/codex')) !== binary
-      || await realpath(path.join(prefix, 'bin/npm')) !== await realpath(npm)) throw new Error('Mismatched npm');
+      || await realpath(path.join(prefix, 'bin/codex')) !== binary) throw new Error('Mismatched package');
+    const [npmCli, nodeCli] = await Promise.all([
+      resolveCli({ runtimeId: 'npm', binaryName: 'npm', envOverride: 'O8_NPM_BIN' }),
+      resolveCli({ runtimeId: 'node', binaryName: 'node', envOverride: 'O8_NODE_BIN' }),
+    ]);
+    if (npmCli.source === 'env' || nodeCli.source === 'env') throw new Error('Custom toolchain');
+    const npm = await realpath(npmCli.path);
+    const npmSuffix = path.join('node_modules', 'npm', 'bin', 'npm-cli.js');
+    if (!npm.endsWith(path.sep + npmSuffix)) throw new Error('Not npm');
+    const node = await realpath(nodeCli.path);
+    if (path.basename(node) !== 'node' || !nodeCli.version || !/^\d+\.\d+\.\d+$/.test(nodeCli.version)) throw new Error('Not Node');
     const uid = process.getuid?.();
     if (uid === undefined || uid === 0) throw new Error('Unknown owner');
     for (const item of [prefix, path.join(prefix, 'bin'), path.join(prefix, 'lib/node_modules'), path.join(prefix, 'lib/node_modules/@openai'), packageRoot]) {
@@ -45,7 +52,7 @@ async function selectedNpmInstall(selectedPath: string, source: string) {
       await access(item, constants.W_OK);
     }
     await access(node, constants.X_OK);
-    const npmMetadata = JSON.parse(await readFile(path.join(prefix, 'lib/node_modules/npm/package.json'), 'utf8')) as { name?: string };
+    const npmMetadata = JSON.parse(await readFile(path.join(path.dirname(path.dirname(npm)), 'package.json'), 'utf8')) as { name?: string };
     if (npmMetadata.name !== 'npm') throw new Error('Not npm');
     return { prefix, npm, node, binary };
   } catch {
@@ -107,7 +114,7 @@ export async function updateSelectedCodex() {
         '--registry=https://registry.npmjs.org', `--userconfig=${userConfig}`, `--globalconfig=${globalConfig}`,
         '--ignore-scripts', '--no-audit', '--no-fund', `@openai/codex@${tool.latestVersion}`], {
         timeout: 120_000, maxBuffer: 1024 * 1024, cwd: install.prefix,
-        env: { HOME: process.env.HOME, PATH: `${path.join(install.prefix, 'bin')}${path.delimiter}/usr/bin${path.delimiter}/bin`,
+        env: { HOME: process.env.HOME, PATH: `${path.dirname(install.node)}${path.delimiter}${path.join(install.prefix, 'bin')}${path.delimiter}/usr/bin${path.delimiter}/bin`,
           TMPDIR: process.env.TMPDIR, NO_COLOR: '1', NODE_ENV: process.env.NODE_ENV },
       });
     } finally {

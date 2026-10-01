@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const fixture = vi.hoisted(() => ({ prefix: '', selected: '', version: '0.144.1', source: 'which', busy: false, fail: false, wrongVersion: false, externalBusy: false, unrelatedBusy: false, changedPath: false, calls: [] as string[][] }));
+const fixture = vi.hoisted(() => ({ prefix: '', toolchain: '', selected: '', version: '0.144.1', source: 'which', busy: false, fail: false, wrongVersion: false, externalBusy: false, unrelatedBusy: false, changedPath: false, calls: [] as string[][] }));
 const root = mkdtempSync(join(tmpdir(), 'o8-codex-update-'));
 process.env.CORTEX_IDE_DATA_DIR = join(root, 'data');
 mkdirSync(process.env.CORTEX_IDE_DATA_DIR, { recursive: true });
@@ -14,7 +14,9 @@ vi.mock('@/lib/app-update/idle-window', () => ({ getUpdateIdleWindow: async () =
 vi.mock('@/lib/runtimes/shared/cli-resolver', () => ({
   invalidateCliCache: vi.fn(),
   compareCliVersions: (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true }),
-  resolveCli: async () => ({ path: fixture.selected, version: fixture.version, source: fixture.source }),
+  resolveCli: async (spec: { runtimeId: string }) => spec.runtimeId === 'codex'
+    ? ({ path: fixture.selected, version: fixture.version, source: fixture.source })
+    : ({ path: join(fixture.toolchain, 'bin', spec.runtimeId), version: spec.runtimeId === 'node' ? '22.23.1' : '11.8.0', source: 'which' }),
 }));
 vi.mock('node:child_process', () => ({ execFile: (command: string, args: string[], _options: unknown, callback: (error: Error | null, result?: { stdout: string; stderr: string }) => void) => {
   if (command === '/bin/ps') { callback(null, { stdout: fixture.externalBusy ? 'codex codex exec' : '', stderr: '' }); return; }
@@ -29,6 +31,7 @@ const post = (body: unknown = {}, token = 'operator-test-token') => {
 };
 beforeEach(() => {
   fixture.prefix = join(root, 'prefix');
+  fixture.toolchain = fixture.prefix;
   mkdirSync(join(fixture.prefix, 'bin'), { recursive: true });
   for (const [name, binary] of [['@openai/codex', 'codex'], ['npm', 'npm']] as const) {
     const packageRoot = join(fixture.prefix, 'lib/node_modules', name);
@@ -59,6 +62,22 @@ describe('Codex update through the operator route', () => {
     expect(fixture.calls[0]).toContain(realpathSync(fixture.prefix));
     const receipt = JSON.parse(readFileSync(join(process.env.CORTEX_IDE_DATA_DIR!, 'codex-cli-update.json'), 'utf8'));
     expect(receipt).toMatchObject({ status: 'succeeded', selectedPath: fixture.selected, targetVersion: '0.159.3' });
+  });
+  it('uses a separately installed npm and Node while targeting the selected user prefix', async () => {
+    fixture.toolchain = join(root, 'toolchain');
+    rmSync(join(fixture.prefix, 'lib/node_modules/npm'), { recursive: true });
+    rmSync(join(fixture.prefix, 'bin/npm'));
+    rmSync(join(fixture.prefix, 'bin/node'));
+    mkdirSync(join(fixture.toolchain, 'lib/node_modules/npm/bin'), { recursive: true });
+    mkdirSync(join(fixture.toolchain, 'bin'), { recursive: true });
+    writeFileSync(join(fixture.toolchain, 'lib/node_modules/npm/package.json'), JSON.stringify({ name: 'npm' }));
+    writeFileSync(join(fixture.toolchain, 'lib/node_modules/npm/bin/npm-cli.js'), 'fixture');
+    writeFileSync(join(fixture.toolchain, 'bin/node'), 'fixture'); chmodSync(join(fixture.toolchain, 'bin/node'), 0o700);
+    symlinkSync(join(fixture.toolchain, 'lib/node_modules/npm/bin/npm-cli.js'), join(fixture.toolchain, 'bin/npm'));
+    const response = await post(); expect(response.status).toBe(200);
+    expect(fixture.calls[0][0]).toBe(realpathSync(join(fixture.toolchain, 'bin/npm')));
+    expect(fixture.calls[0]).toContain(realpathSync(fixture.prefix));
+    expect(fixture.calls[0]).not.toContain(realpathSync(fixture.toolchain));
   });
   it('rejects client command, package, version, and path injection', async () => {
     expect((await post({ package: 'evil', command: 'touch stolen', version: '0.159.3;bad', path: '/wrong' })).status).toBe(400);
