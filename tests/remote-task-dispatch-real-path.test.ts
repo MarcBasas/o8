@@ -19,6 +19,7 @@ const remotePath = join(dataDir, 'remote.git');
 const tasks = await import('@/app/api/tasks/route');
 const dispatch = await import('@/app/api/tasks/[taskId]/dispatch/route');
 const availability = await import('@/app/api/tasks/worker-availability/route');
+const block = await import('@/app/api/tasks/[taskId]/block/route');
 const poll = await import('@/app/api/cloud/worker-poll/route');
 const stream = await import('@/app/api/cloud/worker-stream/route');
 const { cloudRuntime } = await import('@/lib/runtimes/cloud-adapter');
@@ -139,6 +140,14 @@ describe('remote placement through ordinary authenticated task routes', () => {
     expect(claimedResponse.status).toBe(200);
     const claimed = (await claimedResponse.json()).job;
     expect(claimed.id).toBe(job.id);
+    const blocked = await block.POST(request(`/api/tasks/${taskId}/block`, { repoPath, reason: 'Operator review needed', actor: 'user' }), { params: Promise.resolve({ taskId }) });
+    expect(blocked.status).toBe(200);
+    reconcileCloudJobLanes();
+    expect(getLane(lane.id)?.status).toBe('awaiting_orchestrator');
+    setLaneStatus(lane.id, 'paused', 'user', 'interrupted');
+    reconcileCloudJobLanes();
+    expect(getLane(lane.id)?.status).toBe('paused');
+    setLaneStatus(lane.id, 'running', 'system', 'fixture_resumed');
     // Replay the historical pre-dispatch marker without changing the job.
     const state = readOrchestratorControlPlaneState();
     writeOrchestratorControlPlaneState({ ...state, packets: state.packets.map((packet) => packet.id === taskId

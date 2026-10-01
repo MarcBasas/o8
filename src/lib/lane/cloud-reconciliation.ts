@@ -8,7 +8,8 @@ import type { LaneStatus } from './types';
 export function reconcileCloudJobLanes(): void {
   for (const lane of listLanes()) {
     if (lane.runtime !== 'cloud' || !lane.packetId
-      || ['completed', 'archived', 'merging', 'reviewing'].includes(lane.status)) continue;
+      || ['completed', 'archived', 'merging', 'reviewing', 'failed', 'awaiting_input', 'awaiting_orchestrator', 'awaiting_human'].includes(lane.status)
+      || (lane.status === 'paused' && lane.lastEventLabel !== 'session_lost')) continue;
     const job = getLatestPacketJob(DEFAULT_CLOUD_TEAM_ID, lane.packetId);
     if (!job || job.launch.laneId !== lane.id || job.launch.branchName !== lane.branch) continue;
     const sessionKey = `cloud:${job.sessionId}`;
