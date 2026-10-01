@@ -8,6 +8,7 @@ import type { OrchestratorBackendSetting } from './operator-defaults';
 import { MODEL_IDS } from '@/lib/models';
 import { codexSupportsReasoningEffort } from '@/lib/codex/reasoning-effort';
 import { useEntitlement } from '@/lib/entitlement/context';
+import { PLAN_LABELS } from '@/lib/entitlement/display';
 import { AcpModelPicker } from './AcpModelPicker';
 import { shortModelLabel as acpShortModelLabel } from '@/lib/orchestrator/acp-model-catalogue';
 import { CLAUDE_CODE_PROFILE_CHANGED_EVENT } from '@/lib/claude-code/worker-profile-types';
@@ -448,7 +449,7 @@ export function ModelThinkingChip({
     effort: option,
     label: THINKING_EFFORT_LABELS[option].long,
     sub: isO8Backend
-      ? option === 'high' ? 'founders' : 'free'
+      ? option === 'high' ? PLAN_LABELS[entitlementPlan] : 'free'
       : option === 'adaptive' ? 'auto' : `${EFFORT_LEVEL[option]}/6`,
   }));
   const currentEffortIndex = Math.max(0, options.indexOf(effort));
