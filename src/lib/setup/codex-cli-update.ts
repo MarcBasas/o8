@@ -34,16 +34,14 @@ async function selectedNpmInstall(selectedPath: string, source: string) {
     const metadata = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8')) as { name?: string };
     if (metadata.name !== '@openai/codex'
       || await realpath(path.join(prefix, 'bin/codex')) !== binary) throw new Error('Mismatched package');
-    const [npmCli, nodeCli] = await Promise.all([
-      resolveCli({ runtimeId: 'npm', binaryName: 'npm', envOverride: 'O8_NPM_BIN' }),
-      resolveCli({ runtimeId: 'node', binaryName: 'node', envOverride: 'O8_NODE_BIN' }),
-    ]);
-    if (npmCli.source === 'env' || nodeCli.source === 'env') throw new Error('Custom toolchain');
+    const npmCli = await resolveCli({ runtimeId: 'npm', binaryName: 'npm', envOverride: 'O8_NPM_BIN' });
+    if (npmCli.source === 'env') throw new Error('Custom npm toolchain');
     const npm = await realpath(npmCli.path);
     const npmSuffix = path.join('node_modules', 'npm', 'bin', 'npm-cli.js');
     if (!npm.endsWith(path.sep + npmSuffix)) throw new Error('Not npm');
-    const node = await realpath(nodeCli.path);
-    if (path.basename(node) !== 'node' || !nodeCli.version || !/^\d+\.\d+\.\d+$/.test(nodeCli.version)) throw new Error('Not Node');
+    // The server's already-running Node is the execution authority. Packaged
+    // apps set O8_NODE_BIN for child discovery; it is not a custom npm command.
+    const node = await realpath(process.execPath);
     const uid = process.getuid?.();
     if (uid === undefined || uid === 0) throw new Error('Unknown owner');
     for (const item of [prefix, path.join(prefix, 'bin'), path.join(prefix, 'lib/node_modules'), path.join(prefix, 'lib/node_modules/@openai'), packageRoot]) {
