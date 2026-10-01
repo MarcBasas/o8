@@ -30,6 +30,12 @@ pushes, and abort.
 It does not establish that a worker can keep running while the operator's
 laptop is disconnected; that requires a separate host and reachable o8 URL.
 
+Closing or reloading the operator UI differs from stopping the coordinator.
+Linux execution continues while the authoritative coordinator remains
+reachable; an SSH tunnel used to reach it is part of that connection. This
+does not imply automatic coordinator recovery or remote interactive terminal
+or preview support.
+
 Set `O8_CLOUD_WORKER_KEY` through the host's secret manager before running the
 command. `--worker-key` also works for automation that protects process args.
 
