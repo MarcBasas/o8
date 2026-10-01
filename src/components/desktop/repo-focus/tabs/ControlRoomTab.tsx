@@ -38,6 +38,7 @@ import {
   TaskSection,
   TaskStatusStrip,
 } from './control-room/components';
+import { createTaskRequest, type TaskExecutionRuntime } from './control-room/create-task-request';
 const PENDING_DISPATCH_TIMEOUT_MS = 30_000;
 
 export function ControlRoomTab({
@@ -318,7 +319,7 @@ export function ControlRoomTab({
     }
   }, [loadIssueIntake, project.id, refresh, selectedRepo?.localPath]);
 
-  const createControlTask = useCallback(async (dispatchAfterCreate = false) => {
+  const createControlTask = useCallback(async (dispatchAfterCreate = false, requestedRuntime: TaskExecutionRuntime = 'codex', model: string | null = null) => {
     const title = newTaskTitle.trim();
     if (!title) {
       setNotice('Add a short task title first.');
@@ -327,38 +328,15 @@ export function ControlRoomTab({
     setBusyKey(dispatchAfterCreate ? 'create-dispatch' : 'create');
     setNotice(null);
     try {
-      const response = await fetch('/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title,
-          summary: newTaskSummary.trim() || null,
-          projectId: project.id,
-          repoPath: newTaskRepoPath || selectedRepo?.localPath || null,
-          workerIntent: newTaskIntent,
-        }),
-      });
-      const payload = await response.json().catch(() => ({})) as Partial<TaskMutationPayload> & { error?: string };
-      if (!response.ok || payload.ok === false || !payload.taskId) {
-        throw new Error(payload.error ?? payload.note ?? 'Task creation failed.');
-      }
-      let finalNote = payload.note ?? 'Task added to ready pool.';
-      if (dispatchAfterCreate) {
-        const dispatchResponse = await fetch(`/api/tasks/${encodeURIComponent(payload.taskId)}/dispatch`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            actor: 'orchestrator',
-            projectId: project.id,
-            repoPath: newTaskRepoPath || selectedRepo?.localPath || null,
-          }),
-        });
-        const dispatchPayload = await dispatchResponse.json().catch(() => ({})) as Partial<TaskMutationPayload> & { error?: string };
-        if (!dispatchResponse.ok || dispatchPayload.ok === false) {
-          throw new Error(dispatchPayload.error ?? dispatchPayload.note ?? 'Dispatch failed.');
-        }
-        finalNote = dispatchPayload.note ?? 'Task created and dispatched.';
-      }
+      const finalNote = await createTaskRequest({
+        title,
+        summary: newTaskSummary.trim() || null,
+        projectId: project.id,
+        repoPath: newTaskRepoPath || selectedRepo?.localPath || null,
+        workerIntent: newTaskIntent,
+        requestedRuntime,
+        model,
+      }, dispatchAfterCreate);
       setNewTaskTitle('');
       setNewTaskSummary('');
       setComposerOpen(false);
@@ -634,8 +612,8 @@ export function ControlRoomTab({
           onRepoPathChange={setNewTaskRepoPath}
           onWorkerIntentChange={setNewTaskIntent}
           onCancel={() => setComposerOpen(false)}
-          onCreate={() => { void createControlTask(false); }}
-          onCreateAndDispatch={() => { void createControlTask(true); }}
+          onCreate={(runtime, model) => { void createControlTask(false, runtime, model); }}
+          onCreateAndDispatch={(runtime, model) => { void createControlTask(true, runtime, model); }}
         />
       ) : null}
 

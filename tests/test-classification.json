@@ -453,6 +453,12 @@
       ]
     },
     {
+      "path": "src/lib/orchestrator/auto-compact-excerpt.test.ts",
+      "reasons": [
+        "executable-fixture"
+      ]
+    },
+    {
       "path": "src/lib/orchestrator/auto-compact.test.ts",
       "reasons": [
         "executable-fixture"
@@ -1565,7 +1571,32 @@
       ]
     },
     {
+      "path": "tests/cloud-published-base-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "real-path"
+      ]
+    },
+    {
+      "path": "tests/cloud-worker-poll-revocation-real-path.test.ts",
+      "reasons": [
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/cloud-worker-services-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli",
+        "network-listener",
+        "process-signal",
+        "real-path"
+      ]
+    },
+    {
+      "path": "tests/cloud-worker-shutdown-real-path.test.ts",
       "reasons": [
         "child-process",
         "executable-fixture",
@@ -2135,6 +2166,16 @@
       "reasons": [
         "child-process",
         "git-cli"
+      ]
+    },
+    {
+      "path": "tests/local-egress-assertion-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli",
+        "network-listener",
+        "real-path"
       ]
     },
     {
@@ -2918,6 +2959,15 @@
       ]
     },
     {
+      "path": "tests/remote-task-dispatch-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "real-path",
+        "worktree-api"
+      ]
+    },
+    {
       "path": "tests/repo-package-manager-contract-real-path.test.ts",
       "reasons": [
         "child-process",
@@ -3040,6 +3090,15 @@
       ]
     },
     {
+      "path": "tests/retired-owned-session-close-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "real-path",
+        "worktree-api"
+      ]
+    },
+    {
       "path": "tests/retired-workspace-lane-recovery-real-path.test.ts",
       "reasons": [
         "child-process",
@@ -3157,6 +3216,12 @@
       "path": "tests/runtime-capacity-identity-real-path.test.ts",
       "reasons": [
         "real-path"
+      ]
+    },
+    {
+      "path": "tests/runtime-carrier-conformance.integration.test.ts",
+      "reasons": [
+        "child-process"
       ]
     },
     {
@@ -3389,6 +3454,12 @@
       "reasons": [
         "child-process",
         "git-cli",
+        "real-path"
+      ]
+    },
+    {
+      "path": "tests/task-pool-history-real-path.test.ts",
+      "reasons": [
         "real-path"
       ]
     },
