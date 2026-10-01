@@ -1617,7 +1617,24 @@
       ]
     },
     {
+      "path": "tests/codex-cli-update-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/codex-review-config-isolation-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli",
+        "real-path"
+      ]
+    },
+    {
+      "path": "tests/codex-sol-compatibility-real-path.test.ts",
       "reasons": [
         "child-process",
         "executable-fixture",
@@ -3290,6 +3307,13 @@
       "reasons": [
         "child-process",
         "git-cli",
+        "real-path"
+      ]
+    },
+    {
+      "path": "tests/setup-config-project-hooks-real-path.test.ts",
+      "reasons": [
+        "child-process",
         "real-path"
       ]
     },
