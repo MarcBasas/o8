@@ -2163,6 +2163,16 @@
       ]
     },
     {
+      "path": "tests/local-egress-assertion-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli",
+        "network-listener",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/loop-detector-real-path.test.ts",
       "reasons": [
         "executable-fixture",
@@ -3074,6 +3084,15 @@
       ]
     },
     {
+      "path": "tests/retired-owned-session-close-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "real-path",
+        "worktree-api"
+      ]
+    },
+    {
       "path": "tests/retired-workspace-lane-recovery-real-path.test.ts",
       "reasons": [
         "child-process",
@@ -3191,6 +3210,12 @@
       "path": "tests/runtime-capacity-identity-real-path.test.ts",
       "reasons": [
         "real-path"
+      ]
+    },
+    {
+      "path": "tests/runtime-carrier-conformance.integration.test.ts",
+      "reasons": [
+        "child-process"
       ]
     },
     {
