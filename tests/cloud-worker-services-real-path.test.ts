@@ -94,7 +94,7 @@ describe('leased remote workspace services', () => {
     };
     writeFileSync(path.join(repo, 'o8.workspace.json'), `${JSON.stringify(manifest)}\n`);
     writeFileSync(path.join(repo, 'service.js'), "require('http').createServer((req,res)=>{res.end(req.url==='/health'?'ok':'app')}).listen(process.env.PORT,'127.0.0.1')\n");
-    execFileSync('git', ['init', repo]);
+    execFileSync('git', ['init', '--initial-branch=main', repo]);
     execFileSync('git', ['-C', repo, 'config', 'user.email', 'test@example.invalid']);
     execFileSync('git', ['-C', repo, 'config', 'user.name', 'Service Test']);
     execFileSync('git', ['-C', repo, 'add', '.']);
@@ -130,7 +130,7 @@ describe('leased remote workspace services', () => {
       '#!/usr/bin/env node',
       "if (process.env.O8_CLOUD_WORKER_KEY) process.exit(19);",
       "process.stdin.resume(); process.stdin.on('end',()=>{",
-      "  setTimeout(()=>{require('fs').writeFileSync('codex-proof.txt','done');",
+      "  setTimeout(()=>{require('fs').writeFileSync('codex-proof.txt',JSON.stringify({args:process.argv.slice(2)}));",
       "    process.stdout.write(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'done'}})+'\\n');",
       '  }, 500);',
       '});',
@@ -156,11 +156,13 @@ describe('leased remote workspace services', () => {
     try {
       const launched = await cloudRuntime.launch({
         cwd: repo, sourceRepoPath: repo, prompt: 'Start a checked service.', packetId: 'packet-service-test', workMode: 'edit',
-        branchName: 'o8/service-test', baseBranch: 'HEAD',
+        branchName: 'o8/service-test', baseBranch: 'HEAD', model: 'gpt-6.1-sol', effort: 'medium',
       });
       expect(launched.ok, launched.note).toBe(true);
       const jobId = launched.sessionKey!.replace(/^cloud:/, '');
-      expect(getJob('team_default', jobId)?.launch.remoteManifestHash).toBe(hash);
+      expect(getJob('team_default', jobId)?.launch).toMatchObject({
+        remoteManifestHash: hash, model: 'gpt-6.1-sol', effort: 'medium',
+      });
       await waitFor(() => getJob('team_default', jobId)?.status === 'completed' ? true : null);
       const events = readJobEvents('team_default', jobId);
       expect(events.filter((event) => event.type === 'service').map((event) => event.payload))
@@ -174,8 +176,14 @@ describe('leased remote workspace services', () => {
         try { execFileSync('node', ['-e', `require('net').connect(${port},'127.0.0.1').on('connect',()=>process.exit(1)).on('error',()=>process.exit(0))`]); return true; }
         catch { return null; }
       });
-      expect(execFileSync('git', ['--git-dir', bare, 'show', 'refs/heads/o8/service-test:codex-proof.txt'], { encoding: 'utf8' }))
-        .toBe('done');
+      const proof = JSON.parse(execFileSync('git', [
+        '--git-dir', bare, 'show', 'refs/heads/o8/service-test:codex-proof.txt',
+      ], { encoding: 'utf8' })) as { args: string[] };
+      expect(proof.args).toEqual(expect.arrayContaining(['--model', 'gpt-6.1-sol']));
+      expect(proof.args[proof.args.indexOf('--model') + 1]).toBe('gpt-6.1-sol');
+      expect(proof.args.filter((arg) => arg.startsWith('model_reasoning_effort=')))
+        .toEqual(['model_reasoning_effort=medium']);
+      expect(proof.args[proof.args.indexOf('model_reasoning_effort=medium') - 1]).toBe('-c');
       const stale = await streamRoute.POST(new NextRequest('http://localhost/api/cloud/worker-stream', {
         method: 'POST',
         headers: { authorization: `Bearer ${key.plaintext}`, 'content-type': 'application/json' },

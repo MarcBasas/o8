@@ -15,6 +15,7 @@ export const RAW_MODEL_IDS = {
   anthropicClaudeHaiku45: 'claude-haiku-4-5',
   anthropicClaudeHaiku45Dated: 'claude-haiku-4-5-20251001',
   openAiGpt6Astra: 'gpt-6-astra',
+  openAiGpt61Sol: 'gpt-6.1-sol',
   openAiGpt6Sol: 'gpt-6-sol',
   openAiGpt6Luna: 'gpt-6-luna',
   openAiGpt56Sol: 'gpt-5.6-sol',
@@ -38,6 +39,7 @@ export const SUPPORTED_MODEL_IDS = Object.freeze(
 
 export const CODEX_MODEL_IDS = Object.freeze([
   RAW_MODEL_IDS.openAiGpt6Astra,
+  RAW_MODEL_IDS.openAiGpt61Sol,
   RAW_MODEL_IDS.openAiGpt6Sol,
   RAW_MODEL_IDS.openAiGpt6Luna,
   RAW_MODEL_IDS.openAiGpt56Sol,
