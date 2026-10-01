@@ -1193,6 +1193,16 @@
       ]
     },
     {
+      "path": "tests/auth-exit-before-attach-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli",
+        "real-path",
+        "worktree-api"
+      ]
+    },
+    {
       "path": "tests/automatic-release-real-path.test.ts",
       "reasons": [
         "child-process",
