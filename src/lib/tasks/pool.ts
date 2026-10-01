@@ -135,9 +135,17 @@ function packetAllowedFiles(packet: OrchestratorPacket | null): string[] {
   return [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
 }
 
-function chooseGroup(packet: OrchestratorPacket | null, lane: Lane | null): TaskPoolGroup {
+function chooseGroup(packet: OrchestratorPacket | null, lane: Lane | null, remoteJob?: CloudJob): TaskPoolGroup {
   if (packet?.releaseState === 'released' || (packet && DONE_PACKET_STATUSES.has(packet.status))) return 'done';
   if (lane && DONE_LANE_STATUSES.has(lane.status)) return 'done';
+  // Recover display truth for jobs dispatched before the explicit hold was
+  // cleared. Operator holds remain authoritative; only an exact remote binding
+  // can supersede the old pre-dispatch marker.
+  if (remoteJob && packet?.holdIntent === 'explicit-dispatch') {
+    if (remoteJob.status === 'leased') return 'running';
+    if (remoteJob.status === 'completed') return 'review';
+    if (remoteJob.status === 'parked' || remoteJob.status === 'cancelled') return 'blocked';
+  }
   if ((packet && REVIEW_PACKET_STATUSES.has(packet.status)) || (lane && REVIEW_LANE_STATUSES.has(lane.status))) {
     return 'review';
   }
@@ -282,7 +290,7 @@ export async function getTaskPool(options: TaskPoolOptions = {}): Promise<TaskPo
     if (options.projectId && context?.id !== options.projectId && context?.slug !== options.projectId) continue;
     if (options.repoPath && repoPath !== normalizePath(options.repoPath)) continue;
 
-    const group = chooseGroup(packet, lane);
+    const group = chooseGroup(packet, lane, execution ? remoteJob : undefined);
     if (!options.includeDone && group === 'done') continue;
 
     tasks.push({
@@ -302,7 +310,7 @@ export async function getTaskPool(options: TaskPoolOptions = {}): Promise<TaskPo
       repoName: context?.currentRepo?.name ?? (repoPath ? basename(repoPath) : null),
       queueState: packet.queueState,
       releaseState: packet.releaseState,
-      blockedReason: packet.blockedReason ?? null,
+      blockedReason: execution && group !== 'blocked' ? null : packet.blockedReason ?? null,
       lastEventAt: lane?.lastEventAt ?? packet.lastEventAt ?? null,
       lastEventLabel: lane?.lastEventLabel ?? packet.lastEventLabel ?? null,
       allowedFiles: packetAllowedFiles(packet),

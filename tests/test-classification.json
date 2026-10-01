@@ -1571,6 +1571,14 @@
       ]
     },
     {
+      "path": "tests/cloud-published-base-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/cloud-worker-poll-revocation-real-path.test.ts",
       "reasons": [
         "real-path"
@@ -2948,6 +2956,15 @@
         "child-process",
         "git-cli",
         "real-path"
+      ]
+    },
+    {
+      "path": "tests/remote-task-dispatch-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "real-path",
+        "worktree-api"
       ]
     },
     {
