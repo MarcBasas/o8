@@ -48,6 +48,8 @@ mod tests {
                     thread::sleep(Duration::from_millis(5));
                     continue;
                 };
+                // Windows sockets inherit the listener's non-blocking mode.
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
