@@ -3294,6 +3294,13 @@
       ]
     },
     {
+      "path": "tests/setup-config-project-hooks-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/ship-intake-credential-real-path.test.ts",
       "reasons": [
         "executable-fixture",
