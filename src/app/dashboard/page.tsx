@@ -2731,7 +2731,7 @@ function DashboardInner() {
       setActiveTileId(target.tileId);
       flashWorkspaceTab(tabId);
     }
-    return handleSetupComplete();
+    return handleSetupComplete(task?.project.localPath);
   }, [flashWorkspaceTab, handleSelectRegisteredRepo, handleSetupComplete, loadRegisteredRepos, setActiveTileId, waitForWorkspaceTerminalTarget]);
 
   const handleCreateWorkspaceChat = useCallback(() => {
