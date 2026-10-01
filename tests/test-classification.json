@@ -3435,6 +3435,12 @@
       ]
     },
     {
+      "path": "tests/task-pool-history-real-path.test.ts",
+      "reasons": [
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/terminal-output-wait-real-path.test.ts",
       "reasons": [
         "child-process",
