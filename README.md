@@ -92,7 +92,7 @@ The update service and active-install counts are tracked separately. This change
 
 ## Free and paid
 
-Everything that runs on your machine is free and open source: the app, every runtime it detects, governance, memory, the Brain, mobile, and voice with your own keys. Pro is the optional managed edition for the things that run on our servers: higher daily managed-inference limits, early access to experimental features, and remote access to up to 10 Macs from a browser. Convenience, never capability. The first 250 Pro members pay once and become Founding Operators: [o8.run/pro](https://o8.run/pro).
+Everything that runs on your machine is free and open source: the app, every runtime it detects, governance, memory, the Brain, mobile, and voice with your own keys. Pro is the optional managed edition for the things that run on our servers: higher daily managed-inference limits, early access to experimental features, and remote access to up to 10 Macs from a browser. Convenience, never capability. [Pro · Lifetime](docs/founding-operator-tier.md) is the one-time purchase that keeps its included benefits for life. The future monthly plan is called Pro: [o8.run/pro](https://o8.run/pro).
 
 ## Voice
 
