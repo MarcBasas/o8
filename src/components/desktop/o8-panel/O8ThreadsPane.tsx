@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { RepoRegistryEntry } from '@/lib/repos/types';
 import type { ThinkingEffort } from '@/lib/orchestrator/thinking-effort';
 import { ipcFetch } from '@/lib/tauri/ipc-fetch';
@@ -9,14 +9,13 @@ import { useOrchestratorData } from '../orchestrator-data-context';
 import { AgentStatusDot, agentStatusToDotState } from '../AgentStatusDot';
 import { NewTaskComposer } from '../repo-focus/tabs/control-room/NewTaskComposer';
 import { createTaskRequest, type TaskExecutionRuntime } from '../repo-focus/tabs/control-room/create-task-request';
-import { TaskActionMenu } from '../repo-focus/tabs/control-room/TaskSection';
-import { ActionButton } from '../repo-focus/tabs/control-room/shared';
 import { taskTimeLabel } from '../repo-focus/tabs/control-room/helpers';
-import type { TaskAction, TaskActionMenuState, TaskMutationPayload, TaskPoolTask } from '../repo-focus/tabs/control-room/types';
+import type { TaskAction, TaskMutationPayload, TaskPoolTask } from '../repo-focus/tabs/control-room/types';
 import { THREAD_GROUPS, resolveThreadProject, scopeThreadAgents, scopeThreads, threadModelLabel, threadStatusLine } from './threads-model';
 import { useThreadsTasks } from './useThreadsTasks';
 import { useThreadRepos } from './useThreadRepos';
 import { ThreadDetail } from './ThreadDetail';
+import { ThreadActions, ThreadActionButton } from './ThreadActions';
 
 const smallButtonStyle: React.CSSProperties = { height: 26, border: 0, borderRadius: 7, paddingLeft: 9, paddingRight: 9, fontSize: 12, fontWeight: 300, fontFamily: 'inherit', letterSpacing: '-0.1px', cursor: 'pointer', color: 'var(--t-text-muted)', background: 'transparent' };
 
@@ -47,9 +46,7 @@ export function O8ThreadsPane({ active, repoPath, repos, allRepos = false, initi
   const [intent, setIntent] = useState('heavy_worker');
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [menu, setMenu] = useState<TaskActionMenuState | null>(null);
   const [confirmation, setConfirmation] = useState<{ scopeKey: string; task: TaskPoolTask; action: TaskAction; body?: Record<string, unknown> } | null>(null);
-  const boundary = useRef<HTMLDivElement>(null);
   const selected = selection?.scopeKey === scopeKey ? tasks.find((task) => task.id === selection.id) : null;
   const waiting = tasks.filter((task) => task.group === 'blocked').length;
   const working = tasks.filter((task) => task.group === 'running').length;
@@ -80,25 +77,29 @@ export function O8ThreadsPane({ active, repoPath, repos, allRepos = false, initi
       const payload = await response.json() as Partial<TaskMutationPayload> & { error?: string };
       if (!response.ok || payload.ok === false) throw new Error(payload.error || payload.note || 'Unable to update this thread.');
       setNotice(payload.note || 'Thread updated.');
-      setMenu(null);
       pool.refresh();
       return true;
     } catch (err) { setNotice(err instanceof Error ? err.message : 'Unable to update this thread.'); return false; }
     finally { setBusyKey(null); }
   };
 
+  const actOnThread = (task: TaskPoolTask, action: TaskAction, body?: Record<string, unknown>) => {
+    if (action === 'archive' || action === 'prune' || action === 'remove') setConfirmation({ scopeKey, task, action, body });
+    else void mutate(task, action, body);
+  };
+
   return (
-    <div ref={boundary} aria-label="Project threads panel" style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', fontFamily: 'var(--font-sans-system)', color: 'var(--t-text)', background: 'transparent' }}>
+    <div aria-label="Project threads panel" style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', fontFamily: 'var(--font-sans-system)', color: 'var(--t-text)', background: 'transparent' }}>
       <div role="tablist" aria-label="Thread panel views" style={{ display: 'flex', alignItems: 'center', gap: 6, paddingTop: 8, paddingRight: 12, paddingBottom: 8, paddingLeft: 12, borderBottom: '1px solid var(--t-divider-subtle)' }}>
         {(['threads', 'agents'] as const).map((tab) => <button key={tab} role="tab" aria-selected={view === tab} onClick={() => { setView(tab); if (tab === 'threads') setSelection(null); }} style={{ ...smallButtonStyle, background: view === tab ? 'var(--t-input-bg)' : 'transparent', color: view === tab ? 'var(--t-text)' : 'var(--t-text-muted)' }}>{tab === 'threads' ? 'Threads' : 'Agents'}</button>)}
         <span style={{ flex: 1 }} />
         <button type="button" onClick={pool.refresh} disabled={pool.loading} style={smallButtonStyle}>Refresh</button>
         <button type="button" aria-label="Create thread" disabled={!canCreate || Boolean(busyKey)} onClick={() => { setView('threads'); setSelection(null); setComposerOpen((open) => !open); }} style={smallButtonStyle}>+</button>
       </div>
-      {notice ? <div role="status" style={{ padding: 12, fontSize: 11, fontWeight: 300, lineHeight: 1.4, color: 'var(--t-text-muted)' }}>{notice}</div> : null}
-      {pool.error ? <div role="alert" style={{ padding: 12, fontSize: 12 }}>{pool.error}</div> : null}
-      {view === 'threads' && selected ? <ThreadDetail key={`detail:${scopeKey}:${selected.id}`} task={selected} onBack={() => setSelection(null)} onActions={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setMenu({ task: selected, x: rect.left, y: rect.bottom }); }} /> : (
-        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', scrollbarWidth: 'none', padding: 16 }}>
+      {notice ? <div role="status" style={{ paddingTop: 12, paddingRight: 12, paddingBottom: 12, paddingLeft: 12, fontSize: 11, fontWeight: 300, lineHeight: 1.4, color: 'var(--t-text-muted)' }}>{notice}</div> : null}
+      {pool.error ? <div role="alert" style={{ paddingTop: 12, paddingRight: 12, paddingBottom: 12, paddingLeft: 12, fontSize: 12 }}>{pool.error}</div> : null}
+      {view === 'threads' && selected ? <ThreadDetail key={`detail:${scopeKey}:${selected.id}`} task={selected} active={active} evidenceRevision={pool.evidenceRevision} onBack={() => setSelection(null)} actions={<ThreadActions task={selected} busy={Boolean(busyKey)} onSelectSession={context?.onSelectSession} onAction={actOnThread} />} /> : (
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', scrollbarWidth: 'none', paddingTop: 16, paddingRight: 16, paddingBottom: 16, paddingLeft: 16 }}>
           {view === 'threads' ? <>
             <div style={{ fontSize: 18, fontWeight: 400, letterSpacing: '-0.2px', lineHeight: 1.25 }}>{project?.name || repoPath?.split('/').filter(Boolean).pop() || 'Your threads'}</div>
             <div style={{ marginTop: 6, marginBottom: 20, fontSize: 12, fontWeight: 300, color: 'var(--t-text-muted)' }}>{projects.loading || pool.loading && !tasks.length ? 'Reading project threads…' : waiting ? `${waiting} thread${waiting === 1 ? ' is' : 's are'} waiting on you.` : 'Nothing is waiting on you.'}</div>
@@ -136,12 +137,11 @@ export function O8ThreadsPane({ active, repoPath, repos, allRepos = false, initi
           </>}
         </div>
       )}
-      {confirmation?.scopeKey === scopeKey ? <div style={{ padding: 12, borderTop: '1px solid var(--t-divider-subtle)', fontSize: 12 }}>
+      {confirmation?.scopeKey === scopeKey ? <div role="group" aria-label="Confirm thread action" style={{ paddingTop: 12, paddingRight: 12, paddingBottom: 12, paddingLeft: 12, borderTop: '1px solid var(--t-divider-subtle)', fontSize: 12 }}>
         <p style={{ marginTop: 0 }}>{confirmation.action === 'prune' ? 'Permanently prune' : confirmation.action === 'archive' ? 'Archive' : 'Un-queue'} “{confirmation.task.title}”?</p>
-        <div style={{ display: 'flex', gap: 8 }}><ActionButton label="Cancel" disabled={Boolean(busyKey)} onClick={() => setConfirmation(null)} /><ActionButton label={busyKey ? 'Updating…' : 'Confirm'} primary disabled={Boolean(busyKey)} onClick={() => { void mutate(confirmation.task, confirmation.action, confirmation.body).then((ok) => { if (ok) setConfirmation(null); }); }} /></div>
+        <div style={{ display: 'flex', gap: 8 }}><ThreadActionButton label="Cancel" disabled={Boolean(busyKey)} onClick={() => setConfirmation(null)} /><ThreadActionButton label={busyKey ? 'Updating…' : confirmation.action === 'prune' ? 'Prune permanently' : confirmation.action === 'archive' ? 'Archive thread' : 'Un-queue thread'} danger={confirmation.action === 'prune'} disabled={Boolean(busyKey)} onClick={() => { void mutate(confirmation.task, confirmation.action, confirmation.body).then((ok) => { if (ok) setConfirmation(null); }); }} /></div>
       </div> : null}
-      <div style={{ display: 'flex', gap: 12, padding: 12, fontSize: 10, fontWeight: 260, color: 'var(--t-text-faint)', borderTop: '1px solid var(--t-divider-subtle)' }}><span>{working} working</span><span>{resolved} resolved</span><span style={{ marginLeft: 'auto' }}>{tasks.length} threads</span></div>
-      {menu && tasks.some((task) => task.id === menu.task.id) ? <TaskActionMenu key={`actions:${scopeKey}:${menu.task.id}`} state={{ ...menu, task: tasks.find((task) => task.id === menu.task.id)! }} boundaryElement={boundary.current} busyKey={busyKey} onClose={() => setMenu(null)} onRefreshTask={async () => { pool.refresh(); }} onSelectSession={context?.onSelectSession} onAction={(task, action, body) => { if (action === 'archive' || action === 'prune' || action === 'remove') { setConfirmation({ scopeKey, task, action, body }); setMenu(null); } else { void mutate(task, action, body); } }} /> : null}
+      <div style={{ display: 'flex', gap: 12, paddingTop: 12, paddingRight: 12, paddingBottom: 12, paddingLeft: 12, fontSize: 10, fontWeight: 260, color: 'var(--t-text-faint)', borderTop: '1px solid var(--t-divider-subtle)' }}><span>{working} working</span><span>{resolved} resolved</span><span style={{ marginLeft: 'auto' }}>{tasks.length} threads</span></div>
     </div>
   );
 }

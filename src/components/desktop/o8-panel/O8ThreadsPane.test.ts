@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { O8ThreadsPane } from './O8ThreadsPane';
 import { O8HeaderTabs } from './O8HeaderTabs';
+import { ThreadDetail } from './ThreadDetail';
 import type { RepoRegistryEntry } from '@/lib/repos/types';
 import type { TaskPoolTask } from '../repo-focus/tabs/control-room/types';
 
@@ -106,7 +107,8 @@ describe('contextual thread panel navigation', () => {
     fetchMock.mockResolvedValueOnce(json({ tasks: [task('Waiting', 'blocked')] }));
     await show();
     act(() => container.querySelector<HTMLButtonElement>('[aria-label="View thread Waiting"]')!.click());
-    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Actions for Waiting"]')!.click());
+    expect(container.querySelector('[aria-label="Thread actions"]')).not.toBeNull();
+    expect(container.querySelector('[data-o8-task-action-menu]')).toBeNull();
     expect(container.querySelectorAll('[aria-label="Steer this thread"]')).toHaveLength(1);
     act(() => button('Un-queue / remove').click());
     expect(container.querySelectorAll('[aria-label="Steer this thread"]')).toHaveLength(1);
@@ -124,6 +126,119 @@ describe('contextual thread panel navigation', () => {
     expect(container.textContent).toContain('Attempt 2');
     expect(container.textContent).not.toContain('Previous attempt output');
     expect(fetchMock.mock.calls.some((call) => call[0].includes('jobId=job&attempt=2'))).toBe(true);
+  });
+
+  it('refreshes same-attempt evidence and pauses reads when the panel is inactive', async () => {
+    const running = { ...task('Remote'), execution: { jobId: 'job', attempt: 2 } };
+    let evidenceReads = 0;
+    fetchMock.mockImplementation(async (url: string) => url.includes('/evidence?')
+      ? json({ jobId: 'job', attempt: 2, logs: [{ id: ++evidenceReads, text: `Output ${evidenceReads}` }], files: [] })
+      : json({ tasks: [running] }));
+    await show();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="View thread Remote"]')!.click());
+    expect(container.textContent).toContain('Output 1');
+    await act(async () => button('Refresh').click());
+    expect(container.textContent).toContain('Output 2');
+    const reads = fetchMock.mock.calls.length;
+    await show('/repo', false);
+    expect(fetchMock.mock.calls.length).toBe(reads);
+  });
+
+  it('uses a named danger confirmation for permanent pruning', async () => {
+    fetchMock.mockResolvedValueOnce(json({ tasks: [task('Finished', 'done')] }));
+    await show();
+    act(() => [...container.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent?.startsWith('Resolved'))!.click());
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="View thread Finished"]')!.click());
+    act(() => button('Prune permanently').click());
+    const confirm = container.querySelector('[aria-label="Confirm thread action"]')!;
+    const prune = [...confirm.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent === 'Prune permanently')!;
+    expect(prune.style.color).toContain('--t-danger');
+    expect(fetchMock.mock.calls.filter((call) => call[0].includes('/prune'))).toHaveLength(0);
+  });
+
+  it.each([
+    ['steer_outcome_unknown', 'unknown'],
+    ['outcome_unknown', null],
+  ])('preserves the exact message ID for a real %s error envelope', async (code, outcomeHeader) => {
+    const label = `Unknown-${code}`;
+    fetchMock.mockResolvedValueOnce(json({ tasks: [task(label)] }));
+    await show();
+    act(() => container.querySelector<HTMLButtonElement>(`[aria-label="View thread ${label}"]`)!.click());
+    const field = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Steer this thread"]')!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, 'Check the result');
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    fetchMock.mockImplementation(async () => {
+      const response = json({ ok: false, error: { code, message: 'Outcome is unknown. Inspect current state before taking another action.' } }, 409);
+      if (outcomeHeader) response.headers.set('x-o8-steer-outcome', outcomeHeader);
+      return response;
+    });
+    await act(async () => button('Send').click());
+    expect(container.textContent).toContain('Inspect current state');
+    expect(container.textContent).not.toContain('[object Object]');
+    expect(field.disabled).toBe(true);
+    const first = fetchMock.mock.calls.find((call) => call[0] === '/api/orchestrator/steer-packet')!;
+    expect(JSON.parse(sessionStorage.getItem(`o8:pending-thread-steer:packet-${label}`)!)).toEqual({ id: JSON.parse(first[1].body).idempotencyKey, message: 'Check the result' });
+    act(() => button('Threads').click());
+    act(() => container.querySelector<HTMLButtonElement>(`[aria-label="View thread ${label}"]`)!.click());
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Steer this thread"]')!.disabled).toBe(true);
+    await act(async () => button('Check delivery').click());
+    const requests = fetchMock.mock.calls.filter((call) => call[0] === '/api/orchestrator/steer-packet');
+    expect(requests).toHaveLength(2);
+    expect(requests[0][1].body).toBe(requests[1][1].body);
+  });
+
+  it('aborts receipt polling on navigation while retaining the pending message', async () => {
+    fetchMock.mockResolvedValueOnce(json({ tasks: [task('Sending')] }));
+    await show();
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="View thread Sending"]')!.click());
+    const field = container.querySelector<HTMLTextAreaElement>('[aria-label="Steer this thread"]')!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, 'Check the result');
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    let signal!: AbortSignal;
+    fetchMock.mockImplementationOnce(async (_url, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      signal = init.signal!;
+      signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+    }));
+    act(() => button('Send').click());
+    await act(async () => button('Threads').click());
+    expect(signal.aborted).toBe(true);
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="View thread Sending"]')!.click());
+    expect(button('Check delivery').disabled).toBe(false);
+    expect(fetchMock.mock.calls.filter((call) => call[0] === '/api/orchestrator/steer-packet')).toHaveLength(1);
+  });
+
+  it('does not let a delayed receipt in a second detail clear a newer message', async () => {
+    const shared = task('Two details');
+    const responses: ((response: Response) => void)[] = [];
+    fetchMock.mockImplementation(async () => new Promise<Response>((resolve) => responses.push(resolve)));
+    await act(async () => root.render(['first', 'second'].map((key) => createElement(ThreadDetail, {
+      key, task: shared, active: true, evidenceRevision: 0, onBack: vi.fn(), actions: null,
+    }))));
+    const fields = () => [...container.querySelectorAll<HTMLTextAreaElement>('[aria-label="Steer this thread"]')];
+    const sendButton = (index: number, label: string) => [...fields()[index].parentElement!.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent === label)!;
+    const typeMessage = (message: string) => act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(fields()[0], message);
+      fields()[0].dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    typeMessage('First message');
+    act(() => sendButton(0, 'Send').click());
+    act(() => sendButton(1, 'Check delivery').click());
+    await act(async () => responses[0](json({ ok: true, result: { note: 'Accepted' } })));
+    typeMessage('New unsettled message');
+    act(() => sendButton(0, 'Send').click());
+    await act(async () => responses[2](json({ ok: false, error: { code: 'outcome_unknown', message: 'Inspect this message.' } }, 409)));
+    await act(async () => responses[1](json({ ok: true, result: { note: 'Accepted' } })));
+    const requests = fetchMock.mock.calls.filter((call) => call[0] === '/api/orchestrator/steer-packet');
+    expect(requests).toHaveLength(3);
+    expect(requests[0][1].body).toBe(requests[1][1].body);
+    const newest = JSON.parse(requests[2][1].body);
+    expect(newest.idempotencyKey).not.toBe(JSON.parse(requests[0][1].body).idempotencyKey);
+    expect(JSON.parse(sessionStorage.getItem('o8:pending-thread-steer:packet-Two%20details')!)).toEqual({ id: newest.idempotencyKey, message: newest.message });
+    expect(sendButton(0, 'Check delivery').disabled).toBe(false);
   });
 
   it('waits for the persisted steer outcome and reuses one message id while pending', async () => {

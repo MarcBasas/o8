@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ipcFetch } from '@/lib/tauri/ipc-fetch';
 import { fetchCorrelatedActionReceipt } from '@/lib/orchestrator/action-receipt';
 import type { TaskPoolTask } from '../repo-focus/tabs/control-room/types';
 import { ActionButton } from '../repo-focus/tabs/control-room/shared';
 import { threadModelLabel, threadStatusLine } from './threads-model';
 import { useOrchestratorData } from '../orchestrator-data-context';
+import { usePendingThreadSteer } from './thread-steer-state';
 
 interface Evidence {
   jobId: string;
@@ -17,18 +18,23 @@ interface Evidence {
   filesTruncated: boolean;
 }
 
-export function ThreadDetail({ task, onBack, onActions }: {
+export function ThreadDetail({ task, active, evidenceRevision, onBack, actions }: {
   task: TaskPoolTask;
+  active: boolean;
+  evidenceRevision: number;
   onBack: () => void;
-  onActions: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  actions: ReactNode;
 }) {
   const context = useOrchestratorData();
   const [evidence, setEvidence] = useState<Evidence | null>(null);
   const [error, setError] = useState<{ key: string; message: string } | null>(null);
-  const [message, setMessage] = useState('');
+  const pending = usePendingThreadSteer(task.packetId);
+  const pendingSteer = pending.request;
+  const [message, setMessage] = useState(() => pendingSteer?.message ?? '');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [pendingSteer, setPendingSteer] = useState<{ id: string; message: string } | null>(null);
+  const sendController = useRef<AbortController | null>(null);
+  useEffect(() => () => sendController.current?.abort(), []);
   const jobId = task.execution?.jobId;
   const attempt = task.execution?.attempt;
   const evidenceKey = `${task.id}:${jobId}:${attempt}`;
@@ -37,7 +43,7 @@ export function ThreadDetail({ task, onBack, onActions }: {
   const currentEvidence = evidence && evidence.jobId === jobId && evidence.attempt === attempt ? evidence : null;
 
   useEffect(() => {
-    if (!jobId || attempt === undefined) return;
+    if (!active || document.visibilityState === 'hidden' || !jobId || attempt === undefined) return;
     const controller = new AbortController();
     const params = new URLSearchParams({ jobId, attempt: String(attempt) });
     void ipcFetch(`/api/tasks/${encodeURIComponent(task.id)}/evidence?${params}`, { signal: controller.signal, cache: 'no-store' })
@@ -48,44 +54,53 @@ export function ThreadDetail({ task, onBack, onActions }: {
       })
       .catch((err) => { if (!controller.signal.aborted) setError({ key: evidenceKey, message: err instanceof Error ? err.message : 'Unable to read this attempt.' }); });
     return () => controller.abort();
-  }, [task.id, jobId, attempt, evidenceKey]);
+  }, [active, evidenceRevision, task.id, jobId, attempt, evidenceKey]);
 
   const send = async () => {
-    if (busy || !task.packetId || (!pendingSteer && !message.trim())) return;
-    const request = pendingSteer ?? { id: crypto.randomUUID(), message: message.trim() };
-    setPendingSteer(request);
+    if (sendController.current || !task.packetId || (!pendingSteer && !message.trim())) return;
+    const request = pending.readCurrent() ?? { id: crypto.randomUUID(), message: message.trim() };
+    const controller = new AbortController();
+    sendController.current = controller;
     setBusy(true);
     setNotice('Sending to this thread…');
     try {
+      pending.save(request);
       const { response, payload } = await fetchCorrelatedActionReceipt<{
-        ok?: boolean; error?: string; message?: string; outcomeUnknown?: boolean;
+        ok?: boolean; error?: string | { code?: string; message?: string }; message?: string; outcomeUnknown?: boolean;
         result?: { note?: string; status?: string; inProgress?: boolean };
       }>('/api/orchestrator/steer-packet', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
         body: JSON.stringify({ packetId: task.packetId, message: request.message, idempotencyKey: request.id }),
       }, { fetch: ipcFetch });
       if (!response.ok || payload?.ok !== true) {
-        if (payload && !payload.outcomeUnknown) setPendingSteer(null);
-        throw new Error(payload?.message || payload?.error || 'The thread could not accept this message.');
+        const failure = typeof payload?.error === 'object' ? payload.error : null;
+        const unknown = response.headers.get('x-o8-steer-outcome') === 'unknown'
+          || payload?.outcomeUnknown === true
+          || failure?.code === 'steer_outcome_unknown' || failure?.code === 'outcome_unknown';
+        if (payload?.ok === false && !unknown) pending.clear(request.id);
+        throw new Error(payload?.message || failure?.message || (typeof payload?.error === 'string' ? payload.error : null) || 'The thread could not accept this message.');
       }
-      setPendingSteer(null);
+      pending.clear(request.id);
       setMessage('');
       setNotice(payload.result?.note || 'Message accepted by this thread.');
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : 'Delivery is unconfirmed. Retry to check the same message.');
-    } finally { setBusy(false); }
+      if (!controller.signal.aborted) setNotice(err instanceof Error ? err.message : 'Delivery is unconfirmed. Retry to check the same message.');
+    } finally {
+      sendController.current = null;
+      if (!controller.signal.aborted) setBusy(false);
+    }
   };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: 12, borderBottom: '1px solid var(--t-divider-subtle)' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', paddingTop: 12, paddingRight: 12, paddingBottom: 12, paddingLeft: 12, borderBottom: '1px solid var(--t-divider-subtle)' }}>
         <ActionButton label="Threads" onClick={onBack} />
         <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 300, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{task.title}</span>
-        <button type="button" onClick={onActions} aria-label={`Actions for ${task.title}`} style={{ border: 0, background: 'transparent', color: 'var(--t-text-muted)', cursor: 'pointer', fontSize: 16 }}>…</button>
       </div>
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', scrollbarWidth: 'none', padding: 16 }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', scrollbarWidth: 'none', paddingTop: 16, paddingRight: 16, paddingBottom: 16, paddingLeft: 16 }}>
         <div style={{ fontSize: 10, fontWeight: 260, color: 'var(--t-text-faint)', overflowWrap: 'anywhere' }}>{threadModelLabel(task)} · {task.execution || (task.workerRouting?.selectedRuntime ?? task.runtime) === 'cloud' ? 'Remote worker' : 'Local worker'}{task.branch ? ` · ${task.branch}` : ''}</div>
         <p style={{ fontSize: 13.5, fontWeight: 300, lineHeight: 1.5, overflowWrap: 'anywhere' }}>{threadStatusLine(task)}</p>
+        {actions}
         {task.summary && task.summary !== threadStatusLine(task) ? <details style={{ marginBottom: 16 }}>
           <summary style={{ fontSize: 12, color: 'var(--t-text-muted)', cursor: 'pointer' }}>Task brief</summary>
           <p style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{task.summary}</p>
@@ -109,11 +124,11 @@ export function ThreadDetail({ task, onBack, onActions }: {
           </section>
         ) : null}
       </div>
-      <div style={{ padding: 12, borderTop: '1px solid var(--t-divider-subtle)' }}>
-        <textarea aria-label="Steer this thread" placeholder="Steer this thread…" rows={2} value={message} disabled={busy || Boolean(pendingSteer) || !task.packetId || task.group === 'done'} onChange={(event) => setMessage(event.currentTarget.value)} style={{ width: '100%', boxSizing: 'border-box', resize: 'none', border: '1px solid var(--t-divider-subtle)', borderRadius: 10, background: 'var(--t-input-bg)', color: 'var(--t-text)', fontFamily: 'inherit', fontSize: 13, padding: 10 }} />
+      <div style={{ paddingTop: 12, paddingRight: 12, paddingBottom: 12, paddingLeft: 12, borderTop: '1px solid var(--t-divider-subtle)' }}>
+        <textarea aria-label="Steer this thread" placeholder="Steer this thread…" rows={2} value={message} disabled={busy || Boolean(pendingSteer) || !task.packetId || task.group === 'done'} onChange={(event) => setMessage(event.currentTarget.value)} style={{ width: '100%', boxSizing: 'border-box', resize: 'none', border: '1px solid var(--t-divider-subtle)', borderRadius: 10, background: 'var(--t-input-bg)', color: 'var(--t-text)', fontFamily: 'inherit', fontSize: 13, paddingTop: 10, paddingRight: 10, paddingBottom: 10, paddingLeft: 10 }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-          <span role="status" style={{ flex: 1, fontSize: 11, lineHeight: 1.35, color: 'var(--t-text-muted)' }}>{notice || (task.group === 'done' ? 'This thread has finished.' : threadModelLabel(task))}</span>
-          <ActionButton label={busy ? 'Sending…' : pendingSteer ? 'Check delivery' : 'Send'} primary disabled={busy || !task.packetId || task.group === 'done' || (!pendingSteer && !message.trim())} onClick={() => { void send(); }} />
+          <span role="status" style={{ flex: 1, fontSize: 11, lineHeight: 1.35, color: 'var(--t-text-muted)' }}>{notice || (pendingSteer ? 'Delivery is unconfirmed. Check this message before sending another.' : task.group === 'done' ? 'This thread has finished.' : threadModelLabel(task))}</span>
+          <ActionButton label={busy ? 'Sending…' : pendingSteer ? 'Check delivery' : 'Send'} primary disabled={busy || !task.packetId || task.group === 'done' && !pendingSteer || (!pendingSteer && !message.trim())} onClick={() => { void send(); }} />
         </div>
       </div>
     </div>
