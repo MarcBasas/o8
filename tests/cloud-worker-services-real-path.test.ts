@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -9,18 +9,23 @@ import path from 'node:path';
 import { NextRequest } from 'next/server';
 import { afterAll, describe, expect, it } from 'vitest';
 
-const root = mkdtempSync(path.join(tmpdir(), 'o8-remote-services-'));
+const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'o8-remote-services-')));
 process.env.O8_DATA_DIR = root;
 process.env.CORTEX_IDE_DATA_DIR = root;
 process.env.O8_CLOUD_JOB_LEASE_MS = '5000';
 
 const { createCloudWorkerKey } = await import('@/lib/cloud/worker-auth');
-const { getJob, readJobEvents } = await import('@/lib/cloud/job-queue');
+const { getJob, getLatestPacketJob, readJobEvents } = await import('@/lib/cloud/job-queue');
 const { closeDb } = await import('@/lib/db');
+const { getOrCreateWsToken } = await import('@/lib/ws-auth');
 const { updateOperatorDefaults } = await import('@/lib/operator/defaults');
 const { resolveRemoteManifestHash } = await import('@/lib/cloud/remote-manifest');
 const { cloudRuntime } = await import('@/lib/runtimes/cloud-adapter');
 const { addRepo } = await import('@/lib/repos/registry');
+const { getRemoteWorkerAvailability } = await import('@/lib/cloud/worker-readiness');
+const { readOrchestratorControlPlaneState } = await import('@/lib/orchestrator/control-plane');
+const taskRoute = await import('@/app/api/tasks/route');
+const dispatchRoute = await import('@/app/api/tasks/[taskId]/dispatch/route');
 const pollRoute = await import('@/app/api/cloud/worker-poll/route');
 const streamRoute = await import('@/app/api/cloud/worker-stream/route');
 const controlRoute = await import('@/app/api/cloud/worker-control/route');
@@ -154,12 +159,28 @@ describe('leased remote workspace services', () => {
     let workerOutput = '';
     worker.stderr.on('data', (chunk: Buffer) => { workerOutput += chunk.toString(); });
     try {
-      const launched = await cloudRuntime.launch({
-        cwd: repo, sourceRepoPath: repo, prompt: 'Start a checked service.', packetId: 'packet-service-test', workMode: 'edit',
-        branchName: 'o8/service-test', baseBranch: 'HEAD', model: 'gpt-6.1-sol', effort: 'medium',
+      await waitFor(() => getRemoteWorkerAvailability().available ? true : null);
+      const operatorRequest = (url: string, body: object) => new NextRequest(`http://localhost${url}`, {
+        method: 'POST', headers: { Authorization: `Bearer ${getOrCreateWsToken()}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
       });
+      const created = await taskRoute.POST(operatorRequest('/api/tasks', {
+        title: 'Run a checked service', repoPath: repo, requestedRuntime: 'cloud',
+        model: 'gpt-6.1-sol', requestedEffort: 'medium',
+      }));
+      expect(created.status).toBe(201);
+      const task = await created.json();
+      closeDb();
+      expect(readOrchestratorControlPlaneState().packets.find((packet) => packet.id === task.taskId)?.workerRouting)
+        .toMatchObject({ selectedModel: 'gpt-6.1-sol', requestedEffort: 'medium', selectedEffort: 'medium' });
+      const dispatched = await dispatchRoute.POST(operatorRequest(`/api/tasks/${task.taskId}/dispatch`, { repoPath: repo }), {
+        params: Promise.resolve({ taskId: task.taskId }),
+      });
+      const launched = await dispatched.json();
+      expect(dispatched.status).toBe(200);
       expect(launched.ok, launched.note).toBe(true);
-      const jobId = launched.sessionKey!.replace(/^cloud:/, '');
+      const jobId = getLatestPacketJob('team_default', task.taskId)!.id;
+      const branch = getJob('team_default', jobId)!.launch.remoteSource!.branch;
       expect(getJob('team_default', jobId)?.launch).toMatchObject({
         remoteManifestHash: hash, model: 'gpt-6.1-sol', effort: 'medium',
       });
@@ -177,7 +198,7 @@ describe('leased remote workspace services', () => {
         catch { return null; }
       });
       const proof = JSON.parse(execFileSync('git', [
-        '--git-dir', bare, 'show', 'refs/heads/o8/service-test:codex-proof.txt',
+        '--git-dir', bare, 'show', `refs/heads/${branch}:codex-proof.txt`,
       ], { encoding: 'utf8' })) as { args: string[] };
       expect(proof.args).toEqual(expect.arrayContaining(['--model', 'gpt-6.1-sol']));
       expect(proof.args[proof.args.indexOf('--model') + 1]).toBe('gpt-6.1-sol');
