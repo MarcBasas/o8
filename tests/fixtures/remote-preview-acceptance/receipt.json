@@ -1,0 +1,7 @@
+{
+  "platform": "linux",
+  "nodeVersion": "v22.23.3",
+  "baseSha": "646e1dabf8245edd3d3c09721e5b7df3b62badca",
+  "requestedModel": "gpt-6-sol",
+  "state": "acceptance-ready"
+}
