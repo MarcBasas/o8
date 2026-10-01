@@ -80,10 +80,11 @@ describe('createOwnedSessionStore child exit recording', () => {
     { kind: 'auth-failure' as const, expected: 'held' as const },
     { kind: 'exit-1' as const, expected: 'launched' as const },
   ])('handles a real Codex child $kind without misclassifying other exits', async ({ kind, expected }) => {
-    const [{ attachSession, createLane, getLane, setLaneStatus }, { createOwnedSessionStore }, { relaunchSupervisedAgent }, { buildDomainLaneSummaries }, { createEmptyOrchestratorMissionState, reconcileOrchestratorMissionState }] = await Promise.all([
+    const [{ appendEvent, attachSession, createLane, getLane, getLaneEvents, setLaneStatus }, { createOwnedSessionStore }, { relaunchSupervisedAgent }, { buildDomainLaneSummaries }, { createEmptyOrchestratorMissionState, reconcileOrchestratorMissionState }, { acceptedLaunchAttachmentProvenance }, { runSilentExitTriageForLane }] = await Promise.all([
       import('@/lib/lane/registry'), import('./store'),
       import('@/lib/supervisor/relaunch-agent'), import('@/lib/orchestrator/control-plane'),
-      import('@/lib/orchestrator/store'),
+      import('@/lib/orchestrator/store'), import('@/lib/lane/current-auth-exit'),
+      import('@/lib/supervisor/silent-exit-detector'),
     ]);
     execFileSync('git', ['-c', 'user.email=test@o8.test', '-c', 'user.name=o8-test',
       'commit', '--allow-empty', '-m', 'seed'], { cwd: repoPath });
@@ -92,6 +93,11 @@ describe('createOwnedSessionStore child exit recording', () => {
     const packetId = `pkt-auth-failure-${Date.now()}`;
     const lane = createLane({ repoPath, worktreePath, branch: 'agent/auth-failure',
       runtime: 'codex', packetId });
+    setLaneStatus(lane.id, 'launching', 'system', 'launching_session');
+    appendEvent(lane.id, 'update', 'system', {
+      storageAdmissionOwnerGeneration: 1,
+      storageAdmissionReservationId: `reservation:${packetId}:1`,
+    });
     process.env.CORTEX_IDE_OWNED_CODEX_ROOT = process.env.O8_TEST_CHILD_EXIT_ROOT;
     const store = createOwnedSessionStore({ ...testAdapter(kind),
       runtimeId: 'codex', surfaceIdPrefix: 'codex-owned:',
@@ -100,9 +106,15 @@ describe('createOwnedSessionStore child exit recording', () => {
     });
 
     const launched = await store.launch({ cwd: worktreePath, prompt: 'Add a note',
-      laneId: lane.id, packetId, model: 'gpt-5.6-terra', effort: 'low' });
+      laneId: lane.id, packetId, model: 'gpt-5.6-terra', effort: 'low',
+      clientMutationId: `packet-launch:${packetId}:1` });
     expect(launched.ok, launched.note).toBe(true);
-    attachSession(lane.id, launched.surfaceId, 'system');
+    const provenance = acceptedLaunchAttachmentProvenance({
+      lane: getLane(lane.id)!, events: getLaneEvents(lane.id, 100),
+      surfaceId: launched.surfaceId, clientMutationId: `packet-launch:${packetId}:1`,
+    });
+    expect(provenance).not.toBeNull();
+    attachSession(lane.id, launched.surfaceId, 'system', provenance ?? {});
     setLaneStatus(lane.id, 'running', 'system', 'session_launched');
     await waitForRecordedExit(launched.surfaceId);
     const supervisor = await import('@/lib/supervisor/agent-supervisor');
@@ -127,7 +139,13 @@ describe('createOwnedSessionStore child exit recording', () => {
     if (expected === 'held') {
       if (result.status !== 'held') throw new Error('Expected the auth retry to be held.');
       expect(result.reason).toContain('codex login');
-      expect(getLane(lane.id)?.status).toBe('awaiting_input');
+      expect(getLane(lane.id)).toMatchObject({
+        status: 'awaiting_input', lastEventLabel: 'codex_auth_recovery_required',
+      });
+      await runSilentExitTriageForLane(lane.id);
+      expect(getLane(lane.id)).toMatchObject({
+        status: 'awaiting_input', lastEventLabel: 'codex_auth_recovery_required',
+      });
       expect(summary[0]?.failureMessage).toContain('codex login');
       const packet = {
         id: packetId, referenceLabel: 'auth-check', title: 'auth-check', summary: 'auth-check',
@@ -140,6 +158,7 @@ describe('createOwnedSessionStore child exit recording', () => {
         laneSnapshots: [], runtimeTruth: [], domainLanes: summary,
       });
       expect(reconciled.packets[0]?.blockedReason).toContain('codex login');
+      expect(reconciled.packets[0]?.queueState).toBe('held');
       expect(reconcileOrchestratorMissionState(state, {
         laneSnapshots: [], runtimeTruth: [], domainLanes: summary.map((entry) => ({ ...entry, status: 'failed' })),
       }).packets[0]?.blockedReason).toContain('codex login');

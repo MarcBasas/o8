@@ -4,6 +4,11 @@ import { join } from 'node:path';
 import { emitProductEvent } from '@/lib/analytics/server';
 import { getLanePolicy } from '@/lib/lane/policy';
 import { appendEvent, attachSession, getLane, getLaneEvents, setLaneStatus, updateLane } from '@/lib/lane/registry';
+import {
+  CODEX_AUTH_RECOVERY_LANE_LABEL,
+  acceptedLaunchAttachmentProvenance,
+  findCurrentAuthExit,
+} from '@/lib/lane/current-auth-exit';
 import { resolvePortInfo } from '@/lib/panel/api-port';
 import { getRuntimeCapability, listDispatchableRuntimes } from '@/lib/orchestrator/runtime-capabilities';
 import { capturePacketCapacitySnapshot } from '@/lib/orchestrator/capacity-snapshots';
@@ -244,15 +249,36 @@ export async function launchSession(
       return { ok: false, laneId: command.laneId, note: result.note };
     }
 
+    const attachProvenance = acceptedLaunchAttachmentProvenance({
+      lane,
+      events: getLaneEvents(command.laneId, 200),
+      surfaceId: result.surfaceId,
+      clientMutationId: command.clientMutationId,
+    });
+    attachSession(command.laneId, result.surfaceId, actor, attachProvenance ?? {});
     updateLane(command.laneId, { model: resolvedLaunchModel(command, lane.runtime) }, 'system');
-    attachSession(command.laneId, result.surfaceId, actor);
     if (result.worktree?.path && !lane.worktreePath) {
       updateLane(command.laneId, { worktreePath: result.worktree.path }, 'system');
     }
-    setLaneStatus(command.laneId, 'running', actor, 'session_launched');
+    const attachedLane = getLane(command.laneId);
+    let authExit = attachedLane
+      ? findCurrentAuthExit(attachedLane, getLaneEvents(command.laneId, 200))
+      : null;
+    if (authExit) {
+      setLaneStatus(command.laneId, 'awaiting_input', actor, CODEX_AUTH_RECOVERY_LANE_LABEL);
+    } else {
+      setLaneStatus(command.laneId, 'running', actor, 'session_launched');
+      const postStatusLane = getLane(command.laneId);
+      authExit = postStatusLane
+        ? findCurrentAuthExit(postStatusLane, getLaneEvents(command.laneId, 200))
+        : null;
+      if (authExit) {
+        setLaneStatus(command.laneId, 'awaiting_input', actor, CODEX_AUTH_RECOVERY_LANE_LABEL);
+      }
+    }
     void emitProductEvent('dispatch.started', { runtime: lane.runtime });
 
-    if (lane.runtime !== 'cloud') {
+    if (lane.runtime !== 'cloud' && !authExit) {
       const { wsPort } = resolvePortInfo();
       let watchRegistered = false;
       for (let attempt = 1; attempt <= 2 && !watchRegistered; attempt += 1) {
@@ -283,7 +309,7 @@ export async function launchSession(
     const launchedLane = getLane(command.laneId);
     // #2498 — same as the recovered path: the launch result never waits on
     // the per-runtime capacity shell-outs.
-    if (launchedLane && lane.runtime !== 'cloud') {
+    if (launchedLane && lane.runtime !== 'cloud' && !authExit) {
       void capturePacketCapacitySnapshot(launchedLane, 'start').catch((err) => {
         console.warn('[capacity-snapshot] start snapshot failed for lane', command.laneId, err);
       });
