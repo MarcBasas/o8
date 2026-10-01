@@ -103,7 +103,12 @@ describe('leased remote workspace services', () => {
     execFileSync('git', ['init', '--bare', bare]);
     execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', bare]);
     execFileSync('git', ['-C', repo, 'push', 'origin', 'HEAD:refs/heads/main']);
-    const remoteUrl = 'https://example.invalid/worker/service.git';
+    execFileSync('git', ['--git-dir', bare, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
+    const remoteUrl = 'ssh://git@example.invalid/worker/service.git';
+    const ssh = path.join(root, 'fixture-ssh');
+    writeFileSync(ssh, `#!/bin/sh\nexec git-upload-pack '${bare}'\n`); chmodSync(ssh, 0o755);
+    execFileSync('git', ['-C', repo, 'config', 'core.sshCommand', ssh]);
+    execFileSync('git', ['-C', repo, 'config', 'ssh.variant', 'simple']);
     execFileSync('git', ['-C', repo, 'remote', 'set-url', 'origin', remoteUrl]);
     await addRepo(repo);
 
@@ -113,6 +118,7 @@ describe('leased remote workspace services', () => {
     await expect(resolveRemoteManifestHash(repo, baseSha)).rejects.toThrow('require approval');
     const unapproved = await cloudRuntime.launch({
       cwd: repo, sourceRepoPath: repo, prompt: 'Must not enqueue yet.',
+      model: 'gpt-6.1-sol', effort: 'medium',
       packetId: 'packet-service-unapproved', branchName: 'o8/service-unapproved', workMode: 'edit',
     });
     expect(unapproved).toMatchObject({ ok: false, sideEffect: 'none' });
@@ -124,6 +130,9 @@ describe('leased remote workspace services', () => {
     writeFileSync(fakeCodex, [
       '#!/usr/bin/env node',
       "if (process.env.O8_CLOUD_WORKER_KEY) process.exit(19);",
+      "const git=(...args)=>require('child_process').execFileSync('git',args,{encoding:'utf8'}).trim();",
+      "const checkout={shallow:git('rev-parse','--is-shallow-repository'),commits:git('rev-list','--all','--count'),base:git('rev-parse','HEAD')};",
+      "require('fs').writeFileSync('checkout-proof.json',JSON.stringify(checkout));",
       "process.stdin.resume(); process.stdin.on('end',()=>{",
       "  setTimeout(()=>{require('fs').writeFileSync('codex-proof.txt','done');",
       "    process.stdout.write(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'done'}})+'\\n');",
@@ -151,9 +160,10 @@ describe('leased remote workspace services', () => {
     try {
       const launched = await cloudRuntime.launch({
         cwd: repo, sourceRepoPath: repo, prompt: 'Start a checked service.', packetId: 'packet-service-test', workMode: 'edit',
+        model: 'gpt-6.1-sol', effort: 'medium',
         branchName: 'o8/service-test', baseBranch: 'HEAD',
       });
-      expect(launched.ok).toBe(true);
+      expect(launched.ok, JSON.stringify(launched)).toBe(true);
       const jobId = launched.sessionKey!.replace(/^cloud:/, '');
       expect(getJob('team_default', jobId)?.launch.remoteManifestHash).toBe(hash);
       await waitFor(() => getJob('team_default', jobId)?.status === 'completed' ? true : null);
@@ -171,6 +181,8 @@ describe('leased remote workspace services', () => {
       });
       expect(execFileSync('git', ['--git-dir', bare, 'show', 'refs/heads/o8/service-test:codex-proof.txt'], { encoding: 'utf8' }))
         .toBe('done');
+      expect(JSON.parse(execFileSync('git', ['--git-dir', bare, 'show', 'refs/heads/o8/service-test:checkout-proof.json'], { encoding: 'utf8' })))
+        .toEqual({ shallow: 'true', commits: '1', base: baseSha });
       const stale = await streamRoute.POST(new NextRequest('http://localhost/api/cloud/worker-stream', {
         method: 'POST',
         headers: { authorization: `Bearer ${key.plaintext}`, 'content-type': 'application/json' },
