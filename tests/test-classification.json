@@ -1634,6 +1634,15 @@
       ]
     },
     {
+      "path": "tests/codex-sol-compatibility-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/cold-start-runtime-spawn-routes.test.ts",
       "reasons": [
         "child-process",
