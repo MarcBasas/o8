@@ -566,19 +566,15 @@ export function attachSession(
   laneId: string,
   sessionKey: string,
   actor: LaneEventActor = 'system',
+  eventPayload: Record<string, unknown> = {},
 ): Lane | null {
   const lane = getLane(laneId);
   if (!lane) return null;
-
   const now = nowIso();
-  updateLaneRecord(laneId, {
-    sessionKey,
-    updatedAt: now,
-    lastEventAt: now,
-    lastEventLabel: 'session_attached',
-  });
-
-  appendEvent(laneId, 'attach_session', actor, { sessionKey });
+  getSqlite().transaction(() => {
+    updateLaneRecord(laneId, { sessionKey, updatedAt: now, lastEventAt: now, lastEventLabel: 'session_attached' });
+    appendEvent(laneId, 'attach_session', actor, { ...eventPayload, sessionKey });
+  })();
   return getLane(laneId);
 }
 
