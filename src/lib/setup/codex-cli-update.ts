@@ -109,7 +109,7 @@ export async function updateSelectedCodex() {
     try {
       await Promise.all([writeFile(userConfig, '', { mode: 0o600 }), writeFile(globalConfig, '', { mode: 0o600 })]);
       await execFileAsync(install.node, [install.npm, 'install', '--global', '--prefix', install.prefix,
-        '--registry=https://registry.npmjs.org', `--userconfig=${userConfig}`, `--globalconfig=${globalConfig}`,
+        '--registry=https://registry.npmjs.org', '--@openai:registry=https://registry.npmjs.org', `--userconfig=${userConfig}`, `--globalconfig=${globalConfig}`,
         '--ignore-scripts', '--no-audit', '--no-fund', `@openai/codex@${tool.latestVersion}`], {
         timeout: 120_000, maxBuffer: 1024 * 1024, cwd: install.prefix,
         env: { HOME: process.env.HOME, PATH: `${path.dirname(install.node)}${path.delimiter}${path.join(install.prefix, 'bin')}${path.delimiter}/usr/bin${path.delimiter}/bin`,

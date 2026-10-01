@@ -67,6 +67,8 @@ describe('Codex update through the operator route', () => {
     expect(fixture.calls).toHaveLength(1);
     expect(fixture.calls[0]).toContain('@openai/codex@0.159.3');
     expect(fixture.calls[0]).toContain(realpathSync(fixture.prefix));
+    expect(fixture.calls[0]).toContain('--registry=https://registry.npmjs.org');
+    expect(fixture.calls[0]).toContain('--@openai:registry=https://registry.npmjs.org');
     const receipt = JSON.parse(readFileSync(join(process.env.CORTEX_IDE_DATA_DIR!, 'codex-cli-update.json'), 'utf8'));
     expect(receipt).toMatchObject({ status: 'succeeded', selectedPath: fixture.selected, targetVersion: '0.159.3' });
   });
