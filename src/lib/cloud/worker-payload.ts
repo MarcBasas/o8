@@ -9,5 +9,6 @@ export function workerLaunchPayload(launch: LaunchOptions) {
     workMode: launch.workMode,
     remoteSource: launch.remoteSource,
     remoteManifestHash: launch.remoteManifestHash,
+    remotePreview: launch.remotePreview,
   };
 }

@@ -103,7 +103,12 @@ describe('leased remote workspace services', () => {
     execFileSync('git', ['init', '--bare', bare]);
     execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', bare]);
     execFileSync('git', ['-C', repo, 'push', 'origin', 'HEAD:refs/heads/main']);
-    const remoteUrl = 'https://example.invalid/worker/service.git';
+    execFileSync('git', ['--git-dir', bare, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
+    const remoteUrl = 'ssh://git@example.invalid/worker/service.git';
+    const ssh = path.join(root, 'fixture-ssh');
+    writeFileSync(ssh, `#!/bin/sh\nexec git-upload-pack '${bare}'\n`); chmodSync(ssh, 0o755);
+    execFileSync('git', ['-C', repo, 'config', 'core.sshCommand', ssh]);
+    execFileSync('git', ['-C', repo, 'config', 'ssh.variant', 'simple']);
     execFileSync('git', ['-C', repo, 'remote', 'set-url', 'origin', remoteUrl]);
     await addRepo(repo);
 
@@ -153,7 +158,7 @@ describe('leased remote workspace services', () => {
         cwd: repo, sourceRepoPath: repo, prompt: 'Start a checked service.', packetId: 'packet-service-test', workMode: 'edit',
         branchName: 'o8/service-test', baseBranch: 'HEAD',
       });
-      expect(launched.ok).toBe(true);
+      expect(launched.ok, launched.note).toBe(true);
       const jobId = launched.sessionKey!.replace(/^cloud:/, '');
       expect(getJob('team_default', jobId)?.launch.remoteManifestHash).toBe(hash);
       await waitFor(() => getJob('team_default', jobId)?.status === 'completed' ? true : null);
