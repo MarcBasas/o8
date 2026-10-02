@@ -129,9 +129,17 @@ async function handleLaunch(job: CloudWorkerJob, stream: EventStream, opts: Work
     if (abortControl || monitorFailure || shutdown.aborted) return;
     // A recovered lease must never reuse a checkout still owned by an older attempt.
     const runDir = path.join(opts.workspaceDir, `${job.id}-${randomUUID()}`);
-    const cloneDir = await cloneRepoForRun({ repoUrl: source.repoUrl, baseRef: source.baseSha, remoteBranch: source.branch, workDir: runDir, signal: operation.signal });
+    let checkout: { cacheHit: boolean; durationMs: number } | undefined;
+    const cloneDir = await cloneRepoForRun({
+      repoUrl: source.repoUrl, baseRef: source.baseSha, remoteBranch: source.branch,
+      workDir: runDir, cacheDir: path.join(opts.workspaceDir, 'repository-cache'), signal: operation.signal,
+      onCheckout: (receipt) => { checkout = receipt; },
+    });
     if (abortControl || monitorFailure || shutdown.aborted) return;
-    await stream.postEvent(job, 'chunk', { text: 'Repository cloned.' }, operation.signal);
+    await stream.postEvent(job, 'chunk', {
+      text: `Repository ready in ${((checkout?.durationMs ?? 0) / 1000).toFixed(1)}s${checkout?.cacheHit ? ' (cached base objects)' : ''}.`,
+      checkout,
+    }, operation.signal);
 
     services = await startWorkspaceServices({ cloneDir, job, stream, signal: operation.signal });
     if (services && job.launch.remotePreview) stopPreview = startPreviewRelay(job, stream, services, operation.signal);
@@ -141,6 +149,7 @@ async function handleLaunch(job: CloudWorkerJob, stream: EventStream, opts: Work
       cwd: cloneDir,
       prompt: job.launch.prompt,
       model: job.launch.model,
+      effort: job.launch.effort,
       onChunk: async (text) => { await stream.postEvent(job, 'chunk', { text }, operation.signal); },
     });
     if (abortControl || monitorFailure || shutdown.aborted) codex.abort();
