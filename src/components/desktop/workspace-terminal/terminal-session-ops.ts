@@ -200,6 +200,7 @@ export function computeCliChatSession(
             label: cleanRuntimeSessionLabel(options.label ?? options.orchestrationPacket?.title) ?? tab.label,
             chatRuntime: resolvedRuntime,
             chatSessionKey: normalizedTargetSessionKey ?? tab.chatSessionKey,
+            repo: resolvedRuntime === 'cloud' ? options.repo ?? tab.repo : tab.repo,
             laneId: options.laneId ?? tab.laneId ?? null,
             chatModel: resolvedRuntime === 'cloud' ? options.modelId
               : options.modelId ?? (tab.chatRuntime === resolvedRuntime ? tab.chatModel : fallbackModelForRuntime),

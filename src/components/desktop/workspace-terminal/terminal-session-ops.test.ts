@@ -32,6 +32,13 @@ describe('workspace terminal focused CLI session', () => {
     expect(reopened.tabs[0].chatModel).toBeUndefined();
   });
 
+  it('restores the selected cloud repository when reusing an unscoped tab', () => {
+    const existing = computeCliChatSession({ runtime: 'cloud', targetSessionKey: 'cloud:worker' }, [], '');
+    const reopened = computeCliChatSession({ runtime: 'cloud', targetSessionKey: 'cloud:worker', repo }, existing.tabs, existing.activeTabId);
+    expect(reopened.tabs).toHaveLength(1);
+    expect(reopened.tabs[0].repo).toEqual(repo);
+  });
+
   it('keeps a captured design region on the staged context card', () => {
     const previewImageDataUri = 'data:image/png;base64,captured-region';
     const result = computeCliChatSession(

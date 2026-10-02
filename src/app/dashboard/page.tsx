@@ -2605,6 +2605,9 @@ function DashboardInner() {
           registryRepoId: targetRepo.registryRepoId,
           isWorktree: targetRepo.isWorktree,
           worktreeStatus: targetRepo.worktreeStatus,
+        } : runtime === 'cloud' && sessionScope ? {
+          name: sessionScope.split(/[\\/]/).filter(Boolean).pop() ?? 'Repository',
+          localPath: sessionScope,
         } : undefined,
         targetSessionKey: sessionKey,
         label,
