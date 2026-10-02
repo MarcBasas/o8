@@ -2529,10 +2529,14 @@ function DashboardInner() {
         || session.sessionId === sessionKey
         || session.runtimeSurface?.id === sessionKey
       )) ?? parsedAgents.find((agent) => agent.sessionKey === sessionKey || agent.id === sessionKey);
-      const sessionScope = selectedSession?.workspace
-        ?? selectedSession?.runtimeSurface?.cwd
-        ?? hint?.repoPath
-        ?? null;
+      const runtime = runtimeFromSessionKeyId(sessionKey)
+        ?? (isOrchestratorRuntime(selectedSession?.runtime) ? selectedSession.runtime : hint?.runtime)
+        ?? 'codex';
+      const knownScope = selectedSession?.workspace ?? selectedSession?.runtimeSurface?.cwd ?? hint?.repoPath;
+      // Search can return a cloud session before the sidebar inventory catches up.
+      const resolvedLane = runtime === 'cloud' && !knownScope
+        ? await resolveFocusableLaneBinding({ sessionKey, runtime }) : null;
+      const sessionScope = knownScope ?? resolvedLane?.repoPath ?? null;
       const targetRepo = sessionScope
         ? workspaceScopeEntries.find((repo) => (
           pathBelongsToRepoScope(sessionScope, repo.localPath)
@@ -2582,9 +2586,6 @@ function DashboardInner() {
         attempts: 20,
       });
       if (!primaryHandle) return;
-      const runtime = runtimeFromSessionKeyId(sessionKey)
-        ?? (isOrchestratorRuntime(selectedSession?.runtime) ? selectedSession.runtime : hint?.runtime)
-        ?? 'codex';
       // Canonical label — never an id slice. agentDisplayLabel falls back to
       // the runtime's human name ("Codex") rather than a raw `codex-owned:...`
       // key, so the old `sessionKey.split(':').pop()?.slice(0,12)` → literal

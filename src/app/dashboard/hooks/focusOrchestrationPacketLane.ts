@@ -109,7 +109,8 @@ export async function fetchLaneBinding({
     return {
       laneId: lane.id,
       tabId: fallbackLane?.tabId ?? lane.sessionKey ?? '',
-      repoPath: lane.worktreePath ?? lane.repoPath ?? fallbackLane?.repoPath ?? fallbackRepoPath ?? null,
+      repoPath: (lane.runtime === 'cloud' ? lane.repoPath : lane.worktreePath ?? lane.repoPath)
+        ?? fallbackLane?.repoPath ?? fallbackRepoPath ?? null,
       worktreePath: lane.worktreePath ?? fallbackLane?.worktreePath ?? null,
       runtime: lane.runtime ?? fallbackLane?.runtime ?? fallbackRuntime,
       sessionKey: lane.sessionKey ?? fallbackLane?.sessionKey ?? null,

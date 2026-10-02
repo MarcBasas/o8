@@ -100,6 +100,13 @@ describe('resolveFocusableLaneBinding', () => {
     });
   });
 
+  it('resolves a cloud Search result to its project instead of the remote checkout', async () => {
+    mockLaneFetch([{ id: 'lane-cloud', sessionKey: 'cloud:job', runtime: 'cloud', repoPath: '/project', worktreePath: '/remote/checkout' }]);
+    await expect(resolveFocusableLaneBinding({ sessionKey: 'cloud:job', runtime: 'cloud' })).resolves.toMatchObject({
+      repoPath: '/project', worktreePath: '/remote/checkout', sessionKey: 'cloud:job', runtime: 'cloud',
+    });
+  });
+
   it('returns null when no lane matches', async () => {
     mockLaneFetch([
       {
