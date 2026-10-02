@@ -5569,7 +5569,7 @@ function DashboardInner() {
                         onOpenO8Panel={handleOpenO8Panel}
                       >
                         <LazyO8Panel
-                          active={rightPanelKind === 'o8'}
+                          active={showRightPanelColumn && rightPanelKind === 'o8'}
                           repoPath={currentO8RepoPath}
                           registeredRepos={activeProjectRepoEntries}
                           onRepoPathChange={handleSelectO8RepoPath}
