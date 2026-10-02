@@ -161,6 +161,7 @@ import {
 import { useTileLayout } from './hooks/useTileLayout';
 import { useUIChrome } from './hooks/useUIChrome';
 import { useWorkspaceTerminal } from './hooks/useWorkspaceTerminal';
+import { isOrchestratorRuntime, runtimeFromSessionKeyId } from '@/lib/orchestrator/runtime-capabilities';
 import { resolveFocusableLaneBinding } from './hooks/focusOrchestrationPacketLane';
 import { handleRepoWorkspaceFocusEvent } from './hooks/focusRepoWorkspace';
 import { useDesignMode } from '@/hooks/useDesignMode';
@@ -2581,15 +2582,9 @@ function DashboardInner() {
         attempts: 20,
       });
       if (!primaryHandle) return;
-      const runtime = hint?.runtime ?? (selectedSession?.runtime === 'claude-code'
-        || selectedSession?.runtime === 'gemini'
-        || selectedSession?.runtime === 'opencode'
-        || selectedSession?.runtime === 'codex'
-        ? selectedSession.runtime
-        : sessionKey.startsWith('claude-code:') || sessionKey.startsWith('claude-code-owned:') ? 'claude-code'
-        : sessionKey.startsWith('gemini-owned:') ? 'gemini'
-        : sessionKey.startsWith('opencode-owned:') ? 'opencode'
-        : 'codex');
+      const runtime = runtimeFromSessionKeyId(sessionKey)
+        ?? (isOrchestratorRuntime(selectedSession?.runtime) ? selectedSession.runtime : hint?.runtime)
+        ?? 'codex';
       // Canonical label — never an id slice. agentDisplayLabel falls back to
       // the runtime's human name ("Codex") rather than a raw `codex-owned:...`
       // key, so the old `sessionKey.split(':').pop()?.slice(0,12)` → literal
@@ -2834,13 +2829,7 @@ function DashboardInner() {
         laneId: laneId ?? '',
         packetId: packetId ?? '',
         sessionKey: sessionKey ?? '',
-        runtime: sessionKey?.startsWith('claude-code')
-          ? 'claude-code'
-          : sessionKey?.startsWith('gemini')
-            ? 'gemini'
-            : sessionKey?.startsWith('opencode')
-              ? 'opencode'
-              : 'codex',
+        runtime: runtimeFromSessionKeyId(sessionKey) ?? 'codex',
       });
       if (resolved?.sessionKey) {
         handleSelectSession(resolved.sessionKey, {
