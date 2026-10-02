@@ -105,4 +105,17 @@ describe.skipIf(process.platform === 'win32')('reviewed plugin terminals through
     await post(launch, 409);
     expect(() => tmux('list-sessions')).toThrow();
   });
+
+  it('refuses an unavailable terminal runtime before claiming a launch or creating saved data', async () => {
+    const directory = source();
+    const review = (await post({ action: 'review', directory })).review;
+    await post({ action: 'link', directory, expectedRevision: review.revision });
+    const unavailable = path.join(fixture.root, 'unavailable-tmux');
+    writeFileSync(unavailable, 'not executable', { mode: 0o600 });
+    vi.stubEnv('TMUX_BIN', unavailable);
+    await post({ action: 'launch-terminal', id: 'interactive-example', terminalId: 'console', revision: review.revision, requestId: randomUUID() }, 503);
+    expect((await (await GET(request())).json()).terminals).toEqual([]);
+    expect(() => readFileSync(path.join(review.execution.state.directory, 'starts'))).toThrow();
+    await post({ action: 'remove', id: 'interactive-example', revision: review.revision });
+  });
 });

@@ -12,7 +12,7 @@ import { ActionPluginError } from './errors';
 import { acquiredSource, githubSourceSchema, type GithubActionSource } from './source-storage';
 import { verifyGithubFiles } from './github-files';
 import { actionStateSchema, clearActionState, describeActionState, provisionActionState, type ActionState } from './state-storage';
-import { inspectPluginTerminal, pluginTerminalEnvironment, startPluginTerminal, stopPluginTerminal } from './terminal-runtime';
+import { inspectPluginTerminal, pluginTerminalEnvironment, requirePluginTerminalRuntime, startPluginTerminal, stopPluginTerminal } from './terminal-runtime';
 
 export { ActionPluginError } from './errors';
 
@@ -242,6 +242,7 @@ export async function launchPluginTerminal(input: { id: string; terminalId: stri
     if (['0', 'false', 'off', 'no'].includes(process.env.O8_PERSISTENT_TERMINALS?.trim().toLowerCase() ?? '')) throw new ActionPluginError('persistence_disabled', 'Enable persistent terminals before launching a plugin terminal.', 409);
     for (const file of saved.manifest.files) if (sha(safeFile(dir, file.path, 1024 * 1024)) !== file.sha256) throw new ActionPluginError('damaged', 'Plugin file changed after linking.', 409);
     refuseRunning(database, input.id);
+    requirePluginTerminalRuntime();
     const state = saved.manifest.state ? provisionActionState({ ...saved, id: input.id }) : null;
     const receipt: PluginTerminalReceipt = {
       id: requestId, pluginId: input.id, terminalId: input.terminalId, revision: input.revision,

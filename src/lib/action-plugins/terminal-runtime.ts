@@ -21,6 +21,11 @@ function tmux(...args: string[]) {
   });
 }
 
+export function requirePluginTerminalRuntime() {
+  try { tmux('-V'); }
+  catch { throw new ActionPluginError('terminal_unavailable', 'Persistent terminals need a working tmux installation. Install or repair tmux, then try again.', 503); }
+}
+
 export function inspectPluginTerminal(sessionName: string): { status: 'running' | 'exited' | 'ended'; exitCode: number | null } {
   if (!/^cortex-dash-[a-f0-9]{32}$/.test(sessionName)) throw new ActionPluginError('damaged', 'Invalid plugin terminal identity.', 409);
   try {
