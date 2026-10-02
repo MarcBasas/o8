@@ -3960,6 +3960,8 @@ function pushSymonTextDone(
       turnId: turn.turnId,
       status,
       activeMachine: activeMachine ?? loadSymonTextSession(turn.sessionId)?.activeMachine ?? DEFAULT_SYMON_MACHINE,
+      model: loadSymonTextSession(turn.sessionId)?.model,
+      effort: loadSymonTextSession(turn.sessionId)?.effort,
       ...(detail ? { detail } : {}),
     });
   }
