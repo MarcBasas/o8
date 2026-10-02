@@ -28,7 +28,7 @@ const { closePreviewServers } = await import('@/lib/cloud/preview-server');
 const { updateOperatorDefaults } = await import('@/lib/operator/defaults');
 const { addRepo } = await import('@/lib/repos/registry');
 const { createCloudWorkerKey, revokeCloudWorkerKey } = await import('@/lib/cloud/worker-auth');
-const { getJob, getLatestPacketJob, listJobs, readJobEvents, queueJobControl, enqueueCloudJob } = await import('@/lib/cloud/job-queue');
+const { getJob, getLatestPacketJob, listJobs, readJobEvents, queueJobControl, enqueueCloudJob, cancelJob } = await import('@/lib/cloud/job-queue');
 const { SqliteCloudJobStore } = await import('@/lib/cloud/sqlite-job-store');
 const { getSqlite, closeDb } = await import('@/lib/db');
 const { getTaskPoolTask } = await import('@/lib/tasks/pool');
@@ -100,30 +100,79 @@ function openPreview(jobId: string, attempt: number, taskId = 'packet-review-pre
 }
 
 async function relayBridge() {
+  const pollingWorkers = new Set<string>();
+  const disconnectedWorkers = new Set<string>();
   const server = createServer(async (incoming, outgoing) => {
-    const parts: Buffer[] = [];
-    for await (const part of incoming) parts.push(Buffer.from(part));
-    const request = new NextRequest(`http://127.0.0.1${incoming.url ?? '/'}`, {
-      method: incoming.method, headers: new Headers(incoming.headers as HeadersInit),
-      ...(parts.length ? { body: Buffer.concat(parts) } : {}),
-    });
-    const pathname = new URL(request.url).pathname;
-    const response = pathname === '/api/cloud/worker-poll' ? await pollRoute.GET(request)
-      : pathname === '/api/cloud/worker-stream' ? await streamRoute.POST(request)
-        : pathname === '/api/cloud/worker-control' ? incoming.method === 'POST' ? await controlRoute.POST(request) : await controlRoute.GET(request)
-          : pathname === '/api/cloud/worker-preview' ? incoming.method === 'POST' ? await relayRoute.POST(request) : await relayRoute.GET(request)
-            : new Response('Not found', { status: 404 });
-    outgoing.writeHead(response.status, Object.fromEntries(response.headers));
-    outgoing.end(Buffer.from(await response.arrayBuffer()));
+    const controller = new AbortController();
+    const url = new URL(`http://127.0.0.1${incoming.url ?? '/'}`);
+    const workerId = url.searchParams.get('workerId') ?? '';
+    const isPoll = url.pathname === '/api/cloud/worker-poll';
+    const onAbort = () => controller.abort();
+    const onClose = () => {
+      if (outgoing.writableEnded) return;
+      if (isPoll) disconnectedWorkers.add(workerId);
+      controller.abort();
+    };
+    incoming.once('aborted', onAbort);
+    // IncomingMessage.close also fires after a normal request body is read.
+    // Only an unfinished response closing means this worker disconnected.
+    outgoing.once('close', onClose);
+    try {
+      const parts: Buffer[] = [];
+      for await (const part of incoming) parts.push(Buffer.from(part));
+      const request = new NextRequest(url, {
+        method: incoming.method, headers: new Headers(incoming.headers as HeadersInit), signal: controller.signal,
+        ...(parts.length ? { body: Buffer.concat(parts) } : {}),
+      });
+      if (isPoll) pollingWorkers.add(workerId);
+      const response = isPoll ? await pollRoute.GET(request)
+        : url.pathname === '/api/cloud/worker-stream' ? await streamRoute.POST(request)
+          : url.pathname === '/api/cloud/worker-control' ? incoming.method === 'POST' ? await controlRoute.POST(request) : await controlRoute.GET(request)
+            : url.pathname === '/api/cloud/worker-preview' ? incoming.method === 'POST' ? await relayRoute.POST(request) : await relayRoute.GET(request)
+              : new Response('Not found', { status: 404 });
+      if (!outgoing.destroyed) {
+        outgoing.writeHead(response.status, Object.fromEntries(response.headers));
+        outgoing.end(Buffer.from(await response.arrayBuffer()));
+      }
+    } finally {
+      if (isPoll) pollingWorkers.delete(workerId);
+      incoming.removeListener('aborted', onAbort);
+      outgoing.removeListener('close', onClose);
+    }
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }) };
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, pollingWorkers, disconnectedWorkers,
+    close: () => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }) };
 }
 
 describe('completed remote result preview sessions', () => {
   let parentId = '';
   let childId = '';
   let absoluteDeadline = '';
+
+  it('releases a disconnected HTTP poll before another worker claims the next job', async () => {
+    const bridge = await relayBridge();
+    const controller = new AbortController();
+    const jobId = 'disconnect-recovery-fixture';
+    const pending = fetch(`${bridge.url}/api/cloud/worker-poll?workerId=disconnected-worker&waitMs=5000`, {
+      headers: { authorization: `Bearer ${key.plaintext}` }, signal: controller.signal,
+    });
+    try {
+      await waitFor(() => bridge.pollingWorkers.has('disconnected-worker') ? true : null);
+      controller.abort();
+      await expect(pending).rejects.toThrow();
+      await waitFor(() => bridge.disconnectedWorkers.has('disconnected-worker') ? true : null);
+      enqueueCloudJob('team_default', jobId, { cwd: '', prompt: 'disconnect recovery fixture' });
+      const job = getJob('team_default', jobId)!;
+      expect(job.status, JSON.stringify({ status: job.status, claimedBy: job.claimedBy })).toBe('pending');
+      const claim = await fetch(`${bridge.url}/api/cloud/worker-poll?workerId=following-worker&waitMs=0`, {
+        headers: { authorization: `Bearer ${key.plaintext}` },
+      });
+      expect(claim.status).toBe(200);
+      expect((await claim.json()).job.id).toBe(jobId);
+      expect(getJob('team_default', jobId)!.claimedBy).toBe('following-worker');
+    } finally { controller.abort(); cancelJob('team_default', jobId); await bridge.close(); }
+  });
 
   it('enqueues one separately bound preview without replacing the completed task', async () => {
     await pollRoute.GET(new Request('http://localhost/api/cloud/worker-poll?workerId=review-worker&waitMs=0', {
@@ -276,6 +325,8 @@ describe('completed remote result preview sessions', () => {
     const claim = await pollRoute.GET(new Request('http://localhost/api/cloud/worker-poll?workerId=guard-worker&waitMs=0', {
       headers: { authorization: `Bearer ${credential.plaintext}` },
     }));
+    const claimedSession = getJob('team_default', sessionId)!;
+    expect(claim.status, JSON.stringify({ status: claimedSession.status, claimedBy: claimedSession.claimedBy, claimCount: claimedSession.claimCount })).toBe(200);
     expect((await claim.json()).job.id).toBe(sessionId);
     revokeCloudWorkerKey(credential.record.id); closeDb();
     new SqliteCloudJobStore().recoverExpiredLeases('team_default');
