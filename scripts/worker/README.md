@@ -38,6 +38,17 @@ The worker stores its opaque worker ID and durable poll cursor in
 to move both this state file and per-attempt clones. Set `--worker-id <opaque-id>`
 only when the host needs a fixed external identity.
 
+The worker keeps pinned base Git objects in `repository-cache` beneath its
+workspace directory. A later attempt copies those objects into a fresh Git
+repository, verifies their integrity, and still fetches the exact pinned
+commit from upstream. Cached objects do not grant repository access. Task
+branches, edits, Git configuration, hooks, and object alternates are not reused.
+Each checkout owns its objects and remains usable after the cache is removed.
+The persisted repository-ready event records checkout duration and whether
+base objects were reused. Stop the worker before removing its cache to reclaim
+space; the next attempt performs a cold fetch. This cache does not persist
+workspace services or make the coordinator independent of the operator host.
+
 The Cloud Workers settings screen lists authenticated workers seen in the last
 minute. An idle poll and an accepted event from a running job refresh the
 sighting; a revoked key disappears immediately. This shows recent contact,
