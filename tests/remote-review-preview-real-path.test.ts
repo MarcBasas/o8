@@ -84,13 +84,13 @@ function workerStream(body: unknown) {
   return streamRoute.POST(new NextRequest('http://localhost/api/cloud/worker-stream', { method: 'POST', headers: { Authorization: `Bearer ${key.plaintext}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }));
 }
 
-async function waitFor<T>(read: () => T | null): Promise<T> {
+async function waitFor<T>(read: () => T | null, diagnostics?: () => string): Promise<T> {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     const value = read(); if (value !== null) return value;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error('Preview fixture timed out.');
+  throw new Error(`Preview fixture timed out.${diagnostics ? ` ${diagnostics()}` : ''}`);
 }
 
 function openPreview(jobId: string, attempt: number, taskId = 'packet-review-preview', token = getOrCreateWsToken()) {
@@ -187,7 +187,9 @@ describe('completed remote result preview sessions', () => {
     }); };
     const healthy = () => waitFor(() => readJobEvents('team_default', childId).some((event) => event.type === 'service'
       && (event.payload as { state: string; claimCount: number }).state === 'healthy'
-      && (event.payload as { claimCount: number }).claimCount === getJob('team_default', childId)!.claimCount) ? true : null);
+      && (event.payload as { claimCount: number }).claimCount === getJob('team_default', childId)!.claimCount) ? true : null,
+      () => JSON.stringify({ status: getJob('team_default', childId)?.status,
+        deadline: getJob('team_default', childId)?.launch.remoteServiceSession?.expiresAt, output }));
     const read = async (access: { url: string }) => {
       const handshake = await fetch(access.url, { redirect: 'manual' }); expect(handshake.status).toBe(303);
       const response = await fetch(new URL(access.url).origin + '/', { headers: { cookie: handshake.headers.get('set-cookie')!.split(';')[0]! } });
@@ -247,7 +249,9 @@ describe('completed remote result preview sessions', () => {
       worker.kill('SIGSTOP');
       const expiring = await (await openPreview(parentId, 1)).json(); childId = expiring.serviceJobId;
       const expiringJob = getJob('team_default', childId)!;
-      const expiredLaunch = { ...expiringJob.launch, remoteServiceSession: { ...expiringJob.launch.remoteServiceSession!, expiresAt: new Date(Date.now() + 4_000).toISOString() } };
+      // The absolute deadline includes checkout and health startup; allow that work
+      // to finish under CI load while still proving a short, non-renewable lifetime.
+      const expiredLaunch = { ...expiringJob.launch, remoteServiceSession: { ...expiringJob.launch.remoteServiceSession!, expiresAt: new Date(Date.now() + 12_000).toISOString() } };
       getSqlite().prepare('UPDATE cloud_jobs SET launch_json = ? WHERE id = ?').run(JSON.stringify(expiredLaunch), childId);
       worker.kill('SIGCONT');
       await healthy();
