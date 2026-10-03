@@ -1124,6 +1124,13 @@
       ]
     },
     {
+      "path": "tests/agent-input-socket-real-path.test.ts",
+      "reasons": [
+        "network-listener",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/agent-message-bus-real-path.test.ts",
       "reasons": [
         "real-path"

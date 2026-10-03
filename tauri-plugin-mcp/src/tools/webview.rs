@@ -1731,6 +1731,20 @@ const TYPE_INTO_FOCUSED_JS: &str = r#"
     return false;
   };
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const appendOrdinaryInput = (element, text) => {
+    const expected = element.value + text;
+    const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (!setter || !setter.set) throw new Error('Focused field has no native value setter.');
+    // Refuse native sanitization (including input newlines/file values) before
+    // touching the live field. The probe is never connected or focused.
+    const probe = element.cloneNode(false);
+    setter.set.call(probe, expected);
+    if (probe.value !== expected) throw new Error('Focused field cannot accept the exact appended text.');
+    setter.set.call(element, expected);
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    if (!element.isConnected || element.value !== expected) throw new Error('Focused field refused the exact appended text.');
+  };
   const simulateReactInputTyping = async (element, text, delayMs, clear = false) => {
     element.focus();
     await sleep(50);
@@ -1839,14 +1853,15 @@ const TYPE_INTO_FOCUSED_JS: &str = r#"
     const text = payload.text;
     const delayMs = typeof payload.delayMs === 'number' ? payload.delayMs : 20;
     const initialDelayMs = typeof payload.initialDelayMs === 'number' ? payload.initialDelayMs : 0;
+    const unpaced = delayMs === 0 && initialDelayMs === 0;
     if (!text) throw new Error('text parameter is required');
     if (initialDelayMs > 0) await sleep(initialDelayMs);
 
     let el = document.activeElement;
-    if (!el || el === document.body || el === document.documentElement || !isTypeable(el)) {
+    if (!unpaced && (!el || el === document.body || el === document.documentElement || !isTypeable(el))) {
       el = window.__mcpLastFocusedElement || null;
     }
-    if (!el || el === document.body || el === document.documentElement || !isTypeable(el)) {
+    if (!unpaced && (!el || el === document.body || el === document.documentElement || !isTypeable(el))) {
       const coords = window.__mcpLastClickCoords;
       if (coords && typeof coords.x === 'number' && typeof coords.y === 'number') {
         let pointEl = document.elementFromPoint(coords.x, coords.y);
@@ -1861,10 +1876,14 @@ const TYPE_INTO_FOCUSED_JS: &str = r#"
         }
       }
     }
-    if (!el || el === document.body || el === document.documentElement) {
+    if (!el || el === document.body || el === document.documentElement || (unpaced && !isTypeable(el))) {
       throw new Error('No element is currently focused. Click an element first or use selector mode.');
     }
-    if (el instanceof HTMLElement) el.focus();
+    const ordinary = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
+    if (ordinary && (!el.isConnected || el.disabled || el.readOnly || el.matches(':disabled'))) {
+      throw new Error('Focused field is disconnected, disabled or read-only.');
+    }
+    if (el instanceof HTMLElement && !(ordinary && unpaced)) el.focus();
 
     const elementInfo = { tag: el.tagName.toLowerCase() };
     if (el.id) elementInfo.id = el.id;
@@ -1886,20 +1905,21 @@ const TYPE_INTO_FOCUSED_JS: &str = r#"
       if (!matched) throw new Error('No <option> matching "' + text + '" found in <select>' + (el.id ? ' #' + el.id : '') + '.');
     } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
       elementInfo.strategy = 'react-input';
-      await simulateReactInputTyping(el, text, delayMs, false);
+      if (unpaced) appendOrdinaryInput(el, text);
+      else await simulateReactInputTyping(el, text, delayMs, false);
     } else if (el instanceof HTMLElement) {
       const lexicalEl = el.closest('[data-lexical-editor]') || (el.hasAttribute('data-lexical-editor') ? el : null);
       if (lexicalEl && lexicalEl instanceof HTMLElement) {
         elementInfo.strategy = 'lexical';
-        await typeIntoLexicalEditor(lexicalEl, text, delayMs);
+        await typeIntoLexicalEditor(lexicalEl, text, unpaced ? 20 : delayMs);
       } else {
         const slateEl = el.closest('[data-slate-editor]') || (el.hasAttribute('data-slate-editor') ? el : null);
         if (slateEl && slateEl instanceof HTMLElement) {
           elementInfo.strategy = 'slate';
-          await typeIntoSlateEditor(slateEl, text, delayMs);
+          await typeIntoSlateEditor(slateEl, text, unpaced ? 20 : delayMs);
         } else if (el.isContentEditable) {
           elementInfo.strategy = 'contenteditable';
-          await typeIntoContentEditable(el, text, delayMs);
+          await typeIntoContentEditable(el, text, unpaced ? 20 : delayMs);
         } else {
           elementInfo.strategy = 'execCommand-fallback';
           el.focus();

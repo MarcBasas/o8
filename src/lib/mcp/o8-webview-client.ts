@@ -159,6 +159,7 @@ export class O8WebviewClient {
         await this.sendCommand('type_into_focused', {
           window_label: DEFAULT_WINDOW_LABEL,
           text,
+          delay_ms: 0,
         });
         return { ok: true };
       } catch (error) {
