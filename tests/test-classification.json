@@ -3436,6 +3436,13 @@
       ]
     },
     {
+      "path": "tests/saved-image-reload-operator-real-path.test.ts",
+      "reasons": [
+        "network-listener",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/saved-ssh-machine-cli-real-path.test.ts",
       "reasons": [
         "child-process",
