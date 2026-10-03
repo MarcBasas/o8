@@ -27,6 +27,7 @@ export function useThoughtsComposerAttachments(options?: UseThoughtsComposerAtta
   const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
   const {
     pendingFiles,
+    setPendingFiles,
     dragOver,
     processFiles,
     clearPendingFiles,
@@ -36,12 +37,12 @@ export function useThoughtsComposerAttachments(options?: UseThoughtsComposerAtta
   useEffect(() => {
     if (pendingFiles.length === 0) return;
 
-    const frame = window.requestAnimationFrame(() => {
-      for (const file of pendingFiles) {
+    const promote = (files: typeof pendingFiles) => {
+      for (const file of files) {
         if (file.isCurrent && !file.isCurrent()) continue;
         if (file.mimeType.startsWith('image/')) {
           setAttachedImages((current) => {
-            if ((file.isCurrent && !file.isCurrent()) || current.length >= MAX_COMPOSER_IMAGES) return current;
+            if ((file.isCurrent && !file.isCurrent()) || current.length >= MAX_COMPOSER_IMAGES || (file.uploadRequestId && current.some(image => image.uploadRequestId === file.uploadRequestId))) return current;
             return [
               ...current,
               {
@@ -58,11 +59,24 @@ export function useThoughtsComposerAttachments(options?: UseThoughtsComposerAtta
           ));
         }
       }
-      clearPendingFiles();
-    });
-
-    return () => window.cancelAnimationFrame(frame);
-  }, [clearPendingFiles, pendingFiles]);
+      // Consume only this snapshot, preserving manual/newly queued files.
+      setPendingFiles(current => {
+        const remaining = current.filter(file => !files.includes(file));
+        if (remaining.length === current.length) return current;
+        for (const file of current) {
+          if (files.includes(file) && file.preview?.startsWith('blob:')) URL.revokeObjectURL(file.preview);
+        }
+        return remaining;
+      });
+    };
+    const background = pendingFiles.filter(file => file.backgroundAgent === true && file.isCurrent && file.uploadRequestId);
+    if (background.length > 0) promote(background);
+    const paced = pendingFiles.filter(file => !background.includes(file));
+    if (paced.length === 0) return;
+    let cancelled = false;
+    const frame = window.requestAnimationFrame(() => { if (!cancelled) promote(paced); });
+    return () => { cancelled = true; window.cancelAnimationFrame(frame); };
+  }, [pendingFiles, setPendingFiles]);
 
   const removeAttachedImage = useCallback((index: number) => {
     setAttachedImages((current) => current.filter((_, imageIndex) => imageIndex !== index));
