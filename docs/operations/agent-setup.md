@@ -19,3 +19,21 @@ o8 setup cancel <request-id>
 Cancellation retains registered projects and saved choices. An in-flight app operation cannot be cancelled; read its result first. A cancelled handoff does not prevent a later explicit human action. If the app stops during `applying`, its claim expires after one minute and status becomes `interrupted`. Inspect the workspace before a fresh open or cancellation; the outcome is unknown until checked.
 
 Sign-in, operating-system permissions, and privacy choices stay with the user. The setup tool does not grant permissions, edit credentials, answer consent, run the first task, or install runtimes.
+
+## Resolve an already-open native folder picker
+
+A native folder picker can hold onboarding's action lock while a setup request remains pending. Agents can inspect and resolve that existing picker through the authenticated webview socket commands. This does not create a picker or grant operating-system permissions.
+
+Send a string request `id` and the normal socket authentication. The command payloads are:
+
+```json
+{"command":"inspect_directory_dialog","payload":{"window_label":"main"}}
+{"command":"resolve_directory_dialog","payload":{"dialog_id":"<inspection identity>","operation":"select","path":"/absolute/existing/directory"}}
+{"command":"resolve_directory_dialog","payload":{"dialog_id":"<inspection identity>","operation":"cancel"}}
+```
+
+Only a visible, single-directory `NSOpenPanel` attached to this app's `main` window is supported on macOS. File pickers, other windows, unattached dialogs, consent prompts and other operating systems are refused. Inspect has no native side effects. Resolve requires the current opaque identity; an accepted selection cannot be replayed. An explicit cancellation is allowed while directory navigation is still pending and no OK action has been dispatched. Select requires an absolute existing directory; cancel forbids `path`. Unknown fields and operations are rejected.
+
+Select navigates the existing panel and dispatches its normal OK action only after its selected URL matches the canonical requested directory. Navigation can remain pending. A dispatched action is also `pending`, because dispatch alone does not prove the native callback ran. Inspect reports the requested and observed paths while the sheet is live. A missing or replaced sheet returns a structured error, not a successful selection or cancellation. Read normal `o8 setup status` and project/workspace state to establish the persisted outcome and compare the selected project path. Do not repeat resolve after a socket disconnect or an `already_accepted` response. If the sheet closed with an unknown outcome, reconcile status before submitting another setup request.
+
+To unblock a durable setup request already queued for a different project, cancel the native picker, then observe that request through normal setup status. Selecting a folder follows the existing picker callback and normal onboarding path; it does not replace the setup request service. Native dialog control does not change saved choices or bypass privacy and tool checks.
