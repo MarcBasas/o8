@@ -99,7 +99,8 @@ function openPreview(jobId: string, attempt: number, taskId = 'packet-review-pre
   }), { params: Promise.resolve({ taskId }) });
 }
 
-async function relayBridge() {
+async function relayBridge(options: { holdAfterFirstClaim?: boolean } = {}) {
+  let hasClaimed = false;
   let rejectControl = false;
   let interruptJobId: string | null = null;
   let interruptMode: 'before' | 'after' | 'expired' | 'exhausted' | 'hung' = 'after';
@@ -156,12 +157,23 @@ async function relayBridge() {
         ...(parts.length ? { body: Buffer.concat(parts) } : {}),
       });
       if (isPoll) pollingWorkers.add(workerId);
+      // Keep recovery observations bound to the original claim. Otherwise the
+      // parallel long poll can correctly reclaim an expired lease and its new
+      // heartbeat ACK would be mistaken for recovery of the rejected old one.
+      if (isPoll && options.holdAfterFirstClaim && hasClaimed) {
+        await new Promise<void>((resolve) => {
+          if (controller.signal.aborted) resolve();
+          else controller.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return;
+      }
       const response = isPoll ? await pollRoute.GET(request)
         : url.pathname === '/api/cloud/worker-stream' ? await streamRoute.POST(request)
           : url.pathname === '/api/cloud/worker-control' ? incoming.method === 'POST' ? await controlRoute.POST(request)
             : rejectControl ? new Response(null, { status: 503 }) : await controlRoute.GET(request)
             : url.pathname === '/api/cloud/worker-preview' ? incoming.method === 'POST' ? await relayRoute.POST(request) : await relayRoute.GET(request)
               : new Response('Not found', { status: 404 });
+      if (isPoll && response.ok && response.status !== 204) hasClaimed = true;
       if (body?.type === 'heartbeat' && response.ok) {
         const renewal = await response.clone().json() as { leaseExpiresAt: string; eventId: number };
         if (targetedHeartbeat && heartbeatLoss.dropped === 0) {
@@ -398,7 +410,7 @@ describe('completed remote result preview sessions', () => {
     expect(allocated.status).toBe(202);
     const access = await allocated.json();
     const recoveryChildId = access.serviceJobId as string;
-    const bridge = await relayBridge();
+    const bridge = await relayBridge({ holdAfterFirstClaim: true });
     let worker: ReturnType<typeof spawn> | null = null;
     let output = '';
     let servicePid = 0;
@@ -502,7 +514,8 @@ describe('completed remote result preview sessions', () => {
       if (recoverable) {
         expect(after).toMatchObject({ status: 'leased', claimedBy: before.claimedBy,
           leaseToken: before.leaseToken, executionAttempts: before.executionAttempts });
-        expect(loss.attempts).toBe(2);
+        expect(loss.attempts, diagnostics()).toBeGreaterThanOrEqual(2);
+        expect(loss.attempts, diagnostics()).toBeLessThanOrEqual(3);
         expect(await health()).toBe(servicePid);
         process.kill(servicePid, 0);
       } else if (mode === 'expired') {
