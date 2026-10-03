@@ -17,6 +17,7 @@ type ToolHandler = (args: Record<string, unknown>) => Promise<McpToolResult>;
 type CompositeStep =
   | 'navigate_dashboard'
   | 'select_repo'
+  | 'reveal_session_menu'
   | 'open_new_tab_menu'
   | 'pick_orchestrator'
   | 'wait_for_composer'
@@ -219,7 +220,74 @@ function buildSurfaceStateScript({ focusComposer }: { focusComposer: boolean }):
 }
 
 export const SURFACE_STATE_SCRIPT = buildSurfaceStateScript({ focusComposer: false });
-const FOCUS_SURFACE_STATE_SCRIPT = buildSurfaceStateScript({ focusComposer: true });
+// Fixed current-shell controls only. The compact rail reveals the sidebar;
+// the sidebar New session disclosure owns the inline Orchestrator option.
+// Add pane creates a split chat and is deliberately not a spawn fallback.
+function sessionEntryScript(expected: Record<string, unknown>, stage: 'inspect' | 'rail' | 'menu' | 'menu-status' | 'option' | 'observe' | 'focus'): string {
+  return buildJsonEval(`
+    ${visibleDomHelpers()}
+    const expected = ${JSON.stringify(expected)};
+    const visibleTree = (el) => {
+      if (!isVisible(el) || !el.isConnected) return false;
+      for (let node = el; node instanceof HTMLElement; node = node.parentElement) {
+        const style = window.getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+      }
+      return true;
+    };
+    const roots = Array.from(document.querySelectorAll('[data-o8-workspace-root][data-o8-workspace-active="true"]')).filter(visibleTree);
+    const root = roots.length === 1 ? roots[0] : null;
+    if (!root || root.getAttribute('data-o8-workspace-id') !== expected.activeWorkspaceId
+      || root.getAttribute('data-o8-active-repo') !== expected.activeWorkspaceRepo) {
+      return JSON.stringify({ ok: false, error: 'active workspace/project changed or ambiguous' });
+    }
+    if (Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).some(visibleTree)) {
+      return JSON.stringify({ ok: false, error: 'close the active dialog before creating a session' });
+    }
+    const stage = ${JSON.stringify(stage)};
+    if (stage === 'observe' || stage === 'focus') {
+      const tabId = root.getAttribute('data-o8-active-tab-id');
+      const composers = Array.from(root.querySelectorAll('[data-o8-active-composer="true"]')).filter(visibleTree);
+      const composer = composers.length === 1 ? composers[0] : null;
+      if (!tabId || tabId === expected.activeTabId || (stage === 'focus' && tabId !== expected.observedTabId) || root.getAttribute('data-o8-active-tab-kind') !== 'orchestrator'
+        || !composer || composer.disabled || composer.readOnly) {
+        return JSON.stringify({ ok: false, error: 'distinct orchestrator tab and enabled active composer not observed' });
+      }
+      if (stage === 'focus') composer.focus({ preventScroll: true });
+      return JSON.stringify({ ok: stage === 'observe' || document.activeElement === composer, tabId, state: {
+        activeWorkspaceId: expected.activeWorkspaceId, activeWorkspaceRepo: expected.activeWorkspaceRepo,
+        activeTabId: tabId, activeTabKind: 'orchestrator', composerFocused: document.activeElement === composer,
+      } });
+    }
+    if (root.getAttribute('data-o8-active-tab-id') !== expected.activeTabId) {
+      return JSON.stringify({ ok: false, error: 'active tab changed before spawn' });
+    }
+    const buttons = Array.from(document.querySelectorAll('button')).filter(visibleTree);
+    const enabled = (el) => !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+    const triggers = buttons.filter((el) => lower(labelFor(el)) === 'new session' && el.getAttribute('aria-haspopup') === 'menu');
+    const rails = buttons.filter((el) => lower(labelFor(el)) === 'new session' && !el.hasAttribute('aria-haspopup'));
+    if (triggers.length > 1 || (!triggers.length && rails.length > 1)) {
+      return JSON.stringify({ ok: false, error: 'New session target is ambiguous' });
+    }
+    const trigger = triggers.length === 1 ? triggers[0] : null;
+    if (stage === 'inspect') return JSON.stringify({ ok: true, menuReady: !!trigger && enabled(trigger), railReady: rails.length === 1 && enabled(rails[0]) });
+    const target = stage === 'rail' ? (rails.length === 1 && !trigger ? rails[0] : null) : trigger;
+    if (!target || !enabled(target)) return JSON.stringify({ ok: false, error: 'enabled New session target not found' });
+    if (stage === 'option' || stage === 'menu-status') {
+      if (trigger.getAttribute('aria-expanded') !== 'true') return JSON.stringify({ ok: false, error: 'New session menu is not expanded' });
+      // MiniSessionMenu is the disclosure's immediate sibling. Restrict the
+      // search to that owner, never a similarly named option elsewhere.
+      const menu = trigger.nextElementSibling;
+      const options = menu ? Array.from(menu.querySelectorAll('button')).filter(visibleTree).filter((el) =>
+        lower(labelFor(el)) === 'orchestrator' || Array.from(el.querySelectorAll('span')).some((span) => lower(span.textContent) === 'orchestrator')) : [];
+      if (options.length !== 1 || !enabled(options[0])) return JSON.stringify({ ok: false, error: 'enabled Orchestrator option missing or ambiguous' });
+      if (stage === 'option') clickElement(options[0]);
+    } else if (stage === 'rail' || trigger.getAttribute('aria-expanded') !== 'true') {
+      clickElement(target);
+    }
+    return JSON.stringify({ ok: true });
+  `);
+}
 
 export function buildPickMenuTriggerScript(menuLabel: string): string {
   return buildJsonEval(`
@@ -285,9 +353,10 @@ function buildSelectRepoScript(repo: string): string {
     ${visibleDomHelpers()}
     const needle = ${JSON.stringify(repo.toLowerCase())};
     const candidates = Array.from(document.querySelectorAll('button, [role="button"], a[href]')).filter(isVisible);
-    const target = candidates.find((el) => lower(labelFor(el)) === needle)
-      || candidates.find((el) => lower(labelFor(el)).includes(needle));
-    if (!target) return JSON.stringify({ ok: false, error: 'repo target not found', repo: ${JSON.stringify(repo)} });
+    const exact = candidates.filter((el) => lower(labelFor(el)) === needle);
+    const matches = exact.length ? exact : candidates.filter((el) => lower(labelFor(el)).includes(needle));
+    if (matches.length !== 1 || matches[0].disabled) return JSON.stringify({ ok: false, error: 'enabled repo target missing or ambiguous', repo: ${JSON.stringify(repo)} });
+    const target = matches[0];
     clickElement(target);
     return JSON.stringify({ ok: true, repo: labelFor(target) });
   `);
@@ -387,7 +456,7 @@ async function waitForEval(
 export const O8_WEBVIEW_COMPOSITE_TOOLS: McpTool[] = [
   {
     name: 'o8_view_new_orchestrator_session',
-    description: 'USE THIS WHEN you need a fresh o8 orchestrator tab ready for input. Opens the real New tab menu, picks Orchestrator, focuses the composer, and returns structured state instead of relying on screenshots.',
+    description: 'USE THIS WHEN you need a fresh o8 orchestrator tab ready for input. Reveals the sidebar when needed, opens its New session menu, picks Orchestrator, verifies a distinct tab in the active project, and focuses its composer. Returns structured state instead of relying on screenshots. After an uncertain result, observe state before any further action; do not replay the spawn.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -425,61 +494,52 @@ export const O8_WEBVIEW_COMPOSITE_TOOLS: McpTool[] = [
 export function createO8WebviewCompositeHandlers(getClient: () => O8WebviewClient): Record<string, ToolHandler> {
   return {
     o8_view_new_orchestrator_session: async (args) => {
-      const client = getClient();
-      const repo = optionalString(args, 'repo');
+      try {
+        const client = getClient();
+        const repo = optionalString(args, 'repo');
 
-      const dashboard = await ensureDashboard(client);
-      if (isMcpToolResult(dashboard)) return dashboard;
+        const dashboard = await ensureDashboard(client);
+        if (isMcpToolResult(dashboard)) return dashboard;
 
-      if (repo) {
-        const selected = await clickAndRequireOk(client, 'select_repo', buildSelectRepoScript(repo));
-        if (isMcpToolResult(selected)) return selected;
-      }
+        if (repo) {
+          const selected = await clickAndRequireOk(client, 'select_repo', buildSelectRepoScript(repo));
+          if (isMcpToolResult(selected)) return selected;
+        }
 
-      // The spawn entry moved from a workspace "New tab" menu to the left
-      // rail's "New session" row (2026-07). Try the current trigger first,
-      // keep "New tab" as a fallback for older shells (#1571).
-      let opened = await evalActionThenWaitFor(
-        client,
-        'open_new_tab_menu',
-        'wait_for_popover',
-        buildPickMenuTriggerScript('New session'),
-        buildMenuOptionVisibleScript('Orchestrator'),
-        (value) => value.optionVisible === true,
-        5_000,
-      );
-      if (isMcpToolResult(opened)) {
-        opened = await evalActionThenWaitFor(
-          client,
-          'open_new_tab_menu',
-          'wait_for_popover',
-          buildPickMenuTriggerScript('New tab'),
-          buildMenuOptionVisibleScript('Orchestrator'),
-          (value) => value.optionVisible === true,
-          5_000,
+        const expected = await evalJson(client, SURFACE_STATE_SCRIPT);
+        if (!isOk(expected) || typeof expected.activeWorkspaceId !== 'string'
+          || typeof expected.activeWorkspaceRepo !== 'string' || typeof expected.activeTabId !== 'string') {
+          return toolError('read_surface_state', 'one active project and tab are required', expected);
+        }
+        const entry = await evalJson(client, sessionEntryScript(expected, 'inspect'));
+        if (!isOk(entry)) return toolError('open_new_tab_menu', entry.error, entry);
+        if (entry.menuReady !== true) {
+          if (entry.railReady !== true) return toolError('reveal_session_menu', 'enabled New session control not found', entry);
+          const revealed = await evalActionThenWaitFor(
+            client, 'reveal_session_menu', 'reveal_session_menu',
+            sessionEntryScript(expected, 'rail'), sessionEntryScript(expected, 'inspect'),
+            (value) => value.ok === true && value.menuReady === true, 5_000,
+          );
+          if (isMcpToolResult(revealed)) return revealed;
+        }
+        // Each mutation is attempted once. A lost response is reconciled only by
+        // observation; it never selects a second spawn control or repeats a click.
+        const opened = await evalActionThenWaitFor(
+          client, 'open_new_tab_menu', 'wait_for_popover',
+          sessionEntryScript(expected, 'menu'), sessionEntryScript(expected, 'menu-status'),
+          (value) => value.ok === true, 5_000,
         );
+        if (isMcpToolResult(opened)) return opened;
+        const option = await evalActionThenVerify(
+          client, 'pick_orchestrator', sessionEntryScript(expected, 'option'),
+          sessionEntryScript(expected, 'observe'), (value) => value.ok === true, 7_500,
+        );
+        if (isMcpToolResult(option)) return option;
+        const focused = await clickAndRequireOk(client, 'wait_for_composer', sessionEntryScript({ ...expected, observedTabId: option.tabId }, 'focus'));
+        return isMcpToolResult(focused) ? focused : jsonResult(focused);
+      } catch (error) {
+        return toolError('read_surface_state', error, { mutationOutcome: 'unknown', automaticReplay: false });
       }
-      if (isMcpToolResult(opened)) return opened;
-
-      const option = await evalActionThenVerify(
-        client,
-        'pick_orchestrator',
-        buildPickMenuOptionScript('Orchestrator'),
-        FOCUS_SURFACE_STATE_SCRIPT,
-        (value) => value.composerFocusable === true && value.activeTabKind === 'orchestrator',
-        7_500,
-      );
-      if (isMcpToolResult(option)) return option;
-
-      const state = await waitForState(
-        client,
-        (current) => current.composerFocusable === true && current.activeTabKind === 'orchestrator',
-        7_500,
-      );
-      if (state.composerFocusable !== true) {
-        return toolError('wait_for_composer', 'composer was not focusable before timeout', state);
-      }
-      return jsonResult({ ok: true, tabId: typeof state.activeTabId === 'string' ? state.activeTabId : undefined, state });
     },
 
     o8_view_pick_menu_option: async (args) => {
