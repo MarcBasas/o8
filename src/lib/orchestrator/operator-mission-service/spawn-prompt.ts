@@ -1,12 +1,7 @@
+import { constants as bufferConstants } from 'node:buffer';
+import { getHeapStatistics } from 'node:v8';
 import { nextInlineIssueNumbers } from './shared';
 import type { LoadedIssue } from './types';
-
-/**
- * Voice/canvas spawn cap — "spawn N agents on X" tops out at 5 so a mishs-heard
- * number can't fan out a fleet. The orchestrator (DECOMPOSE) is the path for
- * larger, structured splits.
- */
-export const SPAWN_PROMPT_MAX_AGENTS = 5;
 
 const TITLE_MAX = 72;
 
@@ -17,9 +12,29 @@ function deriveTitle(task: string): string {
   return `${collapsed.slice(0, TITLE_MAX - 1).trimEnd()}…`;
 }
 
-export function clampSpawnCount(count: number | undefined): number {
-  if (!Number.isFinite(count)) return 1;
-  return Math.max(1, Math.min(SPAWN_PROMPT_MAX_AGENTS, Math.floor(count as number)));
+export function resolveSpawnCount(count: unknown): number {
+  if (count === undefined) return 1;
+  if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 1) {
+    throw new Error('count must be a positive safe integer.');
+  }
+  return count;
+}
+
+/**
+ * This endpoint materializes the entire batch in arrays and serialized mission
+ * snapshots. Reject a request that cannot fit before allocating any issues.
+ * Budget two bytes per JSON character, 4 KiB of packet metadata/object overhead,
+ * and eight live copies for creation, dispatch, and persistence. These are
+ * conservative allocation estimates, not a worker concurrency or fleet cap.
+ */
+export function assertSpawnBatchMaterializable(task: string, count: number, constraints = ''): void {
+  const bytesPerPacket = JSON.stringify({ task, constraints }).length * 2 + 4096;
+  const snapshotBytes = bytesPerPacket * count;
+  if (count > 0xffff_ffff
+    || snapshotBytes > bufferConstants.MAX_STRING_LENGTH * 2
+    || snapshotBytes * 8 > getHeapStatistics().total_available_size) {
+    throw new Error('Spawn batch exceeds this process\'s array, serialization, or available heap capacity. Submit smaller batches; no tasks were created.');
+  }
 }
 
 /**
@@ -38,7 +53,8 @@ export function buildInlineIssuesFromPrompt(task: string, count = 1): LoadedIssu
     throw new Error('task is required.');
   }
   const baseTitle = deriveTitle(body) || 'Inline task';
-  const n = clampSpawnCount(count);
+  const n = resolveSpawnCount(count);
+  assertSpawnBatchMaterializable(body, n);
 
   const numbers = nextInlineIssueNumbers(n);
   return Array.from({ length: n }, (_unused, index) => ({
