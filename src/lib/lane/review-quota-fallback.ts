@@ -6,9 +6,12 @@ import {
   type CrossHouseFallbackDecision,
 } from '@/lib/orchestrator/cross-house-policy';
 import { getOperatorDefaultsSync } from '@/lib/operator/defaults';
-import { createBackendRoleRouteChoice } from '@/lib/operator/role-routing';
+import { createBackendRoleRouteChoice, type RoleRouteChoice } from '@/lib/operator/role-routing';
 import { recordRoleRoutingReceiptSafely } from '@/lib/operator/role-routing-ledger';
-import { MODEL_IDS } from '@/lib/models';
+import { isCodexModelId, isSupportedModelId } from '@/lib/models';
+import { resolveOrchestratorModelSync } from './codex-orchestrator-session';
+import { validateRuntimeModelSelection } from '@/lib/runtimes/shared/model-compatibility';
+import type { ThinkingEffort } from '@/lib/orchestrator/thinking-effort';
 import {
   bindReviewTurnAbortController,
   finishReviewTurn,
@@ -37,6 +40,7 @@ export interface ReviewFallbackTurnResult {
 }
 
 interface ReviewAttemptResult {
+  observedRoute: RoleRouteChoice | null;
   text: string;
   errors: string[];
   quotaError: string | null;
@@ -61,6 +65,7 @@ async function runAttempt(input: {
   /** Internal format-repair constraint, never accepted from a public review caller. */
   formatRetryRejecting?: boolean;
   model?: string;
+  thinkingEffort?: ThinkingEffort;
   signal?: AbortSignal;
   onEvent?: (backend: OrchestratorBackend, event: OrchestratorEvent) => void;
 }): Promise<ReviewAttemptResult> {
@@ -68,6 +73,7 @@ async function runAttempt(input: {
   const session = input.backend.ensureSession(input.repoPath, undefined, sessionThreadId);
   if (session.status === 'busy') {
     return {
+      observedRoute: null,
       text: '',
       errors: [`${input.backend.label} session ${session.status}`],
       quotaError: null,
@@ -94,6 +100,7 @@ async function runAttempt(input: {
     reviewTurnId,
     turnController,
   );
+  let observedRoute: RoleRouteChoice | null = null;
   let text = '';
   let quotaError: string | null = null;
   let unavailableReason: ReviewUnavailableReason | null = null;
@@ -101,6 +108,9 @@ async function runAttempt(input: {
   const errors: string[] = [];
   try {
     await input.backend.sendTurn(input.repoPath, input.prompt, (event) => {
+      if (event.type === 'turn_receipt') {
+        observedRoute = createBackendRoleRouteChoice(input.backend.id, event.leadModel, event.effort);
+      }
       if (event.type === 'text') text += event.text;
       if (event.type === 'done' && typeof event.cost === 'number') approximateCost = event.cost;
       if (event.type === 'error') {
@@ -111,6 +121,7 @@ async function runAttempt(input: {
     }, {
       threadId: sessionThreadId,
       ...(input.model ? { model: input.model } : {}),
+      ...(input.thinkingEffort ? { thinkingEffort: input.thinkingEffort } : {}),
       signal: turnController.signal,
     });
   } catch (error) {
@@ -141,7 +152,7 @@ async function runAttempt(input: {
   } catch (error) {
     errors.push(`Review turn finalization failed: ${message(error)}`);
   }
-  return { text, errors, quotaError, reviewTurnId, unavailableReason, approximateCost };
+  return { text, errors, quotaError, reviewTurnId, unavailableReason, approximateCost, observedRoute };
 }
 
 export async function runReviewerTurnWithQuotaFallback(input: {
@@ -164,23 +175,48 @@ export async function runReviewerTurnWithQuotaFallback(input: {
   const initialBackend = input.initialBackend ?? getActiveReviewerBackend();
   const backendResolver = input.backendResolver ?? getOrchestratorBackend;
   const defaults = getOperatorDefaultsSync();
-  const modelForBackend = (backend: OrchestratorBackendId, override?: string | null) => {
-    if (override) return override;
+  const override = process.env.O8_REVIEW_MODEL?.trim();
+  const modelForBackend = (backend: OrchestratorBackendId) => {
     if (backend === 'claude') return defaults.values.orchestratorModel;
-    if (backend === 'codex') return MODEL_IDS.codexDefault;
+    if (backend === 'codex') return resolveOrchestratorModelSync();
     if (backend === 'opencode') return defaults.values.opencodeOrchestratorModel;
     return null;
   };
   const requestedRoute = createBackendRoleRouteChoice(
     initialBackend.id,
-    modelForBackend(initialBackend.id),
+    override ?? modelForBackend(initialBackend.id),
     defaults.values.thinkingEffort,
   );
+  let effectiveRoute = requestedRoute;
+  const refuse = (reason: string, reviewTurnId: string | null = null): ReviewFallbackTurnResult => {
+    recordRoleRoutingReceiptSafely({
+      receiptKey: `review:${reviewTurnId ?? input.threadId}`,
+      role: 'review',
+      repoPath: input.repoPath,
+      contextType: input.surface,
+      contextId: input.laneId,
+      requested: requestedRoute,
+      effective: null,
+      sources: {
+        backend: defaults.sources.reviewerBackend,
+        runtime: 'derived',
+        model: override !== undefined ? 'env' : 'derived',
+        effort: defaults.sources.thinkingEffort,
+      },
+      reason,
+      status: 'refused',
+    });
+    return { ok: false, backend: initialBackend.id, text: '', errors: [reason], fallback: null,
+      reviewTurnId, unavailableReason: null, approximateCost: null };
+  };
+  if (override !== undefined && !isCodexModelId(override)) {
+    return refuse('O8_REVIEW_MODEL must be a supported Codex model ID.');
+  }
+  if (override !== undefined && initialBackend.id !== 'codex') {
+    return refuse('O8_REVIEW_MODEL requires a Codex initial reviewer backend.');
+  }
   const finalize = (result: ReviewFallbackTurnResult): ReviewFallbackTurnResult => {
     const fallbackReason = result.fallback ? buildCrossHouseFallbackMessage(result.fallback) : null;
-    const effectiveModel = result.fallback?.action === 'handoff'
-      ? modelForBackend(result.backend, result.fallback.toModel)
-      : modelForBackend(result.backend);
     recordRoleRoutingReceiptSafely({
       receiptKey: `review:${result.reviewTurnId ?? input.threadId}`,
       role: 'review',
@@ -188,16 +224,13 @@ export async function runReviewerTurnWithQuotaFallback(input: {
       contextType: input.surface,
       contextId: input.laneId,
       requested: requestedRoute,
-      effective: createBackendRoleRouteChoice(
-        result.backend,
-        effectiveModel,
-        defaults.values.thinkingEffort,
-      ),
+      effective: effectiveRoute,
       sources: {
         backend: defaults.sources.reviewerBackend,
         runtime: defaults.values.reviewerBackend === 'follow' ? 'derived' : defaults.sources.reviewerBackend,
-        model: effectiveModel ? 'derived' : 'runtime-default',
-        effort: defaults.sources.thinkingEffort,
+        model: override !== undefined && !result.fallback && effectiveRoute.model === override
+          ? 'env' : effectiveRoute.model ? 'derived' : 'runtime-default',
+        effort: effectiveRoute.effort === defaults.values.thinkingEffort ? defaults.sources.thinkingEffort : 'derived',
       },
       reason: result.ok
         ? `${input.surface} completed on ${result.backend}.`
@@ -222,9 +255,13 @@ export async function runReviewerTurnWithQuotaFallback(input: {
     prompt: promptFor(initialBackend.id),
     expectedHeadSha: input.expectedHeadSha,
     formatRetryRejecting: input.formatRetryRejecting,
+    ...(initialBackend.id === 'codex' ? {
+      model: requestedRoute.model ?? undefined, thinkingEffort: defaults.values.thinkingEffort,
+    } : {}),
     onEvent: input.onEvent,
     signal: input.signal,
   });
+  effectiveRoute = first.observedRoute ?? requestedRoute;
   if (first.unavailableReason) {
     return finalize({
       ok: false,
@@ -250,12 +287,13 @@ export async function runReviewerTurnWithQuotaFallback(input: {
     });
   }
 
-  const decision = resolveCrossHouseFallback({
+  const policyDecision = resolveCrossHouseFallback({
     role: 'review',
     backend: initialBackend.id,
+    ...(override !== undefined ? { model: effectiveRoute.model } : {}),
     subscriptionProfile: getOperatorDefaultsSync().values.subscriptionProfile,
   });
-  if (!decision) {
+  if (!policyDecision) {
     return finalize({
       ok: false,
       backend: initialBackend.id,
@@ -268,6 +306,7 @@ export async function runReviewerTurnWithQuotaFallback(input: {
     });
   }
 
+  const decision = { ...policyDecision, fromModel: effectiveRoute.model ?? policyDecision.fromModel };
   recordLaneEvent(input.laneId, 'review_fallback', 'system', {
     surface: input.surface,
     status: decision.action === 'hold' ? 'held' : 'retrying',
@@ -294,6 +333,12 @@ export async function runReviewerTurnWithQuotaFallback(input: {
   }
 
   const fallbackBackend = backendResolver(decision.toBackend);
+  const targetRoute = createBackendRoleRouteChoice(decision.toBackend, decision.toModel, defaults.values.thinkingEffort);
+  if (fallbackBackend.id !== decision.toBackend || !isSupportedModelId(decision.toModel)
+    || (decision.toBackend === 'codex' && !isCodexModelId(decision.toModel))
+    || !targetRoute.runtime || validateRuntimeModelSelection(targetRoute.runtime, decision.toModel, 'Review fallback')) {
+    return refuse('Review fallback model and backend must match the cross-house target.', first.reviewTurnId);
+  }
   const second = await runAttempt({
     backend: fallbackBackend,
     laneId: input.laneId,
@@ -305,9 +350,11 @@ export async function runReviewerTurnWithQuotaFallback(input: {
     expectedHeadSha: input.expectedHeadSha,
     formatRetryRejecting: input.formatRetryRejecting,
     model: decision.toModel,
+    ...(fallbackBackend.id === 'codex' ? { thinkingEffort: defaults.values.thinkingEffort } : {}),
     onEvent: input.onEvent,
     signal: input.signal,
   });
+  effectiveRoute = second.observedRoute ?? targetRoute;
   if (second.unavailableReason) {
     return finalize({
       ok: false,
