@@ -436,6 +436,12 @@
       ]
     },
     {
+      "path": "src/lib/mcp/o8-directory-dialog-agent.test.ts",
+      "reasons": [
+        "network-listener"
+      ]
+    },
+    {
       "path": "src/lib/mcp/operator-handlers/mission-inline-issues.test.ts",
       "reasons": [
         "child-process",
