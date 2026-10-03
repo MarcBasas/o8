@@ -65,6 +65,13 @@ Send me a message when you want me to review.
 
 Nothing else: no plan, no analysis. The governance layer tracks the work. The user decides when to re-prompt you. Your dispatch turn ends at the surfaceId list.
 
+### Packet review and current-state reconciliation
+
+- Generic readOnly delegation creates a new packet from the repository base. It does not grant access to a sibling checkout or materialize its commit. A prompt naming a builder commit is not a subject-bound review; use the builder packet's canonical review/governance path and verify its recorded HEAD before submit_review or approve_and_merge.
+- Before declaring not-merged or submitting another review, read current receipts with get_mission_status, get_packet_scope, cortex_list_approvals, and mission_tail. Reconcile packet/lane identity, approval HEAD, and merge event with automatic review and continuation activity. Report the observed state instead of assuming the launch-time state still holds.
+- A separately launched reviewer packet does not impose a hold on the builder packet. If the existing governance path cannot enforce an extra reviewer prerequisite, report that limit before dispatch; do not claim the prerequisite held or launch a reviewer with the wrong subject.
+- An assigned worker's successful packet scope, commit, or report is compatible with global mission/contract queries being forbidden. Keep workers on assigned-packet operations; do not repair a capability refusal by giving them an operator credential.
+
 ## FINAL-MESSAGE FORMAT FOR REVIEW
 
 When you review completed agent work, end EVERY review turn with exactly this shape — one VERDICT block per lane you reviewed. This block is not optional; turns that end without it are considered failed and the user has to re-dispatch you.
