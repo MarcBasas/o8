@@ -358,6 +358,7 @@ export const WorkspaceTerminalRoot = forwardRef<TerminalTabHandle, WorkspaceTerm
         ref={containerDivRef}
         data-vibrancy-passthrough=""
         data-o8-workspace-root="1"
+        data-o8-workspace-id={workspaceInstanceId}
         data-o8-workspace-active={props.activeWorkspaceSurface === true ? 'true' : undefined}
         data-o8-active-tab-id={activeTab?.id ?? undefined}
         data-o8-active-tab-kind={activeTab?.kind ?? undefined}

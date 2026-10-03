@@ -199,6 +199,7 @@ function buildSurfaceStateScript({ focusComposer }: { focusComposer: boolean }):
           ? 'orchestrator'
           : null;
     const activeTabId = rootAttr('data-o8-active-tab-id');
+    const activeWorkspaceId = rootAttr('data-o8-workspace-id');
     const activeWorkspaceRepo = rootAttr('data-o8-active-repo');
     if (${focusComposer ? 'true' : 'false'} && composer && !composer.hasAttribute('disabled')) {
       try { composer.focus({ preventScroll: true }); } catch (_) {}
@@ -206,6 +207,7 @@ function buildSurfaceStateScript({ focusComposer }: { focusComposer: boolean }):
     return JSON.stringify({
       ok: true,
       route,
+      activeWorkspaceId,
       activeWorkspaceRepo,
       activeTabKind,
       activeTabId,

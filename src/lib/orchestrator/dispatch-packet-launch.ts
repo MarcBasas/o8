@@ -225,7 +225,7 @@ export async function launchPacketWithStorageAdmission(input: {
   const launchContext = bindWorkerLaunchParent(packet.launchContext, {
     threadId: packet.orchestratorThreadId,
   });
-  const projectContext = await getProjectContext({ repoPath: packet.workspaceTargetPath });
+  const projectContext = await getProjectContext({ repoPath: packet.workspaceTargetPath, projectId: packet.projectId ?? null });
   let baseBranch = await resolveDefaultBranch(packet.workspaceTargetPath!);
   let carrierPreflight: ExecutionCarrierPreflightEvidence | null = null;
   try {
