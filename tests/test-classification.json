@@ -1743,6 +1743,13 @@
       ]
     },
     {
+      "path": "tests/composer-image-operator-real-path.test.ts",
+      "reasons": [
+        "network-listener",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/confirmed-kill.test.ts",
       "reasons": [
         "child-process",
