@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { freshSessionScript } from '@/lib/mcp/o8-fresh-session-scripts';
+import type { FreshOrchestratorRequest } from '@/lib/desktop/fresh-orchestrator-action';
 import { O8WebviewClient } from '@/lib/mcp/o8-webview-client';
 
 type TextContent = { type: 'text'; text: string };
@@ -162,6 +165,11 @@ function buildSurfaceStateScript({ focusComposer }: { focusComposer: boolean }):
     const activeTabId = rootAttr('data-o8-active-tab-id');
     const activeWorkspaceId = rootAttr('data-o8-workspace-id');
     const activeWorkspaceRepo = rootAttr('data-o8-active-repo');
+    let tabInventory = null;
+    let freshSessionReceipt = null;
+    try { tabInventory = JSON.parse(rootAttr('data-o8-tab-inventory') || 'null'); } catch (_) {}
+    try { freshSessionReceipt = JSON.parse(rootAttr('data-o8-fresh-session-receipt') || 'null'); } catch (_) {}
+
     if (${focusComposer ? 'true' : 'false'} && composer && !composer.hasAttribute('disabled')) {
       try { composer.focus({ preventScroll: true }); } catch (_) {}
     }
@@ -170,6 +178,8 @@ function buildSurfaceStateScript({ focusComposer }: { focusComposer: boolean }):
       route,
       activeWorkspaceId,
       activeWorkspaceRepo,
+      tabInventory,
+      freshSessionReceipt,
       activeTabKind,
       activeTabId,
       openDialogs: dialogs,
@@ -311,11 +321,11 @@ async function waitForEval(
 export const O8_WEBVIEW_COMPOSITE_TOOLS: McpTool[] = [
   {
     name: 'o8_view_new_orchestrator_session',
-    description: 'Requests a genuinely fresh o8 orchestrator tab. Currently refuses with fresh_session_unavailable before any action: the ordinary New session menu may reuse an existing pristine tab and does not guarantee creation. Existing tabs and composer focus remain unchanged.',
+    description: 'Creates a genuinely fresh orchestrator through the fixed workspace-scoped fresh-orchestrator action. Verifies a new ID against the full prior tab inventory and focuses its enabled composer. Ordinary New session menu reuse is unchanged. After uncertainty, observe state; never replay the spawn.',
     inputSchema: {
       type: 'object',
       properties: {
-        repo: { type: 'string', description: 'Optional requested workspace label. Currently refuses before workspace selection because a genuinely fresh action is unavailable.' },
+        repo: { type: 'string', description: 'Optional exact active workspace label or repo path guard. Refuses if it differs; select the desired project before calling.' },
       },
       required: [],
       additionalProperties: false,
@@ -348,16 +358,48 @@ export const O8_WEBVIEW_COMPOSITE_TOOLS: McpTool[] = [
 
 export function createO8WebviewCompositeHandlers(getClient: () => O8WebviewClient): Record<string, ToolHandler> {
   return {
-    // Ordinary New session intentionally reuses pristine tabs. Until the UI
-    // exposes a genuinely fresh action, refuse before navigation, disclosure,
-    // transport access or spawn rather than infer creation from a changed ID.
-    o8_view_new_orchestrator_session: async () => jsonResult({
-      ok: false,
-      step: 'require_fresh_session',
-      code: 'fresh_session_unavailable',
-      actionDispatched: false,
-      error: 'The current New session action may reuse an existing pristine tab and cannot guarantee fresh creation. No action was dispatched.',
-    }, true),
+    o8_view_new_orchestrator_session: async (args) => {
+      const requestId = randomUUID();
+      let attempted = false;
+      try {
+        if (!args || Object.getPrototypeOf(args) !== Object.prototype || Object.keys(args).some(key => key !== 'repo')
+          || (args.repo !== undefined && (typeof args.repo !== 'string' || args.repo.length > 2_048))) {
+          return jsonResult({ ok: false, code: 'invalid_schema', actionDispatched: false, requestId }, true);
+        }
+        const client = getClient();
+        const current = await evalJson(client, freshSessionScript('inspect'));
+        if (!isOk(current)) return jsonResult({ ...current, requestId }, true);
+        const repo = optionalString(args, 'repo');
+        if (repo && repo !== current.repoLabel && repo !== current.repoPath) {
+          return jsonResult({ ok: false, code: 'requested_project_not_active', actionDispatched: false, requestId }, true);
+        }
+        const request: FreshOrchestratorRequest = {
+          requestId, expiresAt: Date.now() + 5_000,
+          capability: current.capability as string,
+          workspaceId: current.workspaceId as string,
+          repoPath: current.repoPath as string,
+          activeTabId: current.activeTabId as string,
+          tabIds: current.tabIds as string[],
+        };
+        attempted = true;
+        let warning: string | undefined;
+        try {
+          const dispatched = await evalJson(client, freshSessionScript('dispatch', request));
+          if (!isOk(dispatched)) return jsonResult(dispatched, true);
+        } catch (error) {
+          warning = error instanceof Error ? error.message : String(error);
+        }
+        // A pending app callback receipt is not completion. Observe React's
+        // full inventory and active enabled composer; never repeat dispatch.
+        const observed = await waitForEval(client, freshSessionScript('observe', request), value => value.ok === true, 7_500);
+        if (!isOk(observed)) return jsonResult({ ok: false, requestId, ...observed, automaticReplay: false, ...(observed.status === 'pending' ? {} : { mutationOutcome: 'unknown' }) }, true);
+        const focused = await evalJson(client, freshSessionScript('focus', request));
+        return jsonResult({ ...focused, ...(warning ? { warning } : {}) }, !isOk(focused));
+      } catch (error) {
+        return jsonResult({ ok: false, requestId, error: error instanceof Error ? error.message : String(error), ...(attempted
+          ? { mutationOutcome: 'unknown', automaticReplay: false } : { actionDispatched: false }) }, true);
+      }
+    },
 
     o8_view_pick_menu_option: async (args) => {
       let menuLabel: string;
