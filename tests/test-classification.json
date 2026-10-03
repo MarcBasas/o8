@@ -3765,6 +3765,8 @@
     {
       "path": "tests/thread-navigation-real-path.test.ts",
       "reasons": [
+        "child-process",
+        "git-cli",
         "real-path"
       ]
     },
