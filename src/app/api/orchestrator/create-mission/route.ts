@@ -1,3 +1,4 @@
+import { MissionProjectScopeError } from '@/lib/orchestrator/mission-project-context';
 import { NextRequest } from 'next/server';
 import { requirePanelAuth } from '@/lib/panel/auth';
 import { resolveWorkerRouting } from '@/lib/agents/routing';
@@ -376,9 +377,13 @@ export async function POST(request: NextRequest) {
   if (record.dispatchOnCreate !== undefined && typeof record.dispatchOnCreate !== 'boolean') {
     return operatorError('invalid_request', 'dispatchOnCreate must be a boolean when provided.', 400);
   }
+  if (record.projectId !== undefined && (typeof record.projectId !== 'string' || !record.projectId.trim())) {
+    return operatorError('invalid_request', 'projectId must be a non-empty project identifier.', 400);
+  }
   const createInput = {
       issues,
       repoPath,
+      ...(typeof record.projectId === 'string' ? { projectId: record.projectId.trim() } : {}),
       runtime: workerRouting.selectedRuntime,
       workerIntent: workerRouting.workerIntent,
       requestedProvider: workerRouting.requestedProvider,
@@ -431,6 +436,7 @@ export async function POST(request: NextRequest) {
     if (outcome.inProgress) return unresolvedIdempotencyResponse(outcome, 'mission creation') ?? operatorSuccess(replayShape(outcome), 202);
     return operatorSuccess(replayShape(outcome), 201);
   } catch (error) {
+    if (error instanceof MissionProjectScopeError) return operatorError(error.code, error.message, 400);
     if (error instanceof ControlPlaneLockTimeoutError) {
       return operatorError(
         'mission_store_busy',
