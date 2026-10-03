@@ -116,13 +116,16 @@ function isWorkerRuntimeList(value: unknown): value is OperatorDefaults['workerR
   return Array.isArray(value) && value.length > 0 && value.every(isDispatchRuntime);
 }
 
+function parseStorageReserveRatio(value: unknown): number {
+  if (typeof value === 'number') return value;
+  return typeof value === 'string' && value.trim() ? Number(value) : Number.NaN;
+}
+
 function workspaceStorageValidationError(body: Record<string, unknown>): string | null {
   if (body.storageReserveRatio !== undefined) {
-    const parsed = typeof body.storageReserveRatio === 'number'
-      ? body.storageReserveRatio
-      : Number(body.storageReserveRatio);
-    if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
-      return 'storageReserveRatio must be greater than 0 and no more than 1.';
+    const parsed = parseStorageReserveRatio(body.storageReserveRatio);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+      return 'storageReserveRatio must be between 0 and 1.';
     }
   }
   if (body.storageReserveFloorGb !== undefined) {
@@ -680,10 +683,8 @@ function normalizeUpdate(body: Record<string, unknown>): Partial<OperatorDefault
   }
 
   if (body.storageReserveRatio !== undefined) {
-    const parsed = typeof body.storageReserveRatio === 'number'
-      ? body.storageReserveRatio
-      : Number(body.storageReserveRatio);
-    if (Number.isFinite(parsed) && parsed > 0 && parsed <= 1) update.storageReserveRatio = parsed;
+    const parsed = parseStorageReserveRatio(body.storageReserveRatio);
+    if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) update.storageReserveRatio = parsed;
   }
 
   if (body.storageReserveFloorGb !== undefined) {
