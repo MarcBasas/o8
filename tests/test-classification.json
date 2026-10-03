@@ -1575,6 +1575,13 @@
       ]
     },
     {
+      "path": "tests/cli-principal-errors-real-path.test.ts",
+      "reasons": [
+        "network-listener",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/cli-resource-management-real-path.test.ts",
       "reasons": [
         "child-process",
