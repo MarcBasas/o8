@@ -22,7 +22,7 @@ describe('desktop close event to rendered decision sheet', () => {
   let host: HTMLDivElement;
   let root: Root;
   let appControl: HTMLButtonElement;
-  let appAction: ReturnType<typeof vi.fn>;
+  let appAction: () => void;
 
   beforeEach(() => {
     native.invoke.mockReset().mockResolvedValue(true);
