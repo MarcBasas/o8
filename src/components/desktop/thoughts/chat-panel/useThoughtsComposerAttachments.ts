@@ -7,6 +7,8 @@ export interface ThoughtsAttachedImage {
   name: string;
   dataUri: string;
   mimeType: string;
+  /** Transient upload acknowledgment; omitted from normal send payloads. */
+  uploadRequestId?: string;
 }
 
 export interface ThoughtsComposerDragHandlers {
@@ -36,15 +38,17 @@ export function useThoughtsComposerAttachments(options?: UseThoughtsComposerAtta
 
     const frame = window.requestAnimationFrame(() => {
       for (const file of pendingFiles) {
+        if (file.isCurrent && !file.isCurrent()) continue;
         if (file.mimeType.startsWith('image/')) {
           setAttachedImages((current) => {
-            if (current.length >= MAX_COMPOSER_IMAGES) return current;
+            if ((file.isCurrent && !file.isCurrent()) || current.length >= MAX_COMPOSER_IMAGES) return current;
             return [
               ...current,
               {
                 name: file.name,
                 dataUri: `data:${file.mimeType};base64,${file.content}`,
                 mimeType: file.mimeType,
+                ...(file.uploadRequestId ? { uploadRequestId: file.uploadRequestId } : {}),
               },
             ];
           });

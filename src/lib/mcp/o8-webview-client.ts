@@ -1,3 +1,4 @@
+import { validateImageAttachment, imageRequestId, type ImageAttachmentRequest } from '@/lib/composer/image-attachment';
 import { existsSync, readFileSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
 
@@ -237,6 +238,35 @@ export class O8WebviewClient {
       return (root?.innerText || '').trim();
     })()`);
     return { text: result.result };
+  }
+
+  // Fixed app-owned bridge calls only. execute_js is never reconnect-replayed.
+  private async composerImageCall(method: 'inspect' | 'attach' | 'status', argument: unknown = null): Promise<Record<string, unknown>> {
+    const code = `(() => { const bridge = window.__o8ComposerImages__; return JSON.stringify(bridge ? bridge.${method}(${JSON.stringify(argument)}) : {status:'error',code:'bridge_unavailable'}); })()`;
+    const { result } = await this.evalJs(code);
+    const data = JSON.parse(result) as Record<string, unknown>;
+    if (!data || typeof data !== 'object' || !['ready', 'pending', 'completed', 'error'].includes(String(data.status))) {
+      throw createCodedError('Invalid composer bridge receipt', 'bridge_unavailable');
+    }
+    if (data.status !== 'error') {
+      if (method === 'inspect' && data.status !== 'ready') throw createCodedError('Invalid inspection receipt', 'bridge_unavailable');
+      if (method !== 'inspect') {
+        const id = method === 'status' ? argument : (argument as ImageAttachmentRequest).request_id;
+        if (data.status === 'ready' || data.request_id !== id || (method === 'attach' && data.composer_id !== (argument as ImageAttachmentRequest).composer_id)) {
+          throw createCodedError('Uncorrelated attachment receipt', 'outcome_unknown');
+        }
+      }
+    }
+    return data;
+  }
+  async inspectImageComposer(): Promise<Record<string, unknown>> {
+    return this.composerImageCall('inspect');
+  }
+  async attachComposerImage(request: ImageAttachmentRequest): Promise<Record<string, unknown>> {
+    return this.composerImageCall('attach', validateImageAttachment(request));
+  }
+  async imageAttachmentStatus(requestId: string): Promise<Record<string, unknown>> {
+    return this.composerImageCall('status', imageRequestId(requestId));
   }
 
   async evalJs(code: string): Promise<{ result: string }> {

@@ -1,3 +1,4 @@
+import { COMPOSER_IMAGE_TOOLS, createComposerImageHandlers } from '@/lib/mcp/o8-composer-image-tools';
 import { DIRECTORY_DIALOG_TOOLS, createDirectoryDialogHandlers } from '@/lib/mcp/o8-directory-dialog-tools';
 import { O8_WEBVIEW_PRIMITIVE_TOOLS } from '@/lib/mcp/o8-webview-tool-catalog';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -392,6 +393,7 @@ export const O8_WEBVIEW_TOOLS: McpTool[] = [
   ...O8_WEBVIEW_BROWSER_TOOLS,
   ...O8_WEBVIEW_PRIMITIVE_TOOLS,
   ...DIRECTORY_DIALOG_TOOLS,
+  ...COMPOSER_IMAGE_TOOLS,
 ];
 
 /**
@@ -515,6 +517,7 @@ export function createO8WebviewToolHandlers(getClient: () => O8WebviewClient): R
     ...createO8WebviewCompositeHandlers(getClient),
     ...createO8WebviewBrowserHandlers(),
     ...createDirectoryDialogHandlers(getClient),
+    ...createComposerImageHandlers(getClient),
     o8_view_screenshot: async () => withStructuredErrors(async () => {
       const screenshot = await getClient().screenshot();
       const path = persistScreenshot(screenshot.imageBase64, screenshot.mimeType);
