@@ -1999,10 +1999,17 @@ pub async fn handle_type_into_focused<R: Runtime>(
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
 
-    // Allow generous timeout for character-by-character typing + initial delay
+    // Allow generous timeout for character-by-character typing + initial delay.
+    // Zero-delay ordinary fields are synchronous, but the same request keeps
+    // rich editors paced at 20ms. Budget that fallback before knowing the DOM target.
+    let timeout_delay_ms = if delay_ms == 0 && initial_delay_ms == 0 {
+        20
+    } else {
+        delay_ms
+    };
     let timeout_secs = std::cmp::max(
         10,
-        (text.len() as u64 * delay_ms + initial_delay_ms) / 1000 + 5,
+        (text.len() as u64 * timeout_delay_ms + initial_delay_ms) / 1000 + 5,
     );
 
     match eval_and_await(

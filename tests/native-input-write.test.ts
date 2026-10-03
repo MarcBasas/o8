@@ -92,6 +92,17 @@ describe('production native script -> ordinary React-controlled fields', () => {
     const timer = stalledTimers(); void run({ text: 'paced', delayMs: 20 }); await Promise.resolve();
     expect(timer).toHaveBeenCalledWith(expect.any(Function), 50); expect(replies).toHaveLength(0);
   });
+  it('completes long rich-editor input beyond the old ten-second timeout', async () => {
+    const editor = document.createElement('div'); editor.tabIndex = 0;
+    Object.defineProperty(editor, 'isContentEditable', { value: true }); host.append(editor); editor.focus();
+    vi.useFakeTimers();
+    try {
+      const text = 'a'.repeat(1000); const completion = run({ text, delayMs: 0 });
+      await vi.advanceTimersByTimeAsync(10000); expect(replies).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(11000); await completion;
+      expect(editor.textContent).toBe(text); expect(replies[0]).toMatchObject({ ok: true });
+    } finally { vi.useRealTimers(); }
+  });
   it('keeps the rich contenteditable route paced for normal zero-delay client calls', async () => {
     const editor = document.createElement('div'); editor.tabIndex = 0;
     Object.defineProperty(editor, 'isContentEditable', { value: true }); host.append(editor); editor.focus();

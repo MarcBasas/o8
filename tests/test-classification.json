@@ -2661,6 +2661,14 @@
       ]
     },
     {
+      "path": "tests/native-input-timeout-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "native-build",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/native-worker-token-setup-real-path.test.ts",
       "reasons": [
         "child-process",
