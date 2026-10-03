@@ -6,7 +6,7 @@ export const THREAD_NAVIGATION_TOOLS = [{
   inputSchema: {
     type: 'object',
     properties: {
-      workspaceId: { type: 'string', description: 'Existing workspace identity from the active workspace surface.' },
+      workspaceId: { type: 'string', description: 'Current activeWorkspaceId returned by o8_view_surface_state. Read it again after a workspace remount.' },
       repoPath: { type: 'string', description: 'Registered repository path containing the recorded task.' },
       taskId: { type: 'string', description: 'Recorded task identity from the task pool.' },
     },
