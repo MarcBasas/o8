@@ -9,6 +9,7 @@ import { createRoot } from 'react-dom/client';
 import { afterAll, expect, it, vi } from 'vitest';
 import { O8ThreadsPane } from '@/components/desktop/o8-panel/O8ThreadsPane';
 import { useThreadWorkspaceNavigation } from '@/components/desktop/o8-panel/useThreadNavigation';
+import { threadPanelAvailability } from '@/components/desktop/o8-panel/thread-navigation';
 import { createO8WebviewToolHandlers } from '@/lib/mcp/o8-webview-tools';
 import type { O8WebviewClient } from '@/lib/mcp/o8-webview-client';
 import type { RepoRegistryEntry } from '@/lib/repos/types';
@@ -77,13 +78,26 @@ it('MCP product navigation mounts the persisted task without synthetic input or 
   vi.stubGlobal('fetch', fetchMock);
   const container = document.createElement('div'); document.body.append(container);
   const root = createRoot(container);
+  let viewportWidth = 800;
+  let narrowDuringRead = false;
+  const selection = { workspace: 'other', tile: 'original', commit: 'original-commit', repo: '/original', panel: 'activity' };
+  const originalSelection = { ...selection };
+  const readNavigationTasks = vi.fn(async () => {
+    const tasks = await readTasks();
+    if (narrowDuringRead) viewportWidth = 800;
+    return tasks;
+  });
   function Harness() {
     const [workspace, setWorkspace] = useState('other');
     useThreadWorkspaceNavigation({
+      availability: () => threadPanelAvailability(viewportWidth, 1180),
       resolve: (target) => target.workspaceId === 'workspace' && target.repoPath === state.repoPath ? {
-        projectId: state.projectId, activate: () => setWorkspace('workspace'), isActive: () => workspace === 'workspace',
+        projectId: state.projectId, activate: () => {
+          Object.assign(selection, { workspace: 'workspace', tile: 'selected', commit: null, repo: state.repoPath, panel: 'threads' });
+          setWorkspace('workspace');
+        }, isActive: () => workspace === 'workspace',
       } : null,
-      readTasks,
+      readTasks: readNavigationTasks,
     });
     return createElement(O8ThreadsPane, { active: workspace === 'workspace', repoPath: state.repoPath,
       repos: [{ id: 'repo', localPath: state.repoPath, name: 'Repo' } as RepoRegistryEntry] });
@@ -92,6 +106,23 @@ it('MCP product navigation mounts the persisted task without synthetic input or 
     await act(async () => root.render(createElement(Harness)));
     const client = { evalJs: async (code: string) => ({ result: await new Function(`return ${code}`)() }) } as O8WebviewClient;
     const handlers = createO8WebviewToolHandlers(() => client);
+    const target = { workspaceId: 'workspace', repoPath: state.repoPath, taskId };
+    const narrow = await handlers.o8_view_open_thread(target);
+    expect(JSON.parse((narrow.content[0] as { text: string }).text)).toMatchObject({
+      ok: false, reason: 'panel_viewport_unavailable', viewportWidth: 800, minimumWidth: 1180,
+      recovery: { tool: 'o8_view_manage_window', operation: 'maximize' },
+    });
+    expect(readNavigationTasks).not.toHaveBeenCalled();
+    expect(selection).toEqual(originalSelection);
+    expect(container.querySelector('[aria-label="Steer this thread"]')).toBeNull();
+    viewportWidth = 1600;
+    narrowDuringRead = true;
+    const resized = await handlers.o8_view_open_thread(target);
+    expect(JSON.parse((resized.content[0] as { text: string }).text)).toMatchObject({ reason: 'panel_viewport_unavailable' });
+    expect(selection).toEqual(originalSelection);
+    expect(container.querySelector('[aria-label="Steer this thread"]')).toBeNull();
+    viewportWidth = 1600;
+    narrowDuringRead = false;
     let result!: ReturnType<typeof handlers.o8_view_open_thread>;
     await act(async () => {
       result = handlers.o8_view_open_thread({ workspaceId: 'workspace', repoPath: state.repoPath, taskId });

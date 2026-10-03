@@ -42,6 +42,7 @@ import { PanelHeaderStrip } from '@/components/desktop/shell/PanelHeaderStrip';
 import { DesktopStatusBar } from '@/components/desktop/DesktopStatusBar';
 import { DesktopCloseCoordinator } from '@/components/desktop/DesktopCloseCoordinator';
 import { useThreadWorkspaceNavigation } from '@/components/desktop/o8-panel/useThreadNavigation';
+import { threadPanelAvailability } from '@/components/desktop/o8-panel/thread-navigation';
 import { resolveThreadProject } from '@/components/desktop/o8-panel/threads-model';
 import { useProjects, type ProjectRecord } from '@/components/desktop/repo-registry/useProjects';
 import type { CommandPaletteActionItem } from '@/components/desktop/CommandPalette';
@@ -2505,6 +2506,10 @@ function DashboardInner() {
   }, [openRightPanelFromUser, setO8Width]);
 
   useThreadWorkspaceNavigation({
+    availability: () => threadPanelAvailability(
+      typeof window !== 'undefined' ? window.innerWidth : getResponsiveViewportWidth(),
+      RESPONSIVE_RIGHT_PANEL_COLLAPSE_WIDTH,
+    ),
     resolve: (target) => {
       const workspace = workspaceActiveMap.get(target.workspaceId);
       if (!workspace?.tileId || !workspaceTerminalHandlesRef.current.has(workspace.tileId)

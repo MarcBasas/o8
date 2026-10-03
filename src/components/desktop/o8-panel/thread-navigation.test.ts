@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { installThreadNavigator, acknowledgeThreadSelection, readThreadSelection } from './thread-navigation';
+import { installThreadNavigator, acknowledgeThreadSelection, readThreadSelection, threadPanelAvailability } from './thread-navigation';
 
 const target = { workspaceId: 'workspace', repoPath: '/repo', taskId: 'task' };
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -58,4 +58,27 @@ describe('scoped thread navigation entry', () => {
       expect(readTasks).not.toHaveBeenCalled();
     } finally { cleanup(); }
   });
+  it.each([false, true])('refuses a collapsed panel before mutation, including narrowing during the read: %s', async (duringRead) => {
+    let width = duringRead ? 1600 : 800;
+    const activate = vi.fn();
+    const readTasks = vi.fn(async () => {
+      width = 800;
+      return [{ id: 'task', repoPath: '/repo', project: { id: 'project' } }];
+    });
+    const cleanup = installThreadNavigator({
+      availability: () => threadPanelAvailability(width, 1180),
+      resolve: () => ({ projectId: 'project', activate, isActive: () => true }),
+      readTasks,
+    });
+    try {
+      await expect(window.__o8NavigateThread!(target)).resolves.toMatchObject({
+        ok: false, reason: 'panel_viewport_unavailable', viewportWidth: 800, minimumWidth: 1180,
+        recovery: { tool: 'o8_view_manage_window', operation: 'maximize' },
+      });
+      expect(readTasks).toHaveBeenCalledTimes(duringRead ? 1 : 0);
+      expect(activate).not.toHaveBeenCalled();
+      expect(readThreadSelection()).toBeNull();
+    } finally { cleanup(); }
+  });
+
 });

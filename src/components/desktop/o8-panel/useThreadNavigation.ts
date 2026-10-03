@@ -6,6 +6,7 @@ export function useThreadWorkspaceNavigation(options: ThreadNavigatorOptions) {
   const current = useRef(options);
   useLayoutEffect(() => { current.current = options; }, [options]);
   useEffect(() => installThreadNavigator({
+    availability: () => current.current.availability?.() ?? null,
     resolve: (target) => {
       const resolved = current.current.resolve(target);
       return resolved ? { ...resolved, isActive: () => current.current.resolve(target)?.isActive() ?? false } : null;

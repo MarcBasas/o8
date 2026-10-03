@@ -2,7 +2,7 @@ import type { O8WebviewClient } from './o8-webview-client';
 
 export const THREAD_NAVIGATION_TOOLS = [{
   name: 'o8_view_open_thread',
-  description: 'Select an existing workspace and open a recorded task in its contextual Threads panel. Returns mounted workspace/repository/task identities only after the actual selection is mounted. Refuses missing or out-of-scope targets. Does not dispatch work, launch inference, create terminals or allocate previews. A mounted acknowledgement is agent-operation evidence, not human native-input acceptance.',
+  description: 'Select an existing workspace and open a recorded task in its contextual Threads panel. Returns mounted workspace/repository/task identities only after the actual selection is mounted. Refuses missing or out-of-scope targets. A collapsed viewport returns panel_viewport_unavailable before selection changes, with the required width and o8_view_manage_window maximize recovery. Does not dispatch work, launch inference, create terminals or allocate previews. A mounted acknowledgement is agent-operation evidence, not human native-input acceptance.',
   inputSchema: {
     type: 'object',
     properties: {

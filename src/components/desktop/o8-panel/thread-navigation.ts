@@ -5,10 +5,25 @@ export interface ThreadNavigationTarget {
   repoPath: string;
   taskId: string;
 }
+interface PanelUnavailable {
+  reason: 'panel_viewport_unavailable';
+  viewportWidth: number;
+  minimumWidth: number;
+  recovery: { tool: 'o8_view_manage_window'; operation: 'maximize' };
+}
+export function threadPanelAvailability(viewportWidth: number, minimumWidth: number): PanelUnavailable | null {
+  return viewportWidth < minimumWidth ? {
+    reason: 'panel_viewport_unavailable', viewportWidth, minimumWidth,
+    recovery: { tool: 'o8_view_manage_window', operation: 'maximize' },
+  } : null;
+}
 interface NavigationResult extends ThreadNavigationTarget {
   ok: boolean;
   status?: 'mounted';
   reason?: string;
+  viewportWidth?: number;
+  minimumWidth?: number;
+  recovery?: PanelUnavailable['recovery'];
 }
 interface TaskIdentity {
   id: string;
@@ -16,6 +31,7 @@ interface TaskIdentity {
   project?: { id: string; panelProjectId?: string | null } | null;
 }
 export interface ThreadNavigatorOptions {
+  availability?: () => PanelUnavailable | null;
   resolve: (target: ThreadNavigationTarget) => {
     projectId: string | null;
     activate: () => void;
@@ -57,6 +73,8 @@ export function installThreadNavigator(options: ThreadNavigatorOptions) {
     if (busy || pending) return failure('navigation_busy');
     const resolved = options.resolve(target);
     if (!resolved) return failure('workspace_unavailable');
+    const unavailable = options.availability?.();
+    if (unavailable) return { ...target, ok: false, ...unavailable };
     busy = true;
     try {
       const tasks = await options.readTasks();
@@ -66,6 +84,8 @@ export function installThreadNavigator(options: ThreadNavigatorOptions) {
       // Re-resolve after the async read: a workspace can disappear while loading.
       const current = options.resolve(target);
       if (!current || current.projectId !== resolved.projectId) return failure('workspace_unavailable');
+      const unavailableNow = options.availability?.();
+      if (unavailableNow) return { ...target, ok: false, ...unavailableNow };
       return await new Promise<NavigationResult>((resolve) => {
         const finish = (result: NavigationResult) => {
           clearTimeout(timer);
