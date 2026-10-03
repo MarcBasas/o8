@@ -1,0 +1,44 @@
+name: Authored intent downstream verification
+
+on:
+  push:
+    branches: [feat/authored-intent-admission-3185]
+  pull_request:
+    branches: [integration/o8-upstream-20261003-intent]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: authored-intent-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: github.repository == 'kvnloo/o8'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BASE_SHA: 38f98a75fb88de2ef044fdedcea732b171ab827c
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install -g npm@11
+      - run: npm ci --prefer-offline
+      - name: Test classification
+        run: npm run test:classification:check
+      - name: Focused persisted-route tests
+        run: npx vitest run src/app/api/orchestrator/intent-contract/route.test.ts
+      - name: Type check
+        run: npx tsc --noEmit
+      - name: Touched lint
+        run: npx eslint src/lib/orchestrator/aodl-validation.ts src/lib/orchestrator/intent-contract-store.ts src/app/api/orchestrator/intent-contract/route.ts src/app/api/orchestrator/intent-contract/route.test.ts
+      - name: Repository rules
+        run: npm run rule-check -- --base="$BASE_SHA"
+      - name: Hermetic completion gate
+        run: npm test
