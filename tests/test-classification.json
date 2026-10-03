@@ -1124,6 +1124,13 @@
       ]
     },
     {
+      "path": "tests/agent-input-socket-real-path.test.ts",
+      "reasons": [
+        "network-listener",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/agent-message-bus-real-path.test.ts",
       "reasons": [
         "real-path"
@@ -2651,6 +2658,14 @@
       "path": "tests/native-bundle-immutability.test.ts",
       "reasons": [
         "native-build"
+      ]
+    },
+    {
+      "path": "tests/native-input-timeout-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "native-build",
+        "real-path"
       ]
     },
     {

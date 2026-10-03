@@ -1731,6 +1731,32 @@ const TYPE_INTO_FOCUSED_JS: &str = r#"
     return false;
   };
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const insertOrdinaryInput = (element, text) => {
+    const value = element.value;
+    const start = element.selectionStart;
+    const end = element.selectionEnd;
+    // Unsupported input types have null selection bounds. Refuse rather than
+    // guessing an insertion location or coercing invalid bounds into a write.
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start > end || end > value.length) {
+      throw new Error('Focused field has no valid text selection.');
+    }
+    const expected = value.slice(0, start) + text + value.slice(end);
+    const caret = start + text.length;
+    const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (!setter || !setter.set || typeof proto.setSelectionRange !== 'function') throw new Error('Focused field has no native text setter or selection API.');
+    // Refuse native sanitization (including input newlines/file values) before
+    // touching the live field. The probe is never connected or focused.
+    const probe = element.cloneNode(false);
+    setter.set.call(probe, expected);
+    if (probe.value !== expected) throw new Error('Focused field cannot accept the exact inserted text.');
+    proto.setSelectionRange.call(probe, caret, caret);
+    if (probe.selectionStart !== caret || probe.selectionEnd !== caret) throw new Error('Focused field cannot accept the insertion caret.');
+    setter.set.call(element, expected);
+    proto.setSelectionRange.call(element, caret, caret);
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    if (!element.isConnected || element.value !== expected) throw new Error('Focused field refused the exact inserted text.');
+  };
   const simulateReactInputTyping = async (element, text, delayMs, clear = false) => {
     element.focus();
     await sleep(50);
@@ -1839,14 +1865,15 @@ const TYPE_INTO_FOCUSED_JS: &str = r#"
     const text = payload.text;
     const delayMs = typeof payload.delayMs === 'number' ? payload.delayMs : 20;
     const initialDelayMs = typeof payload.initialDelayMs === 'number' ? payload.initialDelayMs : 0;
+    const unpaced = delayMs === 0 && initialDelayMs === 0;
     if (!text) throw new Error('text parameter is required');
     if (initialDelayMs > 0) await sleep(initialDelayMs);
 
     let el = document.activeElement;
-    if (!el || el === document.body || el === document.documentElement || !isTypeable(el)) {
+    if (!unpaced && (!el || el === document.body || el === document.documentElement || !isTypeable(el))) {
       el = window.__mcpLastFocusedElement || null;
     }
-    if (!el || el === document.body || el === document.documentElement || !isTypeable(el)) {
+    if (!unpaced && (!el || el === document.body || el === document.documentElement || !isTypeable(el))) {
       const coords = window.__mcpLastClickCoords;
       if (coords && typeof coords.x === 'number' && typeof coords.y === 'number') {
         let pointEl = document.elementFromPoint(coords.x, coords.y);
@@ -1861,10 +1888,14 @@ const TYPE_INTO_FOCUSED_JS: &str = r#"
         }
       }
     }
-    if (!el || el === document.body || el === document.documentElement) {
+    if (!el || el === document.body || el === document.documentElement || (unpaced && !isTypeable(el))) {
       throw new Error('No element is currently focused. Click an element first or use selector mode.');
     }
-    if (el instanceof HTMLElement) el.focus();
+    const ordinary = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
+    if (ordinary && (!el.isConnected || el.disabled || el.readOnly || el.matches(':disabled'))) {
+      throw new Error('Focused field is disconnected, disabled or read-only.');
+    }
+    if (el instanceof HTMLElement && !(ordinary && unpaced)) el.focus();
 
     const elementInfo = { tag: el.tagName.toLowerCase() };
     if (el.id) elementInfo.id = el.id;
@@ -1886,20 +1917,21 @@ const TYPE_INTO_FOCUSED_JS: &str = r#"
       if (!matched) throw new Error('No <option> matching "' + text + '" found in <select>' + (el.id ? ' #' + el.id : '') + '.');
     } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
       elementInfo.strategy = 'react-input';
-      await simulateReactInputTyping(el, text, delayMs, false);
+      if (unpaced) insertOrdinaryInput(el, text);
+      else await simulateReactInputTyping(el, text, delayMs, false);
     } else if (el instanceof HTMLElement) {
       const lexicalEl = el.closest('[data-lexical-editor]') || (el.hasAttribute('data-lexical-editor') ? el : null);
       if (lexicalEl && lexicalEl instanceof HTMLElement) {
         elementInfo.strategy = 'lexical';
-        await typeIntoLexicalEditor(lexicalEl, text, delayMs);
+        await typeIntoLexicalEditor(lexicalEl, text, unpaced ? 20 : delayMs);
       } else {
         const slateEl = el.closest('[data-slate-editor]') || (el.hasAttribute('data-slate-editor') ? el : null);
         if (slateEl && slateEl instanceof HTMLElement) {
           elementInfo.strategy = 'slate';
-          await typeIntoSlateEditor(slateEl, text, delayMs);
+          await typeIntoSlateEditor(slateEl, text, unpaced ? 20 : delayMs);
         } else if (el.isContentEditable) {
           elementInfo.strategy = 'contenteditable';
-          await typeIntoContentEditable(el, text, delayMs);
+          await typeIntoContentEditable(el, text, unpaced ? 20 : delayMs);
         } else {
           elementInfo.strategy = 'execCommand-fallback';
           el.focus();
@@ -1979,10 +2011,17 @@ pub async fn handle_type_into_focused<R: Runtime>(
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
 
-    // Allow generous timeout for character-by-character typing + initial delay
+    // Allow generous timeout for character-by-character typing + initial delay.
+    // Zero-delay ordinary fields are synchronous, but the same request keeps
+    // rich editors paced at 20ms. Budget that fallback before knowing the DOM target.
+    let timeout_delay_ms = if delay_ms == 0 && initial_delay_ms == 0 {
+        20
+    } else {
+        delay_ms
+    };
     let timeout_secs = std::cmp::max(
         10,
-        (text.len() as u64 * delay_ms + initial_delay_ms) / 1000 + 5,
+        (text.len() as u64 * timeout_delay_ms + initial_delay_ms) / 1000 + 5,
     );
 
     match eval_and_await(
