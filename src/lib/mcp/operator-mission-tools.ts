@@ -105,6 +105,7 @@ function getApiBaseLive(): string {
 interface CreateMissionInput {
   issues: string[];
   repoPath: string;
+  projectId?: string | null;
   runtime: OrchestratorRuntime;
   origin?: 'design-mode';
   workerIntent?: WorkerIntent;
@@ -141,6 +142,7 @@ interface InlineIssue {
 interface CreateMissionInlineInput {
   issues_inline: InlineIssue[];
   repoPath: string;
+  projectId?: string | null;
   runtime: OrchestratorRuntime;
   origin?: 'design-mode';
   workerIntent?: WorkerIntent;
@@ -405,6 +407,7 @@ export async function createMission(input: CreateMissionInput) {
       {
           issues: loadedIssues,
           repoPath,
+          projectId: input.projectId,
           runtime: input.runtime,
           origin: input.origin,
           workerIntent: input.workerIntent,
@@ -456,6 +459,7 @@ export async function createMissionInline(input: CreateMissionInlineInput) {
       {
           issues: loadedIssues,
           repoPath,
+          projectId: input.projectId,
           runtime: input.runtime,
           origin: input.origin,
           workerIntent: input.workerIntent,

@@ -1,3 +1,4 @@
+export { handleCreateMission } from './mission-create';
 import {
   isAgentReportReason,
   normalizeAgentReportEvent,
@@ -5,8 +6,6 @@ import {
   normalizeAgentReportMetadata,
 } from '@/lib/lane/agent-report';
 import {
-  createMission,
-  createMissionInline,
   dispatchMission,
   getMissionStatus,
   rerunWithFeedback,
@@ -24,7 +23,6 @@ import {
   reportTask,
 } from '@/lib/tasks/actions';
 import { getTaskPool, getTaskPoolTask } from '@/lib/tasks/pool';
-import { nextInlineIssueNumbers } from '@/lib/orchestrator/operator-mission-service/shared';
 import { listDispatchableRuntimes } from '@/lib/orchestrator/runtime-capabilities';
 import {
   apiFetch,
@@ -35,7 +33,6 @@ import {
   optionalString,
   parseDirectivesApplied,
   parseDirectivesViolated,
-  parseIssueList,
   parseMissionRuntime,
   parseReviewFindings,
   requiredString,
@@ -46,10 +43,9 @@ import {
   missionPacketSignature,
   type MinimalMissionStatusShape,
 } from './mission-wait';
-import { parseMissionCandidateMode, parseTaskContractSetting, QUALITY_SEARCH_INPUT_SCHEMA, TASK_CONTRACT_SETTING_SCHEMA } from './quality-search-input';
-import { MISSION_WORKER_PIN_PROPERTIES, parseMissionWorkerPinInput, parseWorkerProvider, WORKER_PROVIDER_OPTIONS } from './mission-worker-input';
+import { QUALITY_SEARCH_INPUT_SCHEMA, TASK_CONTRACT_SETTING_SCHEMA } from './quality-search-input';
+import { MISSION_WORKER_PIN_PROPERTIES, WORKER_PROVIDER_OPTIONS } from './mission-worker-input';
 import { CONTRACT_COVERAGE_EVIDENCE_SCHEMA, parseContractCoverageEvidenceInput } from './review-coverage-input';
-import { parseExistingBranchPolicy, parseWorkerIntent } from './mission-input';
 export const MISSION_TOOLS: McpTool[] = [
   {
     name: 'create_mission',
@@ -76,6 +72,7 @@ export const MISSION_TOOLS: McpTool[] = [
           description: 'Ad-hoc inline tasks — no GitHub issue required. Each becomes its own packet.',
         },
         repoPath: { type: 'string', description: 'Absolute local path to the repository.' },
+        projectId: { type: 'string', description: 'Exact project identifier. Overrides the current project; omission captures the creation context once. Thread ids provide placement and rules, not project selection.' },
         origin: { type: 'string', enum: ['design-mode'], description: 'Set to design-mode when the mission comes from an element-edit payload so follow-up edits can reuse its warm packet lane.' },
         runtime: {
           type: 'string',
@@ -772,116 +769,6 @@ export const MISSION_TOOLS: McpTool[] = [
     },
   },
 ];
-
-export async function handleCreateMission(args: Record<string, unknown>): Promise<McpToolResult> {
-  try {
-    const repoPath = requiredString(args, 'repoPath');
-    const runtime = parseMissionRuntime(args.runtime);
-    const workerIntent = parseWorkerIntent(args.workerIntent);
-    const requestedProvider = parseWorkerProvider(args.requestedProvider);
-    const workerPinInput = parseMissionWorkerPinInput(args);
-    const constraints = optionalString(args, 'constraints');
-    const inlineIssues = Array.isArray(args.issues_inline) ? args.issues_inline : null;
-    const ghIssues = Array.isArray(args.issues) && args.issues.length > 0 ? args.issues : null;
-    if (!inlineIssues && !ghIssues) {
-      return textResult('Provide either `issues` (GitHub refs) or `issues_inline` (inline objects).', true);
-    }
-    const shouldDispatch = args.dispatch !== false;
-    const sequential = args.sequential === true;
-    if (args.origin !== undefined && args.origin !== 'design-mode') return textResult('origin must be `design-mode` when provided.', true);
-    const origin = args.origin === 'design-mode' ? 'design-mode' as const : undefined;
-    const existingBranchPolicy = parseExistingBranchPolicy(args.existingBranchPolicy);
-    const useBrain = typeof args.useBrain === 'boolean' ? args.useBrain : undefined;
-    const huddle = typeof args.huddle === 'boolean' ? args.huddle : undefined;
-    const orchestratorThreadId = optionalString(args, 'orchestratorThreadId') || undefined;
-    const orchestratorTurnId = optionalString(args, 'orchestratorTurnId') || undefined;
-    const parentWorkspaceId = optionalString(args, 'parentWorkspaceId') || undefined;
-    const caller = optionalString(args, 'caller') || undefined;
-    const readOnly = args.readOnly === true;
-    const candidateMode = parseMissionCandidateMode(args, huddle);
-    if (!candidateMode.ok) return textResult(candidateMode.error, true);
-    const { comparisonModels, qualitySearch } = candidateMode;
-    if (inlineIssues) {
-      // #453 — Auto-assign synthetic numbers when not provided. Centralized so
-      // every inline creator uses the same collision-resistant allocator.
-      const syntheticNumbers = nextInlineIssueNumbers(inlineIssues.length);
-      const parsed = inlineIssues.map((entry, index) => {
-        if (typeof entry !== 'object' || entry === null) throw new Error('Each inline issue must be an object.');
-        const e = entry as Record<string, unknown>;
-        const title = typeof e.title === 'string' ? e.title.trim() : '';
-        if (!title) throw new Error('Each inline issue must have a title.');
-        const syntheticNumber = syntheticNumbers[index]!;
-        return { number: syntheticNumber, title, body: typeof e.body === 'string' ? e.body : '' };
-      });
-      const createResult = await createMissionInline({
-        issues_inline: parsed,
-        repoPath,
-        runtime, origin,
-        workerIntent,
-        requestedProvider,
-        requestedRuntime: runtime,
-        ...workerPinInput,
-        constraints,
-        dispatchOnCreate: shouldDispatch,
-        sequential,
-        existingBranchPolicy,
-        useBrain,
-        huddle, taskContract: parseTaskContractSetting(args.taskContract),
-        comparisonModels,
-        qualitySearch,
-        orchestratorThreadId, orchestratorTurnId, parentWorkspaceId, caller, readOnly,
-      });
-      if (shouldDispatch && createResult && !('error' in createResult)) {
-        // Fire-and-forget: dispatch can take 30–60s on its own, and the
-        // combined create+dispatch path often exceeds the MCP client's
-        // tool-call timeout (~60s), which closes the transport while the
-        // backend is still processing. Return the create result immediately
-        // so the caller gets a clean response, and run dispatch in the
-        // background. Callers can poll get_mission_status for progress.
-        void dispatchMission({ missionId: createResult.missionId }).catch((err) => {
-          console.error('[mcp-operator] background dispatch failed', errorText(err));
-        });
-        return jsonResult({
-          ...createResult,
-          dispatch: { queued: true, note: 'Dispatch running in background. Use get_mission_status to poll.' },
-        });
-      }
-      return jsonResult(createResult);
-    }
-
-    const createResult = await createMission({
-      issues: parseIssueList(args.issues),
-      repoPath,
-      runtime, origin,
-      workerIntent,
-      requestedProvider,
-      requestedRuntime: runtime,
-      ...workerPinInput,
-      constraints,
-      dispatchOnCreate: shouldDispatch,
-      sequential,
-      existingBranchPolicy,
-      useBrain,
-      huddle, taskContract: parseTaskContractSetting(args.taskContract),
-      comparisonModels,
-      qualitySearch,
-      orchestratorThreadId, orchestratorTurnId, parentWorkspaceId, caller, readOnly,
-    });
-    if (shouldDispatch && createResult && !('error' in createResult)) {
-      void dispatchMission({ missionId: createResult.missionId }).catch((err) => {
-        console.error('[mcp-operator] background dispatch failed', errorText(err));
-      });
-      return jsonResult({
-        ...createResult,
-        dispatch: { queued: true, note: 'Dispatch running in background. Use get_mission_status to poll.' },
-      });
-    }
-    return jsonResult(createResult);
-  } catch (error) {
-    console.error(`${'[mcp-operator]'} create_mission failed: ${errorText(error)}`);
-    return textResult(`Failed to create mission: ${errorText(error)}`, true);
-  }
-}
 
 export async function handleDispatchMission(args: Record<string, unknown>): Promise<McpToolResult> {
   try {
