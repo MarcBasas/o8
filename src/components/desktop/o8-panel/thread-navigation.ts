@@ -1,3 +1,5 @@
+import { threadProjectMatches } from './thread-project-identity';
+
 export interface ThreadNavigationTarget {
   workspaceId: string;
   repoPath: string;
@@ -11,7 +13,7 @@ interface NavigationResult extends ThreadNavigationTarget {
 interface TaskIdentity {
   id: string;
   repoPath?: string | null;
-  project?: { id: string } | null;
+  project?: { id: string; panelProjectId?: string | null } | null;
 }
 export interface ThreadNavigatorOptions {
   resolve: (target: ThreadNavigationTarget) => {
@@ -60,7 +62,7 @@ export function installThreadNavigator(options: ThreadNavigatorOptions) {
       const tasks = await options.readTasks();
       if (disposed) return failure('navigation_unmounted');
       if (!tasks.some((task) => task.id === target.taskId && path(task.repoPath) === path(target.repoPath)
-        && (!resolved.projectId || !task.project || task.project.id === resolved.projectId))) return failure('task_unavailable');
+        && threadProjectMatches(task.project, resolved.projectId))) return failure('task_unavailable');
       // Re-resolve after the async read: a workspace can disappear while loading.
       const current = options.resolve(target);
       if (!current || current.projectId !== resolved.projectId) return failure('workspace_unavailable');

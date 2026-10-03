@@ -33,6 +33,23 @@ describe('scoped thread navigation entry', () => {
       expect(readThreadSelection()).toBeNull();
     } finally { cleanup(); }
   });
+  it.each([
+    { id: 'other', panelProjectId: 'other' },
+    { id: 'project', panelProjectId: null },
+    { id: 'project', panelProjectId: ' project ' },
+    null,
+  ])('refuses wrong or unavailable project mapping without changing selection: %j', async (project) => {
+    const activate = vi.fn();
+    const cleanup = installThreadNavigator({
+      resolve: () => ({ projectId: 'project', activate, isActive: () => true }),
+      readTasks: async () => [{ id: 'task', repoPath: '/repo', project }],
+    });
+    try {
+      await expect(window.__o8NavigateThread!(target)).resolves.toMatchObject({ ok: false, reason: 'task_unavailable' });
+      expect(activate).not.toHaveBeenCalled();
+      expect(readThreadSelection()).toBeNull();
+    } finally { cleanup(); }
+  });
   it('refuses missing workspaces without reading or mutating tasks', async () => {
     const readTasks = vi.fn();
     const cleanup = installThreadNavigator({ resolve: () => null, readTasks });
