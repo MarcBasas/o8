@@ -3517,6 +3517,14 @@
       ]
     },
     {
+      "path": "tests/spawn-prompt-count-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/spawn-prompt-effort-pin-real-path.test.ts",
       "reasons": [
         "child-process",
