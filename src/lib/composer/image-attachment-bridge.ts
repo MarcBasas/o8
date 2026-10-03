@@ -112,7 +112,7 @@ export const composerImageBridge = {
       observeImageAttachments();
       if (!isCurrent()) return;
       try {
-        const results = await target.current().upload!([file], { isCurrent, requestId: request.request_id });
+        const results = await target.current().upload!([file], { isCurrent, requestId: request.request_id, backgroundAgent: record.receipt.allow_background });
         if (record.receipt.status !== 'pending') return;
         if (results?.some(result => result.status !== 'read')) finish(record, Date.now() >= record.expires ? 'upload_expired' : isCurrent() ? 'upload_failed' : 'target_changed');
         // Decode/read completion is not attachment completion. React's committed

@@ -1,11 +1,13 @@
 /** @vitest-environment jsdom */
-import { createElement, useState, act } from 'react';
+import { createElement, useState, useRef, useEffect, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createO8WebviewToolHandlers } from '@/lib/mcp/o8-webview-tools';
 import { O8WebviewClient } from '@/lib/mcp/o8-webview-client';
 import { MAX_AGENT_IMAGE_BASE64 } from '@/lib/composer/image-attachment';
 import { ComposerArea } from './ComposerArea';
+import type { OrchestratorSendHandle } from '../useOrchestratorStream';
+import { useDefaultComposerSendBuffer } from './useDefaultComposerSendBuffer';
 import { useThoughtsComposerAttachments } from './useThoughtsComposerAttachments';
 
 vi.mock('../InputButtons', async () => {
@@ -48,7 +50,8 @@ class FixtureImage {
     });
   }
 }
-const sent = vi.fn();
+const sent = vi.fn(() => ({} as OrchestratorSendHandle));
+let submitDraft: (() => void) | undefined;
 class FixtureReader {
   result: string | null = null;
   onload: (() => void) | null = null;
@@ -63,12 +66,21 @@ class FixtureReader {
 function Harness() {
   const attachments = useThoughtsComposerAttachments();
   const [input, setInput] = useState('unsent');
+  const latestInputRef = useRef(input); const inputRef = useRef<HTMLTextAreaElement>(null);
+  const { handleSend } = useDefaultComposerSendBuffer({
+    active, backend: 'codex', busy: false, threadId: context, repoPath: '/fixture',
+    attachedImages: attachments.attachedImages, latestInputRef, inputRef, setInput,
+    addAttachedImage: attachments.addAttachedImage, clearAttachments: attachments.clearAttachments,
+    dispatch: sent, interrupt: () => undefined, undoSend: () => undefined,
+    shouldBypass: () => false, sendUnbuffered: () => undefined,
+  });
+  useEffect(() => { latestInputRef.current = input; submitDraft = handleSend; }, [handleSend, input]);
   return createElement(ComposerArea, {
     activeComposer: active, input, onInputChange: setInput,
     isOrchestratorMode: !disabled, displayWaiting: false, chatMessages: [], activeTargetLabel: 'Chat',
     targetAgentExists: false, thoughtsBodyBackground: 'var(--t-workspace)', enhancing: false,
     preEnhanceInput: null, onEnhance: () => undefined, onUndoEnhance: () => undefined,
-    onSubmit: sent, onSlashCommand: () => undefined, modelLabel: 'Model', effort: 'medium',
+    onSubmit: handleSend, onSlashCommand: () => undefined, modelLabel: 'Model', effort: 'medium',
     onEffortChange: () => undefined, adaptiveEnabled: false, displayMessagesCount: 0,
     hasAssistantActivity: false, sessionRulesThreadId: context,
     attachedImages: attachments.attachedImages, onUploadDiskFiles: noUpload ? undefined : attachments.processFiles,
@@ -235,6 +247,78 @@ describe('registered image tool -> normal installed composer handler', () => {
     expect((await call('o8_view_image_attachment_status', { request_id: pending.request_id })).code).toBe(condition === 'changed' ? 'target_changed' : 'upload_expired');
     expect(readers).toHaveLength(0); expect(host.querySelectorAll('img')).toHaveLength(0);
   });
+  it('commits exactly one background image with RAF permanently stalled and strips transient metadata from normal submit', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    const frame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    const focus = vi.spyOn(host.querySelector('textarea')!, 'focus');
+    const pending = await attach({ allow_background: true });
+    expect(await call('o8_view_image_attachment_status', { request_id: pending.request_id })).toMatchObject({ status: 'completed', allow_background: true });
+    expect(host.querySelectorAll('img')).toHaveLength(1); expect(frame).not.toHaveBeenCalled();
+    render(); render();
+    expect(host.querySelectorAll('img')).toHaveLength(1); expect(sent).not.toHaveBeenCalled(); expect(focus).not.toHaveBeenCalled();
+    expect((await call('o8_view_inspect_composer')).code).toBe('no_active_composer');
+    // Explicit test-only submit through the production composer send hook. The
+    // agent tool did not send; dispatch is a fixture and never reaches a provider.
+    act(() => submitDraft!());
+    expect(sent).toHaveBeenCalledExactlyOnceWith('unsent', [{ name: 'fixture.png', dataUri: `data:image/png;base64,${image}` }]);
+  });
+  it('promotes background work without consuming mixed manual queues or cancelled frames', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden'); deferred = true;
+    const queued: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { queued.push(callback); return queued.length; });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined);
+    const input = host.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const manual = async (name: string) => {
+      Object.defineProperty(input, 'files', { configurable: true, value: [new File([atob(image)], name, { type: 'image/png' })] });
+      await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })));
+      await act(async () => readers.at(-1)!.onload?.());
+    };
+    await manual('first.png'); expect(host.querySelectorAll('img')).toHaveLength(0);
+    const pending = await attach({ allow_background: true });
+    await act(async () => readers.at(-1)!.onload?.());
+    expect((await call('o8_view_image_attachment_status', { request_id: pending.request_id })).status).toBe('completed');
+    expect([...host.querySelectorAll('img')].map(img => img.alt)).toEqual(['fixture.png']);
+    await manual('second.png');
+    // Call even cancelled fixture frames to verify their stale snapshots cannot
+    // duplicate an image or remove files queued by another upload.
+    await act(async () => { for (const callback of queued) callback(0); });
+    expect([...host.querySelectorAll('img')].map(img => img.alt)).toEqual(['fixture.png', 'first.png', 'second.png']);
+    render(); expect(host.querySelectorAll('img')).toHaveLength(3); expect(sent).not.toHaveBeenCalled();
+  });
+  it('retains the image cap and duplicate refusal for immediate background commits', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    const frame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    let completed: Record<string, unknown> = {};
+    for (let count = 0; count < 4; count++) {
+      const pending = await attach({ allow_background: true });
+      completed = await call('o8_view_image_attachment_status', { request_id: pending.request_id });
+      expect(completed.status).toBe('completed');
+    }
+    expect((await attach({ allow_background: true, request_id: completed.request_id })).code).toBe('duplicate_request');
+    expect((await attach({ allow_background: true })).code).toBe('image_capacity');
+    render(); expect(host.querySelectorAll('img')).toHaveLength(4); expect(frame).not.toHaveBeenCalled(); expect(sent).not.toHaveBeenCalled();
+  });
+  it('retains manual queued work while refusing a stale mixed background read', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden'); deferred = true;
+    const queued: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { queued.push(callback); return queued.length; });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined);
+    const input = host.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, 'files', { configurable: true, value: [new File([atob(image)], 'manual.png', { type: 'image/png' })] });
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })));
+    await act(async () => readers[0].onload?.());
+    const pending = await attach({ allow_background: true }); context = 'changed-mixed-chat'; render();
+    await act(async () => readers[1].onload?.());
+    expect((await call('o8_view_image_attachment_status', { request_id: pending.request_id })).code).toBe('target_changed');
+    await act(async () => { for (const callback of queued) callback(0); });
+    expect([...host.querySelectorAll('img')].map(img => img.alt)).toEqual(['manual.png']); expect(sent).not.toHaveBeenCalled();
+  });
+  it('retains frame scheduling for ordinary visible uploads when RAF is stalled', async () => {
+    const frame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    const pending = await attach();
+    expect((await call('o8_view_image_attachment_status', { request_id: pending.request_id })).status).toBe('pending');
+    expect(frame).toHaveBeenCalled(); expect(host.querySelectorAll('img')).toHaveLength(0); expect(sent).not.toHaveBeenCalled();
+  });
   it('requires explicit background mode at inspect and attach, acknowledging the normal React commit', async () => {
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
     for (const options of [{}, { allow_background: false }]) {
@@ -298,17 +382,14 @@ describe('registered image tool -> normal installed composer handler', () => {
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
     decodeDeferred = condition !== 'upload' && condition !== 'commit'; deferred = true;
     const pending = await attach({ allow_background: true });
-    const queued: FrameRequestCallback[] = [];
-    if (condition === 'commit') {
-      vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { queued.push(callback); return queued.length; });
-      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined);
-      await act(async () => readers[0].onload?.());
-    }
+    if (condition === 'commit') await act(async () => {
+      readers[0].onload?.(); context = 'background-changed-at-commit'; root.render(createElement(Harness));
+    });
     if (condition === 'dispose') act(() => root.render(null));
     else if (condition === 'disabled') host.querySelector('textarea')!.disabled = true;
     else if (condition === 'ambiguous') addComposer();
-    else { context = 'background-context-changed'; render(); }
-    await act(async () => { for (const decoder of decoders) decoder.resolve(); for (const reader of readers) reader.onload?.(); for (const callback of queued) callback(0); });
+    else if (condition !== 'commit') { context = 'background-context-changed'; render(); }
+    await act(async () => { for (const decoder of decoders) decoder.resolve(); for (const reader of readers) reader.onload?.(); });
     await frames();
     expect(await call('o8_view_image_attachment_status', { request_id: pending.request_id })).toMatchObject({ code: 'target_changed', allow_background: true });
     expect(host.querySelectorAll('img')).toHaveLength(0); expect(sent).not.toHaveBeenCalled();

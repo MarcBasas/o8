@@ -27,6 +27,8 @@ export interface DroppedFile {
   /** Agent upload guard, kept only in transient pending state. */
   isCurrent?: () => boolean;
   uploadRequestId?: string;
+  /** Explicit agent-only scheduling policy; never copied into attachments. */
+  backgroundAgent?: boolean;
 }
 
 export interface UseFileDropOptions {
@@ -46,7 +48,7 @@ export interface UseFileDropOptions {
   hostRef?: React.RefObject<HTMLElement | null>;
 }
 
-export interface FileUploadOptions { isCurrent?: () => boolean; requestId?: string }
+export interface FileUploadOptions { isCurrent?: () => boolean; requestId?: string; backgroundAgent?: boolean }
 export interface FileUploadResult { status: 'read' | 'skipped' | 'error' }
 export type FileUploadHandler = (files: FileList | File[], options?: FileUploadOptions) => Promise<FileUploadResult[]> | void;
 
@@ -103,8 +105,11 @@ export function useFileDrop(options?: UseFileDropOptions): UseFileDropResult {
         const base64 = (reader.result as string).split(',')[1];
         const preview = file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined;
         setPendingFiles((prev) => {
-          if (prev.length >= maxFiles) return prev;
-          return [...prev, { name: file.name, mimeType: file.type || 'application/octet-stream', content: base64, preview, ...(upload?.isCurrent ? { isCurrent: upload.isCurrent } : {}), ...(upload?.requestId ? { uploadRequestId: upload.requestId } : {}) }];
+          if ((upload?.isCurrent && !upload.isCurrent()) || prev.length >= maxFiles) {
+            if (preview) URL.revokeObjectURL(preview);
+            return prev;
+          }
+          return [...prev, { name: file.name, mimeType: file.type || 'application/octet-stream', content: base64, preview, ...(upload?.isCurrent ? { isCurrent: upload.isCurrent } : {}), ...(upload?.requestId ? { uploadRequestId: upload.requestId } : {}), ...(upload?.backgroundAgent === true && upload.isCurrent && upload.requestId ? { backgroundAgent: true } : {}) }];
         });
         resolve({ status: 'read' });
       };
