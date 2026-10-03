@@ -407,8 +407,10 @@ export function envWorktreeMaxTotalGb(): number | null {
 }
 
 export function envStorageReserveRatio(): number | null {
-  const value = envPositiveNumber('O8_STORAGE_RESERVE_RATIO');
-  return value !== null && value <= 1 ? value : null;
+  const raw = process.env.O8_STORAGE_RESERVE_RATIO?.trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
 }
 
 export function envStorageReserveFloorGb(): number | null {

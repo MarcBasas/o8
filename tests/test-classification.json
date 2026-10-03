@@ -606,6 +606,14 @@
       ]
     },
     {
+      "path": "src/lib/orchestrator/storage-estimate.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "worktree-api"
+      ]
+    },
+    {
       "path": "src/lib/orchestrator/workspace-lifecycle-lease.test.ts",
       "reasons": [
         "child-process",
@@ -3434,6 +3442,13 @@
       ]
     },
     {
+      "path": "tests/saved-image-reload-operator-real-path.test.ts",
+      "reasons": [
+        "network-listener",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/saved-ssh-machine-cli-real-path.test.ts",
       "reasons": [
         "child-process",
@@ -3605,6 +3620,15 @@
     },
     {
       "path": "tests/storage-admission-rerun-release-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "real-path",
+        "worktree-api"
+      ]
+    },
+    {
+      "path": "tests/storage-estimate-creation-base-real-path.test.ts",
       "reasons": [
         "child-process",
         "git-cli",
