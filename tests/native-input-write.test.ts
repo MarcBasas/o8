@@ -17,6 +17,7 @@ let host: HTMLDivElement;
 let root: Root;
 const changed = vi.fn();
 const replies: Reply[] = [];
+let scriptTimer: typeof setTimeout | undefined;
 function Field({ tag, refuse = false }: { tag: 'input' | 'textarea'; refuse?: boolean }) {
   const [value, setValue] = useState('prefix: ');
   return createElement('section', {}, createElement(tag, { value, onChange: (event: { currentTarget: { value: string } }) => {
@@ -25,14 +26,17 @@ function Field({ tag, refuse = false }: { tag: 'input' | 'textarea'; refuse?: bo
 }
 function run(payload: Record<string, unknown>) {
   const code = template!.replaceAll('{{payload}}', JSON.stringify(payload)).replaceAll('{{correlationId}}', JSON.stringify('typing-fixture'));
-  return new Function(`return ${code.trim()}`)() as Promise<void>;
+  return new Function('setTimeout', `return ${code.trim()}`)(scriptTimer ?? setTimeout) as Promise<void>;
 }
 function stalledTimers() {
-  return vi.spyOn(globalThis, 'setTimeout').mockImplementation(() => 0 as unknown as ReturnType<typeof setTimeout>);
+  // Bind only the production script's timer; jsdom's native selection API
+  // schedules unrelated select/selectionchange events internally.
+  const timer = vi.fn(() => 0 as unknown as ReturnType<typeof setTimeout>);
+  scriptTimer = timer as unknown as typeof setTimeout; return timer;
 }
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-  replies.length = 0; changed.mockClear();
+  replies.length = 0; changed.mockClear(); scriptTimer = undefined;
   nativeWindow.__TAURI_INTERNALS__ = { invoke: async (command, reply) => {
     expect(command).toBe('mcp_result'); expect(reply.correlationId).toBe('typing-fixture'); replies.push(reply);
   } };
@@ -46,7 +50,7 @@ describe('production native script -> ordinary React-controlled fields', () => {
   it.each(['input', 'textarea'] as const)('appends exactly to %s and updates React without scheduling timers', async tag => {
     act(() => root.render(createElement(Field, { tag })));
     const field = host.querySelector(tag)!; field.focus();
-    field.setSelectionRange(0, 2); // Append semantics do not replace a selected prefix.
+    field.setSelectionRange(field.value.length, field.value.length);
     const text = tag === 'textarea' ? 'first\nsecond\n🙂' : 'ordinary 🙂 text';
     const timer = stalledTimers();
     const bubbled = vi.fn(); host.addEventListener('input', bubbled);
@@ -55,6 +59,37 @@ describe('production native script -> ordinary React-controlled fields', () => {
     expect(field.value).toBe('prefix: ' + text); expect(host.querySelector('output')?.textContent).toBe(field.value);
     expect(changed).toHaveBeenCalledExactlyOnceWith('prefix: ' + text); expect(bubbled).toHaveBeenCalledTimes(1);
     expect(timer).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['input', 'caret-middle', 3, 3], ['textarea', 'caret-middle', 3, 3],
+    ['input', 'selection', 2, 6], ['textarea', 'selection', 2, 6],
+    ['input', 'select-all', 0, 8], ['textarea', 'select-all', 0, 8],
+  ] as const)('inserts into %s at %s and preserves React state and caret', async (tag, _mode, start, end) => {
+    act(() => root.render(createElement(Field, { tag })));
+    const field = host.querySelector(tag)!; field.focus(); field.setSelectionRange(start, end);
+    const text = tag === 'textarea' ? 'first\nsecond🙂' : '🙂X';
+    const expected = field.value.slice(0, start) + text + field.value.slice(end);
+    const timer = stalledTimers(); const bubbled = vi.fn(); host.addEventListener('input', bubbled);
+    await act(async () => { void run({ text, delayMs: 0 }); await Promise.resolve(); });
+    expect(replies[0]).toMatchObject({ ok: true }); expect(field.value).toBe(expected);
+    expect(host.querySelector('output')?.textContent).toBe(expected); expect(changed).toHaveBeenCalledExactlyOnceWith(expected);
+    expect(field.selectionStart).toBe(start + text.length); expect(field.selectionEnd).toBe(start + text.length);
+    expect(bubbled).toHaveBeenCalledTimes(1); expect(timer).not.toHaveBeenCalled();
+  });
+  it.each([[null, null], [-1, 2], [NaN, 2], [4, 2], [0, 99]] as const)('refuses invalid selection bounds %s/%s without mutation', async (start, end) => {
+    const field = document.createElement('textarea'); field.value = 'preserved'; host.append(field); field.focus();
+    Object.defineProperty(field, 'selectionStart', { get: () => start }); Object.defineProperty(field, 'selectionEnd', { get: () => end });
+    const event = vi.fn(); field.addEventListener('input', event); const timer = stalledTimers();
+    void run({ text: 'insert', delayMs: 0 }); await Promise.resolve();
+    expect(replies[0]).toMatchObject({ ok: false }); expect(field.value).toBe('preserved');
+    expect(event).not.toHaveBeenCalled(); expect(timer).not.toHaveBeenCalled();
+  });
+  it('refuses input types without a selection API without changing them', async () => {
+    const field = document.createElement('input'); field.type = 'email'; field.value = 'fixture@example.test'; host.append(field); field.focus();
+    const event = vi.fn(); field.addEventListener('input', event); const timer = stalledTimers();
+    void run({ text: 'insert', delayMs: 0 }); await Promise.resolve();
+    expect(replies[0]).toMatchObject({ ok: false }); expect(field.value).toBe('fixture@example.test');
+    expect(event).not.toHaveBeenCalled(); expect(timer).not.toHaveBeenCalled();
   });
   it.each(['disabled', 'readOnly', 'disconnected', 'fieldset'] as const)('refuses %s before mutation or focus recovery', async mode => {
     const field = document.createElement('textarea'); field.value = 'preserved';

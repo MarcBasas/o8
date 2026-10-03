@@ -1731,19 +1731,31 @@ const TYPE_INTO_FOCUSED_JS: &str = r#"
     return false;
   };
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  const appendOrdinaryInput = (element, text) => {
-    const expected = element.value + text;
+  const insertOrdinaryInput = (element, text) => {
+    const value = element.value;
+    const start = element.selectionStart;
+    const end = element.selectionEnd;
+    // Unsupported input types have null selection bounds. Refuse rather than
+    // guessing an insertion location or coercing invalid bounds into a write.
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || start > end || end > value.length) {
+      throw new Error('Focused field has no valid text selection.');
+    }
+    const expected = value.slice(0, start) + text + value.slice(end);
+    const caret = start + text.length;
     const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, 'value');
-    if (!setter || !setter.set) throw new Error('Focused field has no native value setter.');
+    if (!setter || !setter.set || typeof proto.setSelectionRange !== 'function') throw new Error('Focused field has no native text setter or selection API.');
     // Refuse native sanitization (including input newlines/file values) before
     // touching the live field. The probe is never connected or focused.
     const probe = element.cloneNode(false);
     setter.set.call(probe, expected);
-    if (probe.value !== expected) throw new Error('Focused field cannot accept the exact appended text.');
+    if (probe.value !== expected) throw new Error('Focused field cannot accept the exact inserted text.');
+    proto.setSelectionRange.call(probe, caret, caret);
+    if (probe.selectionStart !== caret || probe.selectionEnd !== caret) throw new Error('Focused field cannot accept the insertion caret.');
     setter.set.call(element, expected);
+    proto.setSelectionRange.call(element, caret, caret);
     element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-    if (!element.isConnected || element.value !== expected) throw new Error('Focused field refused the exact appended text.');
+    if (!element.isConnected || element.value !== expected) throw new Error('Focused field refused the exact inserted text.');
   };
   const simulateReactInputTyping = async (element, text, delayMs, clear = false) => {
     element.focus();
@@ -1905,7 +1917,7 @@ const TYPE_INTO_FOCUSED_JS: &str = r#"
       if (!matched) throw new Error('No <option> matching "' + text + '" found in <select>' + (el.id ? ' #' + el.id : '') + '.');
     } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
       elementInfo.strategy = 'react-input';
-      if (unpaced) appendOrdinaryInput(el, text);
+      if (unpaced) insertOrdinaryInput(el, text);
       else await simulateReactInputTyping(el, text, delayMs, false);
     } else if (el instanceof HTMLElement) {
       const lexicalEl = el.closest('[data-lexical-editor]') || (el.hasAttribute('data-lexical-editor') ? el : null);
