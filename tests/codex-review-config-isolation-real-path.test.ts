@@ -19,8 +19,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type { OrchestratorBackend } from '@/lib/lane/orchestrator-backends/types';
+import { MODEL_IDS } from '@/lib/models';
+
 import { parse } from 'smol-toml';
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/cortex/qa/llm/haiku-adapter', () => ({
   prewarmHaiku: vi.fn(async () => {}),
@@ -38,6 +41,10 @@ const fakeCodexBin = join(root, 'codex-fixture');
 const generatedHomeReceipt = join(root, 'generated-codex-home.txt');
 const priorEnv = new Map<string, string | undefined>();
 const envKeys = [
+  'O8_REVIEW_MODEL',
+  'O8_THINKING_EFFORT',
+  'O8_SUBSCRIPTION_PROFILE',
+  'O8_TEST_CODEX_ARGS_RECEIPT',
   'HOME',
   'O8_DATA_DIR',
   'CORTEX_IDE_DATA_DIR',
@@ -72,6 +79,7 @@ writeFileSync(fakeCodexBin, [
   '  printf "codex-cli 0.150.0\\n"',
   '  exit 0',
   'fi',
+  'printf "%s\\n" "$@" > "$O8_TEST_CODEX_ARGS_RECEIPT"',
   'printf "%s" "$CODEX_HOME" > "$O8_TEST_CODEX_HOME_RECEIPT"',
   'if grep -q "poison-reviewer" "$CODEX_HOME/config.toml"; then',
   '  printf "unrelated MCP reached reviewer\\n" >&2',
@@ -92,6 +100,10 @@ execFileSync('git', [
   'commit', '-qm', 'test: review fixture',
 ], { cwd: repoPath });
 
+delete process.env.O8_REVIEW_MODEL;
+process.env.O8_THINKING_EFFORT = 'medium';
+process.env.O8_SUBSCRIPTION_PROFILE = 'both';
+process.env.O8_TEST_CODEX_ARGS_RECEIPT = join(root, 'args.txt');
 process.env.HOME = home;
 process.env.O8_DATA_DIR = dataDir;
 process.env.CORTEX_IDE_DATA_DIR = dataDir;
@@ -104,6 +116,8 @@ const { getLaneEvents, createLane } = await import('@/lib/lane/registry');
 const { getOrchestratorBackend } = await import('@/lib/lane/orchestrator-backends/registry');
 const { runReviewerTurnWithQuotaFallback } = await import('@/lib/lane/review-quota-fallback');
 const { listRoleRoutingReceipts } = await import('@/lib/operator/role-routing-ledger');
+
+afterEach(() => { delete process.env.O8_REVIEW_MODEL; });
 
 afterAll(() => {
   closeDb();
@@ -167,5 +181,108 @@ describe('Codex automatic-review config isolation', () => {
       contextId: lane.id,
       status: 'selected',
     });
+  });
+});
+
+function reviewInput(initialBackend = getOrchestratorBackend('codex')) {
+  const lane = createLane({ repoPath, branch: 'inline/review-model', runtime: 'codex' });
+  return { laneId: lane.id, repoPath, threadId: `review-model-${lane.id}`, surface: 'auto-review' as const,
+    prompt: 'Review the complete packet.', initialBackend };
+}
+function backend(id: 'codex' | 'claude', quota = false): OrchestratorBackend {
+  return { id, label: id, peekSession: () => null,
+    ensureSession: vi.fn(() => ({ sessionName: 'fixture', status: 'ready' as const })),
+    sendTurn: vi.fn(async (_repo, _prompt, emit) => {
+      if (quota) emit({ type: 'error', error: 'You have hit your usage limit.', code: 'usage_limit_reached' });
+      else emit({ type: 'text', text: 'complete review' });
+    }) };
+}
+function receipt(contextId: string) {
+  closeDb(); // Reopen persisted routing, rather than asserting an in-memory spy.
+  return listRoleRoutingReceipts({ role: 'review', repoPath }).find((row) => row.contextId === contextId);
+}
+
+describe('process-scoped dedicated Codex review model', () => {
+  it.each([undefined, MODEL_IDS.raw.openAiGpt61Sol])('sends %s through the real Codex CLI and persisted route', async (choice) => {
+    if (choice) process.env.O8_REVIEW_MODEL = choice;
+    const input = reviewInput();
+    const spy = vi.spyOn(input.initialBackend, 'sendTurn');
+    try {
+      expect((await runReviewerTurnWithQuotaFallback(input)).ok).toBe(true);
+      const model = choice ?? MODEL_IDS.codexDefault;
+      expect(spy.mock.calls.at(-1)?.[3]).toMatchObject({ model, thinkingEffort: 'medium' });
+      const args = readFileSync(join(root, 'args.txt'), 'utf8').split('\n');
+      expect(args).toContain(`model=${model}`);
+      expect(args).toContain('model_reasoning_effort=medium');
+      expect(receipt(input.laneId)).toMatchObject({ requested: { model, effort: 'medium' },
+        effective: { model, effort: 'medium' }, sources: { model: choice ? 'env' : 'derived', effort: 'env' } });
+    } finally { spy.mockRestore(); }
+  });
+
+  it.each(['', 'unknown-model', MODEL_IDS.raw.anthropicClaudeSonnet5, 'ollama:fixture', 'gpt-6.1-sol\nextra'])('refuses invalid explicit %s before any session or inference', async (model) => {
+    process.env.O8_REVIEW_MODEL = model;
+    const input = reviewInput(backend('codex'));
+    const result = await runReviewerTurnWithQuotaFallback(input);
+    expect(result.ok).toBe(false);
+    expect(result.errors.join(' ')).toContain('O8_REVIEW_MODEL');
+    expect(input.initialBackend.ensureSession).not.toHaveBeenCalled();
+    expect(input.initialBackend.sendTurn).not.toHaveBeenCalled();
+    expect(receipt(input.laneId)).toMatchObject({ status: 'refused', effective: null });
+  });
+
+  it('refuses a Codex choice on a different initial reviewer backend', async () => {
+    process.env.O8_REVIEW_MODEL = MODEL_IDS.raw.openAiGpt61Sol;
+    const input = reviewInput(backend('claude'));
+    expect((await runReviewerTurnWithQuotaFallback(input)).ok).toBe(false);
+    expect(input.initialBackend.ensureSession).not.toHaveBeenCalled();
+    expect(receipt(input.laneId)).toMatchObject({ status: 'refused', effective: null });
+  });
+
+  it('keeps cross-house target and persisted source models truthful', async () => {
+    process.env.O8_REVIEW_MODEL = MODEL_IDS.raw.openAiGpt61Sol;
+    const input = reviewInput(backend('codex', true));
+    const target = backend('claude');
+    const result = await runReviewerTurnWithQuotaFallback({ ...input, backendResolver: () => target });
+    expect(result.ok).toBe(true);
+    expect(result.fallback?.fromModel).toBe(MODEL_IDS.raw.openAiGpt61Sol);
+    expect(target.sendTurn).toHaveBeenCalledWith(repoPath, input.prompt, expect.any(Function),
+      expect.objectContaining({ model: result.fallback?.toModel }));
+    expect(receipt(input.laneId)).toMatchObject({ requested: { model: MODEL_IDS.raw.openAiGpt61Sol },
+      effective: { backend: 'claude', model: result.fallback?.toModel }, sources: { model: 'derived' }, status: 'fallback' });
+  });
+
+  it('records a runtime-reported model and effort substitution honestly', async () => {
+    process.env.O8_REVIEW_MODEL = MODEL_IDS.raw.openAiGpt61Sol;
+    const target = backend('codex');
+    vi.mocked(target.sendTurn).mockImplementation(async (_repo, _prompt, emit) => {
+      emit({ type: 'turn_receipt', leadModel: MODEL_IDS.raw.openAiGpt56Sol, effort: 'low' });
+      emit({ type: 'text', text: 'complete review' });
+    });
+    const input = reviewInput(target);
+    expect((await runReviewerTurnWithQuotaFallback(input)).ok).toBe(true);
+    expect(receipt(input.laneId)).toMatchObject({ requested: { model: MODEL_IDS.raw.openAiGpt61Sol, effort: 'medium' },
+      effective: { model: MODEL_IDS.raw.openAiGpt56Sol, effort: 'low' }, sources: { model: 'derived', effort: 'derived' } });
+  });
+
+  it('preserves the baseline cross-house tier and passes medium to the actual Codex fallback CLI', async () => {
+    const input = reviewInput(backend('claude', true));
+    const result = await runReviewerTurnWithQuotaFallback({ ...input, backendResolver: getOrchestratorBackend });
+    expect(result.ok).toBe(true);
+    expect(result.fallback).toMatchObject({ toBackend: 'codex', modelTier: 'reviewMechanical',
+      toModel: MODEL_IDS.raw.openAiGpt56Terra });
+    const args = readFileSync(join(root, 'args.txt'), 'utf8').split('\n');
+    expect(args).toContain(`model=${result.fallback?.toModel}`);
+    expect(args).toContain('model_reasoning_effort=medium');
+    expect(receipt(input.laneId)).toMatchObject({ effective: { backend: 'codex', model: result.fallback?.toModel, effort: 'medium' },
+      sources: { model: 'derived' }, status: 'fallback' });
+  });
+
+  it('refuses a resolver that supplies a mismatched fallback backend', async () => {
+    const input = reviewInput(backend('codex', true));
+    const wrongTarget = backend('codex');
+    expect((await runReviewerTurnWithQuotaFallback({ ...input, backendResolver: () => wrongTarget })).ok).toBe(false);
+    expect(wrongTarget.ensureSession).not.toHaveBeenCalled();
+    expect(wrongTarget.sendTurn).not.toHaveBeenCalled();
+    expect(receipt(input.laneId)).toMatchObject({ status: 'refused', effective: null });
   });
 });
