@@ -203,7 +203,7 @@ export function CapabilitiesSubView({ palette }: { palette: MobilePalette }) {
           <input
             type="range"
             min={1}
-            max={16}
+            max={Math.max(16, defaults.parallelCap)}
             step={1}
             value={defaults.parallelCap}
             onChange={(event) => {
