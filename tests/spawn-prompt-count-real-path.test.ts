@@ -11,7 +11,17 @@ const dataDir = mkdtempSync(join(cacheRoot, 'o8-spawn-count-'));
 process.env.CORTEX_IDE_DATA_DIR = dataDir;
 process.env.O8_DATA_DIR = dataDir;
 
-const mocks = vi.hoisted(() => ({ preflight: vi.fn(), dispatch: vi.fn() }));
+const mocks = vi.hoisted(() => ({ preflight: vi.fn(), dispatch: vi.fn(), availableHeap: null as number | null }));
+vi.mock('node:v8', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:v8')>();
+  return {
+    ...actual,
+    getHeapStatistics: () => {
+      const stats = actual.getHeapStatistics();
+      return { ...stats, total_available_size: mocks.availableHeap ?? stats.total_available_size };
+    },
+  };
+});
 vi.mock('@/lib/runtimes/shared/auth-detect', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/lib/runtimes/shared/auth-detect')>(),
   assertRuntimeDispatchable: mocks.preflight,
@@ -83,5 +93,30 @@ describe('explicit spawn counts through the public route', () => {
     expect(db.prepare('SELECT COUNT(*) AS n FROM idempotency_keys').get()).toEqual(beforeReceipts);
     expect(mocks.preflight).toHaveBeenCalledTimes(beforePreflight);
     expect(mocks.dispatch).toHaveBeenCalledTimes(beforeDispatch);
+  });
+
+  it.each([['task', 100], ['constraints', 150]] as const)('rejects repeated %s text exceeding serialization capacity even with ample heap', async (field, count) => {
+    const { getSqlite } = await import('@/lib/db');
+    const db = getSqlite();
+    const beforeMissions = db.prepare('SELECT COUNT(*) AS n FROM missions').get();
+    const beforeReceipts = db.prepare('SELECT COUNT(*) AS n FROM idempotency_keys').get();
+    const beforePreflight = mocks.preflight.mock.calls.length;
+    const beforeDispatch = mocks.dispatch.mock.calls.length;
+    // Keep the repro bounded even on the broken guard: stop at preflight,
+    // before it can allocate/persist a 600-million-character mission string.
+    mocks.availableHeap = 64 * 1024 ** 3;
+    mocks.preflight.mockImplementation(async () => { throw new Error('fixture stopped before giant allocation'); });
+    try {
+      const response = await spawn({ [field]: 'x'.repeat(2_000_000), count });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ ok: false, error: { code: 'resource_limit' } });
+      expect(db.prepare('SELECT COUNT(*) AS n FROM missions').get()).toEqual(beforeMissions);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM idempotency_keys').get()).toEqual(beforeReceipts);
+      expect(mocks.preflight).toHaveBeenCalledTimes(beforePreflight);
+      expect(mocks.dispatch).toHaveBeenCalledTimes(beforeDispatch);
+    } finally {
+      mocks.availableHeap = null;
+      mocks.preflight.mockReset();
+    }
   });
 });

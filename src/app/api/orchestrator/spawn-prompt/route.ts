@@ -85,7 +85,7 @@ export async function POST(request: NextRequest) {
     return operatorError('invalid_request', (error as Error).message, 400);
   }
   try {
-    assertSpawnBatchMaterializable(task, count, typeof record.constraints === 'string' ? record.constraints : '');
+    assertSpawnBatchMaterializable(task, count, typeof record.constraints === 'string' ? record.constraints : '', repoPath);
   } catch (error) {
     return operatorError('resource_limit', (error as Error).message, 400);
   }
