@@ -4,11 +4,12 @@ import { getDataDir } from '@/lib/data-dir-migration';
 export interface SavedImageTarget { thread_id: string; message_id: string; image_id: string }
 
 /** Fixed own-document read. Inputs are data, never selectors or executable code. */
-export function savedImageReadScript(target?: SavedImageTarget): string {
-  const mediaRoot = join(process.env.CORTEX_IDE_MEDIA_ROOT || join(getDataDir(), 'media'), 'orchestrator-images');
+export function savedImageReadScript(target?: SavedImageTarget, pathJoin: typeof join = join): string {
+  const mediaRoot = pathJoin(process.env.CORTEX_IDE_MEDIA_ROOT || join(getDataDir(), 'media'), 'orchestrator-images');
+  const expectedPath = target ? pathJoin(mediaRoot, target.image_id) : null;
   return `(() => {
     const target = ${JSON.stringify(target ?? null)};
-    const root = ${JSON.stringify(mediaRoot)};
+    const expectedPath = ${JSON.stringify(expectedPath)};
     const fail = code => JSON.stringify({status:'error',code});
     if (!['localhost','127.0.0.1','[::1]','tauri.localhost'].includes(location.hostname) || !['http:','https:','tauri:'].includes(location.protocol)) return fail('unsupported_document');
     if (!window.__o8ObservedDocumentId__) Object.defineProperty(window,'__o8ObservedDocumentId__',{value:crypto.randomUUID()});
@@ -24,7 +25,7 @@ export function savedImageReadScript(target?: SavedImageTarget): string {
     const images = [...messages[0].querySelectorAll('[data-o8-saved-image]')].filter(el => el.getAttribute('data-o8-saved-image') === target.image_id);
     if (images.length !== 1) return error(images.length ? 'ambiguous_image' : 'missing_image');
     const media = images[0];
-    if (media.getAttribute('data-o8-media-path') !== root + '/' + target.image_id) return error('foreign_image');
+    if (media.getAttribute('data-o8-media-path') !== expectedPath) return error('foreign_image');
     const imgs = [...media.querySelectorAll('img')];
     if (imgs.length > 1) return error('ambiguous_image');
     const img = imgs[0];

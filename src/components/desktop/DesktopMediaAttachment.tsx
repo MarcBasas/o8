@@ -69,7 +69,7 @@ export function DesktopMediaImage({
   const { source, retry, fail } = useMediaSource(path);
   const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
   const loaded = source.status === 'ready' && source.url === loadedUrl;
-  const savedImageId = /\/orchestrator-images\/([a-f0-9]{64}\.(?:png|jpg|gif|webp))$/.exec(path)?.[1];
+  const savedImageId = /[\\/]orchestrator-images[\\/]([a-f0-9]{64}\.(?:png|jpg|gif|webp))$/.exec(path)?.[1];
 
   return (
     <div data-o8-saved-image={savedImageId} data-o8-media-path={savedImageId ? path : undefined}

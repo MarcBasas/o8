@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
-import { join } from 'node:path';
+import { basename, join, win32 } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runInNewContext } from 'node:vm';
 import { act, createElement } from 'react';
@@ -9,6 +9,14 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
+const pathFixture = vi.hoisted(() => ({ windows: false }));
+// Substitute only the read builder's platform join; fixture infrastructure and
+// persistence keep the host's real node:path and filesystem semantics.
+vi.mock('@/lib/mcp/o8-saved-image-read', async importOriginal => {
+  const original = await importOriginal<typeof import('@/lib/mcp/o8-saved-image-read')>();
+  const { win32 } = await import('node:path');
+  return { ...original, savedImageReadScript: (target?: Parameters<typeof original.savedImageReadScript>[0]) => original.savedImageReadScript(target, pathFixture.windows ? win32.join : undefined) };
+});
 vi.mock('@/lib/pretext', () => ({ usePretextHeight: () => undefined }));
 vi.mock('@clerk/nextjs/server', () => ({ clerkMiddleware: (handler: unknown) => handler }));
 const directory = mkdtempSync(join(tmpdir(), 'o8-saved-image-'));
@@ -31,7 +39,7 @@ const { ChatMessageList } = await import('@/components/desktop/thoughts/chat-pan
 const { GET: mediaGet } = await import('@/app/api/mobile/media/route');
 const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
 const [media] = persistComposerImages([{ dataUri: `data:image/png;base64,${image}`, name: 'fixture.png' }]);
-const imageId = media.path.split('/').at(-1)!;
+const imageId = basename(media.path);
 const args = { thread_id: 'fixture-thread', message_id: 'fixture-message', image_id: imageId };
 const sockets = new Set<Socket>();
 let frame: HTMLIFrameElement;
@@ -196,6 +204,46 @@ describe('registered saved image/reload HTTP -> authenticated socket -> persiste
     } finally { vi.useRealTimers(); holdReload = false; reloadReached = undefined; }
     expect(await rpc('o8_view_hard_reload', { operation: 'observe', document_id: observation.document_id })).toMatchObject({ document_changed: false });
     expect(reloads).toBe(before + 1);
+  });
+
+  it('reads Windows-shaped persisted uploads through the real entry with exact own-root/URL guards', async () => {
+    const previousRoot = process.env.CORTEX_IDE_MEDIA_ROOT;
+    const stored = readPersistedLlmChat(args.thread_id)!.history;
+    const windowsRoot = String.raw`C:\fixture\media`;
+    const windowsPath = win32.join(windowsRoot, 'orchestrator-images', imageId);
+    try {
+      pathFixture.windows = true; vi.stubEnv('CORTEX_IDE_MEDIA_ROOT', windowsRoot);
+      writePersistedLlmChat(args.thread_id, { ...stored, messages: stored.messages.map(message => message.id === args.message_id ? { ...message, media: [{ ...media, path: windowsPath }] } : message) }, { replace: true });
+      // Linux cannot open Windows drive paths. Translate only this exact fixture
+      // upload at the filesystem boundary; the normal authenticated media route,
+      // React renderer, builder, client and registered HTTP handler still run.
+      vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), 'http://localhost');
+        if (url.searchParams.get('path') === windowsPath) url.searchParams.set('path', media.path);
+        return mediaGet(new NextRequest(url));
+      });
+      act(() => root.unmount()); frame.remove(); await mount(); decoded();
+      const result = await rpc('o8_view_saved_image', args);
+      expect(result.code).toBeUndefined();
+      expect(result).toMatchObject({ status: 'ready', decoded: true, image_id: imageId, natural_width: 1 });
+      const target = frame.contentDocument!.querySelector('[data-o8-message-id="fixture-message"] [data-o8-saved-image]')!;
+      expect(target.getAttribute('data-o8-media-path')).toBe(windowsPath);
+      for (const foreign of [win32.join('D:\\foreign', 'orchestrator-images', imageId), windowsPath.replace('C:', 'c:'), `${windowsRoot}/orchestrator-images/${imageId}`, `https://example.test/orchestrator-images/${imageId}`]) {
+        target.setAttribute('data-o8-media-path', foreign);
+        expect(await rpc('o8_view_saved_image', args)).toMatchObject({ code: 'foreign_image' });
+      }
+      target.setAttribute('data-o8-media-path', windowsPath);
+      const img = target.querySelector('img')!; img.setAttribute('src', 'https://example.test/image.png');
+      expect(await rpc('o8_view_saved_image', args)).toMatchObject({ code: 'foreign_image' });
+      expect(await rpc('o8_view_saved_image', { ...args, message_id: 'fixture-foreign' })).toMatchObject({ code: 'foreign_image' });
+      for (const bearer of ['', worker]) expect(await rpc('o8_view_saved_image', args, bearer)).toHaveProperty('denied');
+    } finally {
+      pathFixture.windows = false;
+      if (previousRoot === undefined) delete process.env.CORTEX_IDE_MEDIA_ROOT; else process.env.CORTEX_IDE_MEDIA_ROOT = previousRoot;
+      writePersistedLlmChat(args.thread_id, stored, { replace: true });
+      vi.stubGlobal('fetch', async (url: RequestInfo | URL) => mediaGet(new NextRequest(`http://localhost${url}`)));
+      act(() => root.unmount()); frame.remove(); await mount();
+    }
   });
 
 });
