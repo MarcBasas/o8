@@ -16,12 +16,34 @@
       ]
     },
     {
+      "path": "src/app/api/customize/actions/github-source.test.ts",
+      "reasons": [
+        "child-process",
+        "network-listener"
+      ]
+    },
+    {
       "path": "src/app/api/customize/actions/route.test.ts",
       "reasons": [
         "child-process",
         "executable-fixture",
         "git-cli",
         "network-listener"
+      ]
+    },
+    {
+      "path": "src/app/api/customize/actions/state.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "process-signal"
+      ]
+    },
+    {
+      "path": "src/app/api/customize/actions/terminals.test.ts",
+      "reasons": [
+        "child-process",
+        "terminal-tool"
       ]
     },
     {
@@ -1407,6 +1429,12 @@
       ]
     },
     {
+      "path": "tests/build-heap.test.ts",
+      "reasons": [
+        "child-process"
+      ]
+    },
+    {
       "path": "tests/bust-stale-patch-cache.test.ts",
       "reasons": [
         "child-process"
@@ -2757,7 +2785,9 @@
     {
       "path": "tests/packaged-server-smoke-real-path.test.ts",
       "reasons": [
+        "child-process",
         "network-listener",
+        "process-signal",
         "real-path"
       ]
     },
@@ -2848,6 +2878,16 @@
     {
       "path": "tests/persistent-terminals.test.ts",
       "reasons": [
+        "terminal-tool"
+      ]
+    },
+    {
+      "path": "tests/plugin-terminal-recovery.test.ts",
+      "reasons": [
+        "child-process",
+        "network-listener",
+        "process-signal",
+        "terminal-host",
         "terminal-tool"
       ]
     },
@@ -3046,6 +3086,26 @@
       ]
     },
     {
+      "path": "tests/remote-release-app.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli",
+        "native-build"
+      ]
+    },
+    {
+      "path": "tests/remote-review-preview-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli",
+        "network-listener",
+        "process-signal",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/remote-task-dispatch-real-path.test.ts",
       "reasons": [
         "child-process",
@@ -3059,6 +3119,17 @@
       "reasons": [
         "child-process",
         "git-cli",
+        "real-path"
+      ]
+    },
+    {
+      "path": "tests/remote-task-preview-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli",
+        "network-listener",
+        "process-signal",
         "real-path"
       ]
     },
