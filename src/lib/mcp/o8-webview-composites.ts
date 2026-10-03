@@ -15,9 +15,9 @@ type McpTool = {
 type ToolHandler = (args: Record<string, unknown>) => Promise<McpToolResult>;
 
 type CompositeStep =
+  | 'require_fresh_session'
   | 'navigate_dashboard'
   | 'select_repo'
-  | 'reveal_session_menu'
   | 'open_new_tab_menu'
   | 'pick_orchestrator'
   | 'wait_for_composer'
@@ -91,46 +91,6 @@ async function evalJson(client: O8WebviewClient, code: string): Promise<Record<s
 
 function isOk(value: Record<string, unknown>): boolean {
   return value.ok === true;
-}
-
-async function waitForState(
-  client: O8WebviewClient,
-  predicate: (state: Record<string, unknown>) => boolean,
-  timeoutMs: number,
-): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + timeoutMs;
-  let latest: Record<string, unknown> = {};
-  while (Date.now() <= deadline) {
-    latest = await evalJson(client, SURFACE_STATE_SCRIPT);
-    if (isOk(latest) && predicate(latest)) {
-      return latest;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  }
-  return latest;
-}
-
-async function runActionThenVerify(
-  client: O8WebviewClient,
-  step: CompositeStep,
-  action: () => Promise<unknown>,
-  verify: (state: Record<string, unknown>) => boolean,
-): Promise<Record<string, unknown> | McpToolResult> {
-  try {
-    await action();
-  } catch (error) {
-    const state = await waitForState(client, verify, 1_500);
-    if (verify(state)) {
-      return { ok: true, warning: error instanceof Error ? error.message : String(error), state };
-    }
-    return toolError(step, error, state);
-  }
-
-  const state = await waitForState(client, verify, 5_000);
-  if (!verify(state)) {
-    return toolError(step, 'verification did not pass before timeout', state);
-  }
-  return state;
 }
 
 function visibleDomHelpers(): string {
@@ -220,75 +180,6 @@ function buildSurfaceStateScript({ focusComposer }: { focusComposer: boolean }):
 }
 
 export const SURFACE_STATE_SCRIPT = buildSurfaceStateScript({ focusComposer: false });
-// Fixed current-shell controls only. The compact rail reveals the sidebar;
-// the sidebar New session disclosure owns the inline Orchestrator option.
-// Add pane creates a split chat and is deliberately not a spawn fallback.
-function sessionEntryScript(expected: Record<string, unknown>, stage: 'inspect' | 'rail' | 'menu' | 'menu-status' | 'option' | 'observe' | 'focus'): string {
-  return buildJsonEval(`
-    ${visibleDomHelpers()}
-    const expected = ${JSON.stringify(expected)};
-    const visibleTree = (el) => {
-      if (!isVisible(el) || !el.isConnected) return false;
-      for (let node = el; node instanceof HTMLElement; node = node.parentElement) {
-        const style = window.getComputedStyle(node);
-        if (style.display === 'none' || style.visibility === 'hidden') return false;
-      }
-      return true;
-    };
-    const roots = Array.from(document.querySelectorAll('[data-o8-workspace-root][data-o8-workspace-active="true"]')).filter(visibleTree);
-    const root = roots.length === 1 ? roots[0] : null;
-    if (!root || root.getAttribute('data-o8-workspace-id') !== expected.activeWorkspaceId
-      || root.getAttribute('data-o8-active-repo') !== expected.activeWorkspaceRepo) {
-      return JSON.stringify({ ok: false, error: 'active workspace/project changed or ambiguous' });
-    }
-    if (Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]')).some(visibleTree)) {
-      return JSON.stringify({ ok: false, error: 'close the active dialog before creating a session' });
-    }
-    const stage = ${JSON.stringify(stage)};
-    if (stage === 'observe' || stage === 'focus') {
-      const tabId = root.getAttribute('data-o8-active-tab-id');
-      const composers = Array.from(root.querySelectorAll('[data-o8-active-composer="true"]')).filter(visibleTree);
-      const composer = composers.length === 1 ? composers[0] : null;
-      if (!tabId || tabId === expected.activeTabId || (stage === 'focus' && tabId !== expected.observedTabId) || root.getAttribute('data-o8-active-tab-kind') !== 'orchestrator'
-        || !composer || composer.disabled || composer.readOnly) {
-        return JSON.stringify({ ok: false, error: 'distinct orchestrator tab and enabled active composer not observed' });
-      }
-      if (stage === 'focus') composer.focus({ preventScroll: true });
-      return JSON.stringify({ ok: stage === 'observe' || document.activeElement === composer, tabId, state: {
-        activeWorkspaceId: expected.activeWorkspaceId, activeWorkspaceRepo: expected.activeWorkspaceRepo,
-        activeTabId: tabId, activeTabKind: 'orchestrator', composerFocused: document.activeElement === composer,
-      } });
-    }
-    if (root.getAttribute('data-o8-active-tab-id') !== expected.activeTabId) {
-      return JSON.stringify({ ok: false, error: 'active tab changed before spawn' });
-    }
-    const buttons = Array.from(document.querySelectorAll('button')).filter(visibleTree);
-    const enabled = (el) => !el.disabled && el.getAttribute('aria-disabled') !== 'true';
-    const triggers = buttons.filter((el) => lower(labelFor(el)) === 'new session' && el.getAttribute('aria-haspopup') === 'menu');
-    const rails = buttons.filter((el) => lower(labelFor(el)) === 'new session' && !el.hasAttribute('aria-haspopup'));
-    if (triggers.length > 1 || (!triggers.length && rails.length > 1)) {
-      return JSON.stringify({ ok: false, error: 'New session target is ambiguous' });
-    }
-    const trigger = triggers.length === 1 ? triggers[0] : null;
-    if (stage === 'inspect') return JSON.stringify({ ok: true, menuReady: !!trigger && enabled(trigger), railReady: rails.length === 1 && enabled(rails[0]) });
-    const target = stage === 'rail' ? (rails.length === 1 && !trigger ? rails[0] : null) : trigger;
-    if (!target || !enabled(target)) return JSON.stringify({ ok: false, error: 'enabled New session target not found' });
-    if (stage === 'option' || stage === 'menu-status') {
-      if (trigger.getAttribute('aria-expanded') !== 'true') return JSON.stringify({ ok: false, error: 'New session menu is not expanded' });
-      // MiniSessionMenu is the disclosure's immediate sibling. Restrict the
-      // search to that owner, never a similarly named option elsewhere.
-      const menu = trigger.nextElementSibling;
-      const options = menu ? Array.from(menu.querySelectorAll('button')).filter(visibleTree).filter((el) =>
-        lower(labelFor(el)) === 'orchestrator' || Array.from(el.querySelectorAll('span')).some((span) => lower(span.textContent) === 'orchestrator')) : [];
-      if (options.length !== 1 || !enabled(options[0])) return JSON.stringify({ ok: false, error: 'enabled Orchestrator option missing or ambiguous' });
-      if (stage === 'option') clickElement(options[0]);
-    } else if (stage === 'rail' || trigger.getAttribute('aria-expanded') !== 'true') {
-      clickElement(target);
-    }
-    return JSON.stringify({ ok: true });
-  `);
-}
-
 export function buildPickMenuTriggerScript(menuLabel: string): string {
   return buildJsonEval(`
     ${visibleDomHelpers()}
@@ -346,42 +237,6 @@ function buildMenuOptionClosedScript(optionLabel: string): string {
     const popovers = Array.from(document.querySelectorAll('[role="menu"], [role="listbox"], [data-radix-popper-content-wrapper], [data-composer-overlay]')).filter(isVisible);
     return JSON.stringify({ ok: true, closed: !option && popovers.length === 0, optionVisible: !!option, popoverCount: popovers.length });
   `);
-}
-
-function buildSelectRepoScript(repo: string): string {
-  return buildJsonEval(`
-    ${visibleDomHelpers()}
-    const needle = ${JSON.stringify(repo.toLowerCase())};
-    const candidates = Array.from(document.querySelectorAll('button, [role="button"], a[href]')).filter(isVisible);
-    const exact = candidates.filter((el) => lower(labelFor(el)) === needle);
-    const matches = exact.length ? exact : candidates.filter((el) => lower(labelFor(el)).includes(needle));
-    if (matches.length !== 1 || matches[0].disabled) return JSON.stringify({ ok: false, error: 'enabled repo target missing or ambiguous', repo: ${JSON.stringify(repo)} });
-    const target = matches[0];
-    clickElement(target);
-    return JSON.stringify({ ok: true, repo: labelFor(target) });
-  `);
-}
-
-async function ensureDashboard(client: O8WebviewClient): Promise<Record<string, unknown> | McpToolResult> {
-  return runActionThenVerify(
-    client,
-    'navigate_dashboard',
-    () => client.navigate('/dashboard'),
-    (state) => typeof state.route === 'string' && state.route.startsWith('/dashboard'),
-  );
-}
-
-async function clickAndRequireOk(client: O8WebviewClient, step: CompositeStep, code: string): Promise<Record<string, unknown> | McpToolResult> {
-  try {
-    const result = await evalJson(client, code);
-    if (!isOk(result)) {
-      return toolError(step, typeof result.error === 'string' ? result.error : 'action returned ok:false', result);
-    }
-    return result;
-  } catch (error) {
-    const state = await evalJson(client, SURFACE_STATE_SCRIPT).catch(() => undefined);
-    return toolError(step, error, state);
-  }
 }
 
 async function evalActionThenVerify(
@@ -456,11 +311,11 @@ async function waitForEval(
 export const O8_WEBVIEW_COMPOSITE_TOOLS: McpTool[] = [
   {
     name: 'o8_view_new_orchestrator_session',
-    description: 'USE THIS WHEN you need a fresh o8 orchestrator tab ready for input. Reveals the sidebar when needed, opens its New session menu, picks Orchestrator, verifies a distinct tab in the active project, and focuses its composer. Returns structured state instead of relying on screenshots. After an uncertain result, observe state before any further action; do not replay the spawn.',
+    description: 'Requests a genuinely fresh o8 orchestrator tab. Currently refuses with fresh_session_unavailable before any action: the ordinary New session menu may reuse an existing pristine tab and does not guarantee creation. Existing tabs and composer focus remain unchanged.',
     inputSchema: {
       type: 'object',
       properties: {
-        repo: { type: 'string', description: 'Optional repo/workspace label to select before opening the orchestrator tab. Omit or pass an empty string to use the current workspace.' },
+        repo: { type: 'string', description: 'Optional requested workspace label. Currently refuses before workspace selection because a genuinely fresh action is unavailable.' },
       },
       required: [],
       additionalProperties: false,
@@ -493,54 +348,16 @@ export const O8_WEBVIEW_COMPOSITE_TOOLS: McpTool[] = [
 
 export function createO8WebviewCompositeHandlers(getClient: () => O8WebviewClient): Record<string, ToolHandler> {
   return {
-    o8_view_new_orchestrator_session: async (args) => {
-      try {
-        const client = getClient();
-        const repo = optionalString(args, 'repo');
-
-        const dashboard = await ensureDashboard(client);
-        if (isMcpToolResult(dashboard)) return dashboard;
-
-        if (repo) {
-          const selected = await clickAndRequireOk(client, 'select_repo', buildSelectRepoScript(repo));
-          if (isMcpToolResult(selected)) return selected;
-        }
-
-        const expected = await evalJson(client, SURFACE_STATE_SCRIPT);
-        if (!isOk(expected) || typeof expected.activeWorkspaceId !== 'string'
-          || typeof expected.activeWorkspaceRepo !== 'string' || typeof expected.activeTabId !== 'string') {
-          return toolError('read_surface_state', 'one active project and tab are required', expected);
-        }
-        const entry = await evalJson(client, sessionEntryScript(expected, 'inspect'));
-        if (!isOk(entry)) return toolError('open_new_tab_menu', entry.error, entry);
-        if (entry.menuReady !== true) {
-          if (entry.railReady !== true) return toolError('reveal_session_menu', 'enabled New session control not found', entry);
-          const revealed = await evalActionThenWaitFor(
-            client, 'reveal_session_menu', 'reveal_session_menu',
-            sessionEntryScript(expected, 'rail'), sessionEntryScript(expected, 'inspect'),
-            (value) => value.ok === true && value.menuReady === true, 5_000,
-          );
-          if (isMcpToolResult(revealed)) return revealed;
-        }
-        // Each mutation is attempted once. A lost response is reconciled only by
-        // observation; it never selects a second spawn control or repeats a click.
-        const opened = await evalActionThenWaitFor(
-          client, 'open_new_tab_menu', 'wait_for_popover',
-          sessionEntryScript(expected, 'menu'), sessionEntryScript(expected, 'menu-status'),
-          (value) => value.ok === true, 5_000,
-        );
-        if (isMcpToolResult(opened)) return opened;
-        const option = await evalActionThenVerify(
-          client, 'pick_orchestrator', sessionEntryScript(expected, 'option'),
-          sessionEntryScript(expected, 'observe'), (value) => value.ok === true, 7_500,
-        );
-        if (isMcpToolResult(option)) return option;
-        const focused = await clickAndRequireOk(client, 'wait_for_composer', sessionEntryScript({ ...expected, observedTabId: option.tabId }, 'focus'));
-        return isMcpToolResult(focused) ? focused : jsonResult(focused);
-      } catch (error) {
-        return toolError('read_surface_state', error, { mutationOutcome: 'unknown', automaticReplay: false });
-      }
-    },
+    // Ordinary New session intentionally reuses pristine tabs. Until the UI
+    // exposes a genuinely fresh action, refuse before navigation, disclosure,
+    // transport access or spawn rather than infer creation from a changed ID.
+    o8_view_new_orchestrator_session: async () => jsonResult({
+      ok: false,
+      step: 'require_fresh_session',
+      code: 'fresh_session_unavailable',
+      actionDispatched: false,
+      error: 'The current New session action may reuse an existing pristine tab and cannot guarantee fresh creation. No action was dispatched.',
+    }, true),
 
     o8_view_pick_menu_option: async (args) => {
       let menuLabel: string;

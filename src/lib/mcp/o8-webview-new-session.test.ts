@@ -1,197 +1,158 @@
 // jsdom is a transitive test dependency without bundled declarations.
 // @ts-expect-error test-only module has no bundled types
 import { JSDOM } from 'jsdom';
+import { act, createElement, type RefObject } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useWorkspaceTerminalController } from '@/components/desktop/workspace-terminal/useWorkspaceTerminalController';
+import type { TerminalTabHandle, WorkspaceTerminalProps } from '@/components/desktop/workspace-terminal/types';
+import type { PersistedTabState } from '@/lib/terminal/tab-state';
 import { createO8WebviewToolHandlers } from './o8-webview-tools';
 import type { O8WebviewClient } from './o8-webview-client';
 
-// The transport evaluates the production fixed scripts against the current
-// shell's DOM: rail disclosure, inline sidebar menu and render-derived tab IDs.
-// Only geometry and the tab controller's spawn commit are fixture boundaries.
+// Real restore -> controller -> imperative handle, the same openOrchestratorTab
+// path the sidebar callback uses. Only HTTP storage/liveness and geometry are
+// fixtures. No spawn/reuse helper, controller or imperative handle is mocked.
+vi.mock('@/lib/operator/use-experimental-chat', () => ({ useExperimentalChatFlag: () => false }));
+vi.mock('@/lib/operator/use-experimental-canvas', () => ({ useExperimentalCanvasFlag: () => false }));
+
+const repo = { name: 'fixture', localPath: '/repos/fixture' };
 let dom: JSDOM;
-let clicks: string[];
-let spawned: number;
-let root: HTMLElement;
-let refuseSpawn: boolean;
-let dropAt: string | null;
-let changeProject: boolean;
-let duplicateOptions: boolean;
-let delayedMenu: boolean;
-let disabledComposer: boolean;
-let dropObservations: boolean;
-let changeTabBeforeFocus: boolean;
-function button(label: string, menu = false): HTMLButtonElement {
-  const el = document.createElement('button');
-  el.textContent = label;
-  if (menu) el.setAttribute('aria-haspopup', 'menu');
-  return el;
-}
-function sidebar() {
-  const group = document.createElement('div');
-  const trigger = button('New session', true);
-  trigger.setAttribute('aria-expanded', 'false');
-  trigger.onclick = () => {
-    clicks.push('menu');
-    trigger.setAttribute('aria-expanded', 'true');
-    const menu = document.createElement('div');
-    const option = button('');
-    option.innerHTML = '<span><span>Orchestrator</span><span>Fleet by default</span></span>';
-    option.onclick = () => {
-      clicks.push('spawn');
-      menu.remove();
-      trigger.setAttribute('aria-expanded', 'false');
-      if (refuseSpawn) return;
-      spawned += 1;
-      root.setAttribute('data-o8-active-tab-id', 'fresh-tab');
-      root.setAttribute('data-o8-active-tab-kind', 'orchestrator');
-      if (changeProject) root.setAttribute('data-o8-active-repo', '/repos/other');
-      const composer = document.createElement('textarea');
-      composer.setAttribute('data-o8-active-composer', 'true');
-      composer.disabled = disabledComposer;
-      root.append(composer);
-    };
-    menu.append(option, button('Terminal Plain shell'));
-    if (duplicateOptions) menu.append(option.cloneNode(true));
-    if (delayedMenu) setTimeout(() => group.append(menu), 20);
-    else group.append(menu);
+let reactRoot: Root;
+let host: HTMLDivElement;
+let handle: RefObject<TerminalTabHandle | null>;
+let saved: PersistedTabState;
+const onMenu = vi.fn();
+const onSpawn = vi.fn(() => handle.current?.openOrchestratorTab(repo));
+let clientCalls: number;
+let scope = 0;
+
+function Workspace() {
+  const props: WorkspaceTerminalProps = {
+    stateScope: `freshness-fixture-${scope}`,
+    preferredRepo: repo,
+    selectedRepo: repo,
+    splitCreated: true,
+    defaultTab: 'llm-chat',
+    autoCreateDefaultTab: false,
+    termWsConnected: false,
+    sendTerminalCreate: vi.fn(), sendTerminalAttach: vi.fn(), sendTerminalDetach: vi.fn(),
+    sendTerminalInput: vi.fn(), sendTerminalResize: vi.fn(), sendTerminalVisibility: vi.fn(),
   };
-  group.append(trigger);
-  document.body.append(group);
+  const controller = useWorkspaceTerminalController(props, handle);
+  return createElement('section', {
+    'data-o8-workspace-root': '1',
+    'data-o8-workspace-active': 'true',
+    'data-o8-workspace-id': 'workspace',
+    'data-o8-active-repo': repo.localPath,
+    'data-o8-active-tab-id': controller.effectiveActiveTabId,
+    'data-o8-active-tab-kind': 'orchestrator',
+    'data-tabs': JSON.stringify(controller.tabs),
+  },
+  createElement('div', null,
+    createElement('button', { 'aria-haspopup': 'menu', 'aria-expanded': 'true', onClick: onMenu }, 'New session'),
+    createElement('div', null,
+      createElement('button', { 'data-spawn': true, onClick: onSpawn },
+        createElement('span', null, createElement('span', null, 'Orchestrator'), createElement('span', null, 'Fleet by default'))))),
+  ...controller.tabs.map((tab) => createElement('article', { key: tab.id, 'data-tab-id': tab.id }, tab.label)),
+  createElement('textarea', { 'data-o8-active-composer': 'true' }));
+}
+function tabs() {
+  return JSON.parse(host.firstElementChild?.getAttribute('data-tabs') ?? '[]') as Array<{ id: string; orchestratorThreadId?: string }>;
 }
 function client() {
+  clientCalls += 1;
   return {
     navigate: async () => ({ ok: true }),
     evalJs: async (code: string) => {
-      if (dropObservations && clicks.at(-1) === 'spawn') throw new Error('observation transport unavailable');
-      if (changeTabBeforeFocus && code.includes('const stage = "focus"')) root.setAttribute('data-o8-active-tab-id', 'another-tab');
-      const count = clicks.length;
-      const result = dom.window.eval(code) as string;
-      if (clicks.length > count && clicks.at(-1) === dropAt) throw new Error('transport disconnected after dispatch');
+      let result = '';
+      await act(async () => { result = dom.window.eval(code) as string; });
       return { result };
     },
   } as unknown as O8WebviewClient;
 }
-async function run() {
-  const promise = createO8WebviewToolHandlers(client).o8_view_new_orchestrator_session({});
-  await vi.runAllTimersAsync();
+async function run(args: Record<string, unknown> = {}) {
+  const promise = createO8WebviewToolHandlers(client).o8_view_new_orchestrator_session(args);
   const content = (await promise).content[0];
-  if (content.type !== 'text') throw new Error('expected a structured text receipt');
+  if (content.type !== 'text') throw new Error('expected structured text receipt');
   return JSON.parse(content.text);
 }
+async function mount(activeTabId: string, withBlank = true) {
+  scope += 1;
+  saved = {
+    version: 1, activeTabId, savedAt: new Date(0).toISOString(),
+    tabs: [
+      { id: 'used-tab', label: 'Prior conversation', kind: 'orchestrator', cliAgent: 'shell', repoName: repo.name, repoPath: repo.localPath, orchestratorThreadId: 'thoughts-used' },
+      ...(withBlank ? [{ id: 'blank-tab', label: 'Orchestrator', kind: 'orchestrator' as const, cliAgent: 'shell', repoName: repo.name, repoPath: repo.localPath, freshSpawn: true }] : []),
+      { id: 'terminal-tab', label: 'Prior terminal', kind: 'terminal', cliAgent: 'shell', repoName: repo.name, repoPath: repo.localPath },
+    ],
+  };
+  await act(async () => reactRoot.render(createElement(Workspace)));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+  expect(tabs().map((tab) => tab.id)).toEqual(saved.tabs.map((tab) => tab.id));
+  expect(host.firstElementChild?.getAttribute('data-o8-active-tab-id')).toBe(activeTabId);
+}
 beforeEach(() => {
-  vi.useFakeTimers();
   dom = new JSDOM('', { url: 'http://localhost/dashboard', runScripts: 'outside-only' });
-  vi.stubGlobal('window', dom.window);
-  vi.stubGlobal('document', dom.window.document);
-  vi.stubGlobal('HTMLElement', dom.window.HTMLElement);
-  clicks = []; spawned = 0; refuseSpawn = false; dropAt = null; changeProject = false; duplicateOptions = false; delayedMenu = false; disabledComposer = false; dropObservations = false; changeTabBeforeFocus = false;
-  window.history.replaceState(null, '', '/dashboard');
+  for (const name of ['window', 'document', 'HTMLElement', 'Node', 'CustomEvent', 'localStorage'] as const) {
+    vi.stubGlobal(name, name === 'window' ? dom.window : dom.window[name]);
+  }
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).startsWith('/api/panel/terminal-state')) {
+      if (init?.method === 'POST') saved = JSON.parse(String(init.body)) as PersistedTabState;
+      return new Response(JSON.stringify(saved), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }));
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 100, height: 30, top: 0, left: 0, right: 100, bottom: 30 } as DOMRect);
   HTMLElement.prototype.scrollIntoView = vi.fn();
-  root = document.createElement('div');
-  root.setAttribute('data-o8-workspace-root', '1');
-  root.setAttribute('data-o8-workspace-active', 'true');
-  root.setAttribute('data-o8-workspace-id', 'workspace');
-  root.setAttribute('data-o8-active-repo', '/repos/fixture');
-  root.setAttribute('data-o8-active-tab-id', 'used-tab');
-  root.setAttribute('data-o8-active-tab-kind', 'orchestrator');
-  root.innerHTML = '<article id="used-chat">prior chat</article><div id="terminal">prior terminal</div>';
-  document.body.append(root);
+  host = document.createElement('div'); document.body.append(host);
+  reactRoot = createRoot(host);
+  handle = { current: null };
+  onMenu.mockClear(); onSpawn.mockClear(); clientCalls = 0;
 });
-afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); vi.unstubAllGlobals(); dom.window.close(); vi.useRealTimers(); });
+afterEach(async () => {
+  await act(async () => reactRoot.unmount());
+  vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); dom.window.close();
+});
 
-describe('registered new orchestrator composite in the current shell', () => {
-  it('discloses the compact rail then opens the sidebar menu exactly once', async () => {
-    const rail = button('New session');
-    rail.setAttribute('aria-label', 'New session');
-    rail.onclick = () => { clicks.push('rail'); rail.remove(); sidebar(); };
-    document.body.append(rail, button('Add pane (workspace)', true));
-    const result = await run();
-    expect(result).toMatchObject({ ok: true, tabId: 'fresh-tab', state: { activeWorkspaceRepo: '/repos/fixture', composerFocused: true } });
-    expect(clicks).toEqual(['rail', 'menu', 'spawn']);
-    expect(spawned).toBe(1);
-    expect(document.querySelector('#used-chat')?.textContent).toBe('prior chat');
-    expect(document.querySelector('#terminal')).not.toBeNull();
+describe('registered fresh-session refusal through the real tab controller', () => {
+  for (const activeTabId of ['used-tab', 'blank-tab']) {
+    it(`refuses before mutation with ${activeTabId} active and a reusable pristine tab`, async () => {
+      await mount(activeTabId);
+      const before = tabs();
+      expect(await run()).toMatchObject({ ok: false, code: 'fresh_session_unavailable', actionDispatched: false });
+      expect(clientCalls).toBe(0);
+      expect(onMenu).not.toHaveBeenCalled(); expect(onSpawn).not.toHaveBeenCalled();
+      expect(tabs()).toEqual(before);
+      expect(host.firstElementChild?.getAttribute('data-o8-active-tab-id')).toBe(activeTabId);
+      expect(document.activeElement?.tagName).not.toBe('TEXTAREA');
+      // The unchanged ordinary callback really reuses this pristine tab. The
+      // tool's refusal must not alter UI reuse merely to claim fresh creation.
+      await act(async () => host.querySelector<HTMLButtonElement>('[data-spawn]')?.click());
+      expect(host.firstElementChild?.getAttribute('data-o8-active-tab-id')).toBe('blank-tab');
+      expect(tabs()).toEqual(before);
+      expect(tabs().find((tab) => tab.id === 'used-tab')?.orchestratorThreadId).toBe('thoughts-used');
+      expect(host.querySelector('[data-tab-id="terminal-tab"]')).not.toBeNull();
+      expect(onSpawn).toHaveBeenCalledTimes(1);
+    });
+  }
+  it('does not assume creation is guaranteed just because no blank is currently rendered', async () => {
+    await mount('used-tab', false);
+    const before = tabs();
+    expect(await run({ repo: 'fixture' })).toMatchObject({ ok: false, code: 'fresh_session_unavailable', actionDispatched: false });
+    expect(clientCalls).toBe(0); expect(onSpawn).not.toHaveBeenCalled(); expect(onMenu).not.toHaveBeenCalled();
+    expect(tabs()).toEqual(before);
   });
-  it('uses the already visible sidebar without clicking a second rail', async () => {
-    sidebar(); document.body.append(button('New session'));
-    expect(await run()).toMatchObject({ ok: true, tabId: 'fresh-tab' });
-    expect(clicks).toEqual(['menu', 'spawn']);
-  });
-  it('refuses duplicate sidebar triggers before mutation', async () => {
-    sidebar(); sidebar();
-    expect(await run()).toMatchObject({ ok: false });
-    expect(clicks).toEqual([]);
-  });
-  it('refuses a missing target without using Add pane or legacy spawn fallback', async () => {
-    document.body.append(button('Add pane (workspace)', true), button('New tab', true));
-    expect(await run()).toMatchObject({ ok: false });
-    expect(clicks).toEqual([]);
-  });
-  it('does not replay or fall back after a partially dispatched rail disclosure', async () => {
-    const rail = button('New session');
-    rail.onclick = () => clicks.push('rail');
-    document.body.append(rail, button('New tab', true));
-    dropAt = 'rail';
-    expect(await run()).toMatchObject({ ok: false });
-    expect(clicks).toEqual(['rail']);
-  });
-  it('does not claim an old composer is a new tab or replay an uncertain spawn', async () => {
-    const old = document.createElement('textarea'); old.setAttribute('data-o8-active-composer', 'true'); root.append(old);
-    sidebar(); refuseSpawn = true; dropAt = 'spawn';
-    expect(await run()).toMatchObject({ ok: false });
-    expect(clicks).toEqual(['menu', 'spawn']);
-    expect(document.activeElement).not.toBe(old);
-  });
-  it('reconciles one committed spawn after its transport acknowledgement is lost', async () => {
-    sidebar(); dropAt = 'spawn';
-    expect(await run()).toMatchObject({ ok: true, tabId: 'fresh-tab' });
-    expect(spawned).toBe(1);
-    expect(clicks).toEqual(['menu', 'spawn']);
-  });
-  it('waits for the menu render and reconciles a lost disclosure acknowledgement', async () => {
-    sidebar(); delayedMenu = true; dropAt = 'menu';
-    expect(await run()).toMatchObject({ ok: true, tabId: 'fresh-tab' });
-    expect(clicks).toEqual(['menu', 'spawn']);
-  });
-  it('refuses ambiguous options within the owning inline menu', async () => {
-    sidebar(); duplicateOptions = true;
-    expect(await run()).toMatchObject({ ok: false });
-    expect(clicks).toEqual(['menu']);
-  });
-  it('refuses a disabled rail without mutation', async () => {
-    const rail = button('New session'); rail.disabled = true; document.body.append(rail);
-    expect(await run()).toMatchObject({ ok: false });
-    expect(clicks).toEqual([]);
-  });
-  it('never focuses or claims completion for a disabled new composer', async () => {
-    sidebar(); disabledComposer = true;
-    expect(await run()).toMatchObject({ ok: false });
-    expect(spawned).toBe(1);
-    expect(document.activeElement?.tagName).not.toBe('TEXTAREA');
-  });
-  it('refuses ambiguous active workspaces before disclosure', async () => {
-    document.body.append(root.cloneNode(true)); sidebar();
-    expect(await run()).toMatchObject({ ok: false });
-    expect(clicks).toEqual([]);
-  });
-  it('returns unknown without replay when post-spawn observation disconnects', async () => {
-    sidebar(); dropObservations = true;
-    expect(await run()).toMatchObject({ ok: false, state: { mutationOutcome: 'unknown', automaticReplay: false } });
-    expect(clicks).toEqual(['menu', 'spawn']);
-    expect(spawned).toBe(1);
-    expect(document.activeElement?.tagName).not.toBe('TEXTAREA');
-  });
-  it('refuses a different tab between observed completion and focus', async () => {
-    sidebar(); changeTabBeforeFocus = true;
-    expect(await run()).toMatchObject({ ok: false });
-    expect(spawned).toBe(1);
-    expect(document.activeElement?.tagName).not.toBe('TEXTAREA');
-  });
-  it('refuses a changed project and never focuses its composer', async () => {
-    sidebar(); changeProject = true;
-    expect(await run()).toMatchObject({ ok: false });
-    expect(document.activeElement?.tagName).not.toBe('TEXTAREA');
-    expect(spawned).toBe(1);
+  it('cannot replay a spawn on repeated refusal or request a disconnected client', async () => {
+    const getClient = vi.fn(() => { throw new Error('transport unavailable'); });
+    const handler = createO8WebviewToolHandlers(getClient).o8_view_new_orchestrator_session;
+    for (let count = 0; count < 2; count += 1) {
+      const result = await handler({});
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0].type === 'text' ? result.content[0].text : '{}')).toMatchObject({ code: 'fresh_session_unavailable', actionDispatched: false });
+    }
+    expect(getClient).not.toHaveBeenCalled();
   });
 });
