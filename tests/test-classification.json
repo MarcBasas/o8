@@ -1423,6 +1423,12 @@
       ]
     },
     {
+      "path": "tests/build-heap.test.ts",
+      "reasons": [
+        "child-process"
+      ]
+    },
+    {
       "path": "tests/bust-stale-patch-cache.test.ts",
       "reasons": [
         "child-process"
@@ -2773,7 +2779,9 @@
     {
       "path": "tests/packaged-server-smoke-real-path.test.ts",
       "reasons": [
+        "child-process",
         "network-listener",
+        "process-signal",
         "real-path"
       ]
     },
@@ -3069,6 +3077,15 @@
         "child-process",
         "git-cli",
         "real-path"
+      ]
+    },
+    {
+      "path": "tests/remote-release-app.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli",
+        "native-build"
       ]
     },
     {
@@ -3609,6 +3626,12 @@
     },
     {
       "path": "tests/task-pool-history-real-path.test.ts",
+      "reasons": [
+        "real-path"
+      ]
+    },
+    {
+      "path": "tests/telemetry-consent-contrast-real-path.test.ts",
       "reasons": [
         "real-path"
       ]
