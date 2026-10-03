@@ -16,8 +16,9 @@ vi.mock('./SlashCommandPicker', () => ({ SlashCommandPicker: () => null }));
 vi.mock('./ComposerStatusBar', () => ({ ComposerStatusBar: () => null }));
 vi.mock('../../composer-center-registry', () => ({ registerComposerCenter: () => () => undefined }));
 
-// Generated synthetic signature bytes stay in this test process; no file reads.
-const image = btoa(String.fromCharCode(137, 80, 78, 71, 13, 10, 26, 10, 0));
+// Genuine synthetic 1x1 RGBA PNG (IHDR/IDAT/IEND with valid CRCs), no file reads.
+const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
+const corruptImage = btoa(String.fromCharCode(137, 80, 78, 71, 13, 10, 26, 10, 0));
 let root: Root;
 let host: HTMLDivElement;
 let active = true;
@@ -26,6 +27,24 @@ let context = 'first-chat';
 let failed = false;
 let deferred = false;
 let readers: FixtureReader[];
+let decodeDeferred = false;
+let decodeFailed = false;
+let decoders: Array<{ resolve: () => void; reject: () => void }>;
+// jsdom lacks raster decoding. Simulate only the standard browser decoder
+// boundary; registered tool/client/bridge and the normal upload handler run.
+class FixtureImage {
+  src = '';
+  naturalWidth = 1;
+  naturalHeight = 1;
+  removeAttribute() { this.src = ''; }
+  decode() {
+    return new Promise<void>((resolve, reject) => {
+      const outcome = { resolve, reject: () => reject(new Error('decode failed')) };
+      decoders.push(outcome);
+      if (!decodeDeferred) queueMicrotask(() => decodeFailed || !this.src.endsWith(image) ? outcome.reject() : resolve());
+    });
+  }
+}
 const sent = vi.fn();
 class FixtureReader {
   result: string | null = null;
@@ -74,7 +93,9 @@ function render() { act(() => root.render(createElement(Harness))); }
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   active = true; disabled = false; context = 'first-chat'; failed = false; deferred = false; readers = [];
+  decodeDeferred = false; decodeFailed = false; decoders = [];
   sent.mockClear(); localStorage.clear();
+  vi.stubGlobal('Image', FixtureImage);
   vi.stubGlobal('FileReader', FixtureReader);
   vi.stubGlobal('URL', class extends URL { static createObjectURL() { return 'blob:fixture'; } static revokeObjectURL() {} });
   vi.stubEnv('O8_TAURI_MCP_SOCKET', '/fixture/never-connected.sock');
@@ -92,6 +113,7 @@ describe('registered image tool -> normal installed composer handler', () => {
     deferred = true;
     const pending = await attach();
     expect(pending.status).toBe('pending');
+    expect(decoders).toHaveLength(1);
     expect(host.querySelectorAll('img')).toHaveLength(0);
     expect((await call('o8_view_image_attachment_status', { request_id: pending.request_id })).status).toBe('pending');
     const before = readers.length;
@@ -176,4 +198,62 @@ describe('registered image tool -> normal installed composer handler', () => {
     expect((await call('o8_view_image_attachment_status', { request_id: 'missing-request' })).code).toBe('unknown_request');
     expect(host.querySelectorAll('img')).toHaveLength(0);
   });
+  it.each([
+    ['image/png', 'fixture.png', corruptImage],
+    ['image/jpeg', 'fixture.jpg', btoa(String.fromCharCode(255, 216, 255, 0))],
+    ['image/gif', 'fixture.gif', btoa('GIF89a')],
+    ['image/webp', 'fixture.webp', btoa('RIFF0000WEBP')],
+  ])('refuses corrupt %s bytes after decoding, before normal upload', async (media_type, filename, data_base64) => {
+    const pending = await attach({ media_type, filename, data_base64 });
+    expect(pending.status).toBe('pending');
+    expect(await call('o8_view_image_attachment_status', { request_id: pending.request_id })).toMatchObject({
+      request_id: pending.request_id, composer_id: pending.composer_id, status: 'error', code: 'invalid_image',
+    });
+    expect(decoders).toHaveLength(1); expect(readers).toHaveLength(0);
+    expect(host.querySelectorAll('img')).toHaveLength(0); expect(sent).not.toHaveBeenCalled();
+  });
+  it('reports browser decode failure without invoking the upload handler', async () => {
+    decodeFailed = true;
+    const pending = await attach();
+    expect((await call('o8_view_image_attachment_status', { request_id: pending.request_id })).code).toBe('invalid_image');
+    expect(readers).toHaveLength(0); expect(sent).not.toHaveBeenCalled();
+  });
+  it.each(['changed', 'expired'])('guards a %s target throughout asynchronous decoding', async (condition) => {
+    decodeDeferred = true;
+    const pending = await attach();
+    expect(readers).toHaveLength(0);
+    if (condition === 'changed') { context = 'changed-while-decoding'; render(); }
+    else vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 20_001);
+    await act(async () => decoders[0].resolve()); await frames();
+    expect((await call('o8_view_image_attachment_status', { request_id: pending.request_id })).code).toBe(condition === 'changed' ? 'target_changed' : 'upload_expired');
+    expect(readers).toHaveLength(0); expect(host.querySelectorAll('img')).toHaveLength(0);
+  });
+  it('bounds receipts and reclaims expired terminal records without disposing the active composer', async () => {
+    let now = Date.now() + 700_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const original = await call('o8_view_inspect_composer');
+    failed = true;
+    let terminal: Record<string, unknown> = {};
+    for (let count = 0; count < 64; count++) {
+      terminal = await attach();
+      expect(terminal.status).toBe('pending');
+      expect((await call('o8_view_image_attachment_status', { request_id: terminal.request_id })).code).toBe('upload_failed');
+    }
+    expect((await attach()).code).toBe('receipt_capacity');
+    now += 700_000;
+    expect((await call('o8_view_image_attachment_status', { request_id: terminal.request_id })).code).toBe('unknown_request');
+    expect((await call('o8_view_inspect_composer')).composer_id).toBe(original.composer_id);
+    failed = false; decodeDeferred = true;
+    const pending = await attach();
+    now += 19_999;
+    expect((await call('o8_view_image_attachment_status', { request_id: pending.request_id })).status).toBe('pending');
+    expect((await attach()).code).toBe('upload_pending');
+    await act(async () => decoders.at(-1)!.resolve()); await frames();
+    expect((await call('o8_view_image_attachment_status', { request_id: pending.request_id })).status).toBe('completed');
+    now += 600_001;
+    expect((await call('o8_view_image_attachment_status', { request_id: pending.request_id })).code).toBe('unknown_request');
+    expect((await call('o8_view_inspect_composer')).composer_id).toBe(original.composer_id);
+    expect(sent).not.toHaveBeenCalled();
+  });
+
 });

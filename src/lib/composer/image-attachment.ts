@@ -48,6 +48,7 @@ export function validateImageAttachment(input: unknown): ImageAttachmentRequest 
   try { bytes = atob(args.data_base64); } catch { imageError('invalid_data'); }
   if (!bytes.length || bytes.length > MAX_AGENT_IMAGE_BYTES) imageError('invalid_size');
   if (btoa(bytes) !== args.data_base64) imageError('invalid_data');
+  // Format prefilter only; the renderer must decode before normal upload.
   const starts = (signature: number[]) => signature.every((byte, index) => bytes.charCodeAt(index) === byte);
   const matches = args.media_type === 'image/png' ? starts([137, 80, 78, 71, 13, 10, 26, 10])
     : args.media_type === 'image/jpeg' ? starts([255, 216, 255])

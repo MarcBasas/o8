@@ -8,6 +8,7 @@ interface ReceiptRecord { receipt: ImageAttachmentReceipt; expires: number; targ
 const targets = new Set<Target>();
 const receipts = new Map<string, ReceiptRecord>();
 const READ_DEADLINE_MS = 20_000;
+const TERMINAL_RECEIPT_TTL_MS = 600_000;
 
 function available(target: Target): boolean {
   const { element, upload } = target.current();
@@ -23,12 +24,16 @@ function active(): Target | undefined {
 }
 function finish(record: ReceiptRecord, code?: string) {
   record.receipt = { ...record.receipt, status: code ? 'error' : 'completed', ...(code ? { code } : {}) };
+  record.expires = Date.now() + TERMINAL_RECEIPT_TTL_MS;
   delete record.dataUri;
   delete record.target;
 }
 export function observeImageAttachments() {
-  for (const record of receipts.values()) {
-    if (record.receipt.status !== 'pending') continue;
+  for (const [id, record] of receipts) {
+    if (record.receipt.status !== 'pending') {
+      if (Date.now() >= record.expires) receipts.delete(id);
+      continue;
+    }
     if (!record.target || !available(record.target) || active() !== record.target) { finish(record, 'target_changed'); continue; }
     if (Date.now() >= record.expires) { finish(record, 'upload_expired'); continue; }
     const matched = record.target.current().images.some(image => image.uploadRequestId === record.receipt.request_id && image.name === record.receipt.filename && image.dataUri === record.dataUri);
@@ -60,11 +65,8 @@ export const composerImageBridge = {
     if (target.id !== request.composer_id) return error('stale_composer', request);
     if (target.current().images.length >= MAX_COMPOSER_IMAGES) return error('image_capacity', request);
     if ([...receipts.values()].some(record => record.target === target && record.receipt.status === 'pending')) return error('upload_pending', request);
-    // Bound receipt storage. Eviction never retries a mutation; absent status is
-    // explicitly unknown. Pending records are retained until their deadline.
-    for (const [id, record] of receipts) {
-      if (Date.now() > record.expires + 600_000 && ![...targets].some(target => target.id === record.receipt.composer_id)) receipts.delete(id);
-    }
+    // Observation prunes terminal receipts after their TTL, even on a live
+    // target. Absent status is unknown; eviction never retries a mutation.
     if (receipts.size >= 64) return error('receipt_capacity', request);
     const dataUri = `data:${request.media_type};base64,${request.data_base64}`;
     const binary = atob(request.data_base64);
@@ -75,14 +77,32 @@ export const composerImageBridge = {
     };
     receipts.set(request.request_id, record);
     const isCurrent = () => record.receipt.status === 'pending' && Date.now() < record.expires && available(target) && active() === target;
-    try {
-      Promise.resolve(target.current().upload!([file], { isCurrent, requestId: request.request_id })).then(results => {
+    void (async () => {
+      // Magic bytes are only a format prefilter. Decode the supplied raster in
+      // this renderer before invoking the normal upload handler.
+      const decoder = new window.Image();
+      try {
+        decoder.src = dataUri;
+        await decoder.decode();
+        if (!decoder.naturalWidth || !decoder.naturalHeight) throw new Error('empty raster');
+      } catch {
+        observeImageAttachments();
+        if (record.receipt.status === 'pending') finish(record, 'invalid_image');
+        return;
+      } finally { decoder.removeAttribute('src'); }
+      observeImageAttachments();
+      if (!isCurrent()) return;
+      try {
+        const results = await target.current().upload!([file], { isCurrent, requestId: request.request_id });
         if (record.receipt.status !== 'pending') return;
         if (results?.some(result => result.status !== 'read')) finish(record, Date.now() >= record.expires ? 'upload_expired' : isCurrent() ? 'upload_failed' : 'target_changed');
-        // Read completion is not attachment completion. React's committed image
-        // state acknowledges it through observeImageAttachments.
-      }, () => { if (record.receipt.status === 'pending') finish(record, 'upload_failed'); });
-    } catch { finish(record, 'upload_failed'); }
+        // Decode/read completion is not attachment completion. React's committed
+        // image state acknowledges it through observeImageAttachments.
+      } catch {
+        observeImageAttachments();
+        if (record.receipt.status === 'pending') finish(record, 'upload_failed');
+      }
+    })();
     return record.receipt;
   },
 };

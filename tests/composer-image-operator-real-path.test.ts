@@ -65,7 +65,7 @@ async function rpc(method: string, params?: Record<string, unknown>, bearer = to
 }
 const args = () => ({
   composer_id: 'fixture-composer', request_id: crypto.randomUUID(), filename: 'fixture.png', media_type: 'image/png',
-  data_base64: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]).toString('base64'),
+  data_base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==',
 });
 describe('operator HTTP catalog/auth -> actual client authenticated socket image calls', () => {
   it('refuses anonymous and worker principals before host/client mutation', async () => {

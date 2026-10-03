@@ -9,7 +9,7 @@ export const COMPOSER_IMAGE_TOOLS = [
   },
   {
     name: 'o8_view_attach_image',
-    description: 'Attach explicitly supplied image bytes to the inspected active composer through its normal upload handler. Maximum 1 MiB; PNG/JPEG/GIF/WebP only. Never sends. Returns a correlated pending/completed/error receipt. Never retry a mutation after timeout/disconnect; use image_attachment_status with request_id. A completed receipt proves composer attachment only, not chat send or persistence.',
+    description: 'Attach explicitly supplied image bytes to the inspected active composer through its normal upload handler. Maximum 1 MiB; PNG/JPEG/GIF/WebP only, decoded in the renderer before upload. Never sends. Returns a correlated pending/completed/error receipt. Never retry a mutation after timeout/disconnect; use image_attachment_status with request_id. A completed receipt proves composer attachment only, not chat send or persistence.',
     inputSchema: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -24,7 +24,7 @@ export const COMPOSER_IMAGE_TOOLS = [
   },
   {
     name: 'o8_view_image_attachment_status',
-    description: 'Read a previously requested image attachment receipt by request_id. Read-only; does not attach or retry. Missing receipt means the outcome is unknown; inspect the composer before any new request.',
+    description: 'Read a previously requested image attachment receipt by request_id. Read-only; does not attach or retry. Completed/error receipts expire after ten minutes, including on the active composer. Missing receipt means the outcome is unknown; inspect the composer before any new request.',
     inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 80 } }, required: ['request_id'], additionalProperties: false },
   },
 ];
