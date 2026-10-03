@@ -1,4 +1,4 @@
-import { validateImageAttachment, imageRequestId, type ImageAttachmentRequest } from '@/lib/composer/image-attachment';
+import { validateImageAttachment, validateComposerInspection, imageRequestId, type ImageAttachmentRequest } from '@/lib/composer/image-attachment';
 import { existsSync, readFileSync } from 'node:fs';
 import { createConnection, type Socket } from 'node:net';
 
@@ -250,6 +250,9 @@ export class O8WebviewClient {
       throw createCodedError('Invalid composer bridge receipt', 'bridge_unavailable');
     }
     if (data.status !== 'error') {
+      if (typeof data.allow_background !== 'boolean' || typeof data.document_visibility !== 'string' || (method !== 'status' && data.allow_background !== ((argument as { allow_background?: boolean }).allow_background === true))) {
+        throw createCodedError('Uncorrelated attachment mode', 'outcome_unknown');
+      }
       if (method === 'inspect' && data.status !== 'ready') throw createCodedError('Invalid inspection receipt', 'bridge_unavailable');
       if (method !== 'inspect') {
         const id = method === 'status' ? argument : (argument as ImageAttachmentRequest).request_id;
@@ -260,8 +263,8 @@ export class O8WebviewClient {
     }
     return data;
   }
-  async inspectImageComposer(): Promise<Record<string, unknown>> {
-    return this.composerImageCall('inspect');
+  async inspectImageComposer(options: { allow_background?: boolean } = {}): Promise<Record<string, unknown>> {
+    return this.composerImageCall('inspect', validateComposerInspection(options));
   }
   async attachComposerImage(request: ImageAttachmentRequest): Promise<Record<string, unknown>> {
     return this.composerImageCall('attach', validateImageAttachment(request));

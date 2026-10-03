@@ -25,10 +25,15 @@ const sockets = new Set<Socket>();
 let mutations = 0;
 let drop = false;
 const requestId = 'fixture-request-0001';
+const receipts = new Map<string, Record<string, unknown>>();
+let wrongMode = false;
 const bridge = {
-  inspect: () => ({ status: 'ready', composer_id: 'fixture-composer' }),
-  attach: (args: Record<string, unknown>) => { mutations++; return { status: 'pending', request_id: args.request_id, composer_id: args.composer_id }; },
-  status: (id: string) => ({ status: 'completed', request_id: id, composer_id: 'fixture-composer' }),
+  inspect: (options: { allow_background: boolean }) => ({ status: 'ready', composer_id: 'fixture-composer', allow_background: options.allow_background, document_visibility: options.allow_background ? 'hidden' : 'visible' }),
+  attach: (args: Record<string, unknown>) => {
+    mutations++; const receipt = { status: 'pending', request_id: args.request_id, composer_id: args.composer_id, allow_background: args.allow_background === true, document_visibility: args.allow_background ? 'hidden' : 'visible' };
+    receipts.set(String(args.request_id), receipt); return wrongMode ? { ...receipt, allow_background: !receipt.allow_background } : receipt;
+  },
+  status: (id: string) => ({ ...receipts.get(id), status: 'completed' }),
 };
 const server = createServer(socket => {
   sockets.add(socket);
@@ -70,24 +75,33 @@ const args = () => ({
 describe('operator HTTP catalog/auth -> actual client authenticated socket image calls', () => {
   it('refuses anonymous and worker principals before host/client mutation', async () => {
     for (const bearer of ['', worker, 'invalid-credential']) {
-      expect(await rpc('tools/call', { name: 'o8_view_attach_image', arguments: args() }, bearer)).toHaveProperty('denied');
+      for (const allow_background of [false, true]) expect(await rpc('tools/call', { name: 'o8_view_attach_image', arguments: { ...args(), allow_background } }, bearer)).toHaveProperty('denied');
     }
     expect(mutations).toBe(0);
   });
-  it('discovers the operator tool and round-trips correlated receipts through the public entry', async () => {
+  it.each([false, true])('discovers and round-trips mode=%s receipts through the public entry', async allow_background => {
     const list = await rpc('tools/list');
     expect(list.result.tools.map((tool: { name: string }) => tool.name)).toContain('o8_view_attach_image');
-    const inspection = await rpc('tools/call', { name: 'o8_view_inspect_composer', arguments: {} });
+    const inspection = await rpc('tools/call', { name: 'o8_view_inspect_composer', arguments: { allow_background } });
     expect(JSON.parse(inspection.result.content[0].text).composer_id).toBe('fixture-composer');
-    const payload = args();
+    const payload = { ...args(), allow_background };
     const attached = await rpc('tools/call', { name: 'o8_view_attach_image', arguments: payload });
     expect(JSON.parse(attached.result.content[0].text)).toMatchObject({ status: 'pending', request_id: payload.request_id });
     const status = await rpc('tools/call', { name: 'o8_view_image_attachment_status', arguments: { request_id: payload.request_id } });
-    expect(JSON.parse(status.result.content[0].text)).toMatchObject({ status: 'completed', request_id: payload.request_id });
+    expect(JSON.parse(status.result.content[0].text)).toMatchObject({ status: 'completed', request_id: payload.request_id, allow_background, document_visibility: allow_background ? 'hidden' : 'visible' });
   });
-  it('never replays an attachment after an authenticated write loses its response', async () => {
+  it('refuses a mismatched mode acknowledgement without replaying the mutation', async () => {
+    const before = mutations; wrongMode = true; const payload = { ...args(), allow_background: true };
+    const result = await rpc('tools/call', { name: 'o8_view_attach_image', arguments: payload });
+    expect(JSON.parse(result.result.content[0].text)).toMatchObject({ code: 'outcome_unknown', allow_background: true });
+    wrongMode = false; expect(mutations).toBe(before + 1);
+    const status = await rpc('tools/call', { name: 'o8_view_image_attachment_status', arguments: { request_id: payload.request_id } });
+    expect(JSON.parse(status.result.content[0].text)).toMatchObject({ status: 'completed', allow_background: true });
+    expect(mutations).toBe(before + 1);
+  });
+  it.each([false, true])('never replays mode=%s attachment after an authenticated write loses its response', async allow_background => {
     const before = mutations; drop = true;
-    const payload = args();
+    const payload = { ...args(), allow_background };
     const result = await rpc('tools/call', { name: 'o8_view_attach_image', arguments: payload });
     expect(JSON.parse(result.result.content[0].text)).toMatchObject({ code: 'outcome_unknown', request_id: payload.request_id, composer_id: payload.composer_id });
     expect(result.result.isError).toBe(true);

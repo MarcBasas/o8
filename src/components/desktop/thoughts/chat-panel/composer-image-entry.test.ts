@@ -21,10 +21,13 @@ const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwH
 const corruptImage = btoa(String.fromCharCode(137, 80, 78, 71, 13, 10, 26, 10, 0));
 let root: Root;
 let host: HTMLDivElement;
+let secondRoot: Root | undefined;
+let secondHost: HTMLDivElement | undefined;
 let active = true;
 let disabled = false;
 let context = 'first-chat';
 let failed = false;
+let noUpload = false;
 let deferred = false;
 let readers: FixtureReader[];
 let decodeDeferred = false;
@@ -68,7 +71,7 @@ function Harness() {
     onSubmit: sent, onSlashCommand: () => undefined, modelLabel: 'Model', effort: 'medium',
     onEffortChange: () => undefined, adaptiveEnabled: false, displayMessagesCount: 0,
     hasAssistantActivity: false, sessionRulesThreadId: context,
-    attachedImages: attachments.attachedImages, onUploadDiskFiles: attachments.processFiles,
+    attachedImages: attachments.attachedImages, onUploadDiskFiles: noUpload ? undefined : attachments.processFiles,
   });
 }
 let client: O8WebviewClient;
@@ -81,18 +84,22 @@ async function call(name: string, args: Record<string, unknown> = {}) {
   return JSON.parse(content.text) as Record<string, unknown>;
 }
 async function attach(extra: Record<string, unknown> = {}) {
-  const inspection = await call('o8_view_inspect_composer');
+  const inspection = await call('o8_view_inspect_composer', 'allow_background' in extra ? { allow_background: extra.allow_background } : {});
   return call('o8_view_attach_image', {
     composer_id: inspection.composer_id, request_id: crypto.randomUUID(), filename: 'fixture.png',
     media_type: 'image/png', data_base64: image, ...extra,
   });
 }
 async function frames() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); }); }
+function addComposer() {
+  secondHost = document.createElement('div'); document.body.append(secondHost); secondRoot = createRoot(secondHost);
+  act(() => secondRoot!.render(createElement(Harness)));
+}
 function render() { act(() => root.render(createElement(Harness))); }
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-  active = true; disabled = false; context = 'first-chat'; failed = false; deferred = false; readers = [];
+  active = true; disabled = false; context = 'first-chat'; failed = false; noUpload = false; deferred = false; readers = [];
   decodeDeferred = false; decodeFailed = false; decoders = [];
   sent.mockClear(); localStorage.clear();
   vi.stubGlobal('Image', FixtureImage);
@@ -106,7 +113,7 @@ beforeEach(() => {
   vi.spyOn(client, 'evalJs').mockImplementation(async code => ({ result: new Function('window', `return ${code}`)(window) as string }));
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host); render();
 });
-afterEach(() => { act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); localStorage.clear(); });
+afterEach(() => { act(() => { secondRoot?.unmount(); root.unmount(); }); secondHost?.remove(); secondRoot = undefined; secondHost = undefined; host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); localStorage.clear(); });
 
 describe('registered image tool -> normal installed composer handler', () => {
   it('acknowledges committed attachment state, correlates status, never sends or replays', async () => {
@@ -227,6 +234,98 @@ describe('registered image tool -> normal installed composer handler', () => {
     await act(async () => decoders[0].resolve()); await frames();
     expect((await call('o8_view_image_attachment_status', { request_id: pending.request_id })).code).toBe(condition === 'changed' ? 'target_changed' : 'upload_expired');
     expect(readers).toHaveLength(0); expect(host.querySelectorAll('img')).toHaveLength(0);
+  });
+  it('requires explicit background mode at inspect and attach, acknowledging the normal React commit', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    for (const options of [{}, { allow_background: false }]) {
+      expect(await call('o8_view_inspect_composer', options)).toMatchObject({ code: 'no_active_composer', reason: 'hidden_document', allow_background: false, document_visibility: 'hidden' });
+    }
+    const inspection = await call('o8_view_inspect_composer', { allow_background: true });
+    expect(inspection).toMatchObject({ status: 'ready', allow_background: true, document_visibility: 'hidden' });
+    expect((await attach({ composer_id: inspection.composer_id, allow_background: false })).code).toBe('no_active_composer');
+    const focus = vi.spyOn(host.querySelector('textarea')!, 'focus');
+    const pending = await attach({ allow_background: true }); await frames();
+    expect(focus).not.toHaveBeenCalled();
+    expect(await call('o8_view_image_attachment_status', { request_id: pending.request_id })).toMatchObject({ status: 'completed', composer_id: inspection.composer_id, allow_background: true, document_visibility: 'hidden' });
+    expect(host.querySelector('img')?.getAttribute('alt')).toBe('fixture.png'); expect(sent).not.toHaveBeenCalled();
+    expect(host.querySelector('textarea')?.value).toBe('unsent');
+  });
+  it.each([null, 'true', 1])('refuses malformed background mode %s before decode/upload', async allow_background => {
+    expect((await call('o8_view_inspect_composer', { allow_background })).code).toBe('invalid_schema');
+    expect((await attach({ allow_background })).code).toBe('invalid_schema');
+    expect(decoders).toHaveLength(0); expect(readers).toHaveLength(0);
+  });
+  it.each(['css', 'visibility', 'geometry', 'disconnected', 'disabled', 'inactive', 'missing-upload', 'ambiguous'])('retains %s refusal in explicit background mode', async condition => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    const original = await call('o8_view_inspect_composer', { allow_background: true });
+    const textarea = host.querySelector('textarea')!;
+    if (condition === 'css') textarea.style.display = 'none';
+    if (condition === 'visibility') textarea.style.visibility = 'hidden';
+    if (condition === 'geometry') vi.spyOn(textarea, 'getBoundingClientRect').mockReturnValue({ width: 0, height: 0 } as DOMRect);
+    if (condition === 'disconnected') textarea.remove();
+    if (condition === 'disabled') textarea.disabled = true;
+    if (condition === 'inactive') textarea.removeAttribute('data-o8-active-composer');
+    if (condition === 'missing-upload') { noUpload = true; render(); }
+    if (condition === 'ambiguous') addComposer();
+    const result = await call('o8_view_inspect_composer', { allow_background: true });
+    expect(result.code).toBe('no_active_composer'); expect(result.reason).toEqual(condition === 'ambiguous' ? 'ambiguous_composer' : expect.any(String));
+    expect((await attach({ allow_background: true, composer_id: original.composer_id })).status).toBe('error');
+    expect(readers).toHaveLength(0); expect(decoders).toHaveLength(0);
+  });
+  it('rotates the background identity on context change and refuses the stale nonce', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    const original = await call('o8_view_inspect_composer', { allow_background: true });
+    context = 'new-background-chat'; render();
+    expect((await call('o8_view_inspect_composer', { allow_background: true })).composer_id).not.toBe(original.composer_id);
+    expect((await attach({ allow_background: true, composer_id: original.composer_id })).code).toBe('stale_composer');
+    expect(readers).toHaveLength(0); expect(decoders).toHaveLength(0);
+  });
+  it('expires a background decode and does not replay or upload a late result', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden'); decodeDeferred = true;
+    const pending = await attach({ allow_background: true });
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 20_001);
+    expect(await call('o8_view_image_attachment_status', { request_id: pending.request_id })).toMatchObject({ code: 'upload_expired', allow_background: true });
+    await act(async () => decoders[0].resolve()); await frames();
+    expect(readers).toHaveLength(0); expect(decoders).toHaveLength(1);
+  });
+  it('keeps corrupt background bytes correlated and prevents upload', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    const pending = await attach({ allow_background: true, data_base64: corruptImage });
+    expect(await call('o8_view_image_attachment_status', { request_id: pending.request_id })).toMatchObject({ code: 'invalid_image', allow_background: true, document_visibility: 'hidden' });
+    expect(readers).toHaveLength(0); expect(sent).not.toHaveBeenCalled();
+  });
+  it.each(['decode', 'upload', 'commit', 'dispose', 'disabled', 'ambiguous'])('invalidates background target during %s', async condition => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    decodeDeferred = condition !== 'upload' && condition !== 'commit'; deferred = true;
+    const pending = await attach({ allow_background: true });
+    const queued: FrameRequestCallback[] = [];
+    if (condition === 'commit') {
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { queued.push(callback); return queued.length; });
+      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined);
+      await act(async () => readers[0].onload?.());
+    }
+    if (condition === 'dispose') act(() => root.render(null));
+    else if (condition === 'disabled') host.querySelector('textarea')!.disabled = true;
+    else if (condition === 'ambiguous') addComposer();
+    else { context = 'background-context-changed'; render(); }
+    await act(async () => { for (const decoder of decoders) decoder.resolve(); for (const reader of readers) reader.onload?.(); for (const callback of queued) callback(0); });
+    await frames();
+    expect(await call('o8_view_image_attachment_status', { request_id: pending.request_id })).toMatchObject({ code: 'target_changed', allow_background: true });
+    expect(host.querySelectorAll('img')).toHaveLength(0); expect(sent).not.toHaveBeenCalled();
+  });
+  it('retains each request mode during status and refuses duplicate requests under another mode', async () => {
+    decodeDeferred = true;
+    const visible = await attach();
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    expect(await call('o8_view_image_attachment_status', { request_id: visible.request_id })).toMatchObject({ code: 'target_changed', allow_background: false, document_visibility: 'hidden' });
+    const background = await attach({ allow_background: true });
+    expect(await call('o8_view_image_attachment_status', { request_id: background.request_id })).toMatchObject({ status: 'pending', allow_background: true });
+    expect((await call('o8_view_inspect_composer')).code).toBe('no_active_composer');
+    expect((await call('o8_view_image_attachment_status', { request_id: background.request_id, allow_background: false })).code).toBe('invalid_schema');
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    expect((await attach({ request_id: background.request_id, allow_background: false })).code).toBe('duplicate_request');
+    await act(async () => decoders.at(-1)!.resolve()); await frames();
+    expect(await call('o8_view_image_attachment_status', { request_id: background.request_id })).toMatchObject({ status: 'completed', allow_background: true, document_visibility: 'visible' });
   });
   it('bounds receipts and reclaims expired terminal records without disposing the active composer', async () => {
     let now = Date.now() + 700_000;

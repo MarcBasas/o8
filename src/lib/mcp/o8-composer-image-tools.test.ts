@@ -6,6 +6,7 @@ describe('registered operator image attachment', () => {
     const handlers = createO8WebviewToolHandlers(() => { throw new Error('must not connect'); });
     for (const name of ['o8_view_inspect_composer', 'o8_view_attach_image', 'o8_view_image_attachment_status']) {
       expect(O8_WEBVIEW_TOOLS.find(tool => tool.name === name)?.inputSchema).toMatchObject({ type: 'object', additionalProperties: false });
+      if (name !== 'o8_view_image_attachment_status') expect(O8_WEBVIEW_TOOLS.find(tool => tool.name === name)?.inputSchema.properties).toHaveProperty('allow_background', expect.objectContaining({ type: 'boolean' }));
       expect(typeof handlers[name]).toBe('function');
     }
   });
@@ -14,6 +15,7 @@ describe('registered operator image attachment', () => {
     for (const [name, args] of [
       ['o8_view_attach_image', {}], ['o8_view_image_attachment_status', {}],
       ['o8_view_inspect_composer', { script: 'arbitrary' }],
+      ['o8_view_inspect_composer', { allow_background: 'true' }],
     ] as const) {
       const result = await handlers[name](args);
       expect(result.isError).toBe(true);
