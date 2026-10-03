@@ -47,7 +47,6 @@ pub(super) enum Request {
     Resolve {
         dialog_id: String,
         operation: Operation,
-        path: Option<PathBuf>,
     },
 }
 
@@ -88,9 +87,11 @@ fn parse(command: &str, payload: Value) -> Result<Request, SocketResponse> {
                     "Inspection identity is required",
                 ));
             }
-            let path = match (&params.operation, params.path) {
-                (Operation::Select, Some(path)) => Some(validate_path(&path)?),
-                (Operation::Cancel, None) => None,
+            match (&params.operation, params.path) {
+                (Operation::Select, Some(path)) => {
+                    validate_path(&path)?;
+                }
+                (Operation::Cancel, None) => {}
                 _ => {
                     return Err(failure(
                         "invalid_operation",
@@ -101,7 +102,6 @@ fn parse(command: &str, payload: Value) -> Result<Request, SocketResponse> {
             Request::Resolve {
                 dialog_id: params.dialog_id,
                 operation: params.operation,
-                path,
             }
         }
         _ => {
@@ -182,6 +182,15 @@ pub(super) fn check_identity(
     Ok(())
 }
 
+// NSOpenPanel selected URLs are read-only. directoryURL controls navigation,
+// not selection; never dispatch OK for an unobserved requested selection.
+pub(super) fn reject_selection() -> SocketResponse {
+    failure(
+        "selection_not_supported",
+        "Live native selection is unsupported; cancel the inspected picker, observe closure, then use o8_setup open and status. No selection action taken",
+    )
+}
+
 #[cfg(test)]
 pub(super) mod fixture {
     use super::*;
@@ -214,6 +223,9 @@ pub(super) mod fixture {
                 operation,
             ) {
                 return Some(error);
+            }
+            if matches!(operation, Operation::Select) {
+                return Some(reject_selection());
             }
             panel.claimed = true;
             panel.dispatched = matches!(operation, Operation::Cancel);

@@ -3,15 +3,15 @@
 use serde_json::json;
 use std::{
     cell::RefCell,
-    ffi::{CStr, CString, c_void},
-    time::{Duration, Instant},
+    ffi::{CStr, c_void},
+    time::Instant,
 };
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::oneshot;
 
 use super::{
-    Operation, Request, check_identity, check_panel, effect_if_active, failure, response,
-    validate_off_main, validate_path,
+    Operation, Request, check_identity, check_panel, effect_if_active, failure, reject_selection,
+    response,
 };
 use crate::socket_server::SocketResponse;
 
@@ -74,7 +74,7 @@ struct Current {
     panel: Id,
     identity: String,
     epoch: u64,
-    // A resolve identity is single-use, including navigation that stays pending.
+    // A dispatched cancellation identity is single-use.
     requested: Option<std::path::PathBuf>,
     claimed: bool,
     dispatched: bool,
@@ -143,15 +143,11 @@ unsafe fn current(window: Id, slot: &mut Option<Current>) -> Result<&mut Current
     }
 }
 
-enum Step {
-    Request(Request),
-    Continue {
-        identity: String,
-        path: std::path::PathBuf,
-    },
-}
-
-async fn on_main<R: Runtime>(app: &AppHandle<R>, step: Step, deadline: Instant) -> SocketResponse {
+async fn on_main<R: Runtime>(
+    app: &AppHandle<R>,
+    request: Request,
+    deadline: Instant,
+) -> SocketResponse {
     let (tx, rx) = oneshot::channel();
     let app_copy = app.clone();
     if Instant::now() >= deadline {
@@ -172,14 +168,14 @@ async fn on_main<R: Runtime>(app: &AppHandle<R>, step: Step, deadline: Instant) 
             CURRENT.with(|slot| unsafe {
                 let mut slot = slot.borrow_mut();
                 let state = current(native, &mut slot)?;
-                match step {
-                    Step::Request(Request::Inspect) => Ok(response(json!({
+                match request {
+                    Request::Inspect => Ok(response(json!({
                         "dialog_id": state.identity, "window_label": "main", "status": if state.claimed { "pending" } else { "live" },
                         "requested_path": state.requested, "selection_path": url_path(state.panel, b"URL\0"),
                         "action_dispatched": state.dispatched,
                         "reason": "Panel state alone does not prove callback or workspace completion"
                     }))),
-                    Step::Request(Request::Resolve { dialog_id, operation, path }) => {
+                    Request::Resolve { dialog_id, operation } => {
                         check_identity(&state.identity, &dialog_id, state.claimed, state.dispatched, &operation)?;
                         match operation {
                             Operation::Cancel => {
@@ -189,35 +185,7 @@ async fn on_main<R: Runtime>(app: &AppHandle<R>, step: Step, deadline: Instant) 
                                     arg(state.panel, b"cancel:\0", std::ptr::null_mut());
                                 })?;
                             }
-                            Operation::Select => {
-                                let path = path.unwrap();
-                                let encoded = CString::new(path.to_str().unwrap()).map_err(|_| failure("invalid_path", "Invalid directory path"))?;
-                                let send_string: unsafe extern "C" fn(Id, Sel, *const i8) -> Id = std::mem::transmute(objc_msgSend as *const c_void);
-                                let string = send_string(objc_getClass(b"NSString\0".as_ptr()), sel_registerName(b"stringWithUTF8String:\0".as_ptr()), encoded.as_ptr());
-                                let send_url: unsafe extern "C" fn(Id, Sel, Id, i8) -> Id = std::mem::transmute(objc_msgSend as *const c_void);
-                                let url = send_url(objc_getClass(b"NSURL\0".as_ptr()), sel_registerName(b"fileURLWithPath:isDirectory:\0".as_ptr()), string, 1);
-                                if url.is_null() { return Err(failure("invalid_path", "Cannot create directory URL")); }
-                                effect_if_active(deadline, tx.is_closed(), || {
-                                    state.claimed = true;
-                                    state.requested = Some(path);
-                                    arg(state.panel, b"setDirectoryURL:\0", url);
-                                })?;
-                            }
-                        }
-                        Ok(pending(state))
-                    }
-                    Step::Continue { identity, path } => {
-                        if identity != state.identity { return Err(failure("stale_dialog", "Dialog changed during selection; no further action taken")); }
-                        if !state.dispatched && state.requested.as_ref() == Some(&path) {
-                            // Filesystem validation ran off the main thread immediately
-                            // before this step. Native URL reads here are lexical only.
-                            if url_path(state.panel, b"directoryURL\0").as_ref() == Some(&path)
-                                && url_path(state.panel, b"URL\0").as_ref() == Some(&path) {
-                                effect_if_active(deadline, tx.is_closed(), || {
-                                    state.dispatched = true;
-                                    arg(state.panel, b"ok:\0", std::ptr::null_mut());
-                                })?;
-                            }
+                            Operation::Select => return Err(reject_selection()),
                         }
                         Ok(pending(state))
                     }
@@ -238,29 +206,9 @@ fn pending(state: &Current) -> SocketResponse {
     response(
         json!({ "dialog_id": state.identity, "status": "pending", "accepted": true,
         "action_dispatched": state.dispatched, "requested_path": state.requested,
-        "reason": if state.dispatched { "Native action dispatched; panel callback and workspace outcome require observation" } else { "Directory navigation accepted; matching native selection has not been observed" },
+        "reason": "Cancellation dispatched; observe sheet closure, then use normal setup status/open",
         "next": "inspect_directory_dialog then normal setup status" }),
     )
-}
-
-async fn fresh_path(
-    path: std::path::PathBuf,
-    deadline: Instant,
-) -> Result<std::path::PathBuf, SocketResponse> {
-    validate_off_main(deadline, move || {
-        let fresh = validate_path(
-            path.to_str()
-                .ok_or_else(|| failure("invalid_path", "Directory path must be UTF-8"))?,
-        )?;
-        if fresh != path {
-            return Err(failure(
-                "path_changed",
-                "Validated directory changed; no further native action taken",
-            ));
-        }
-        Ok(fresh)
-    })
-    .await
 }
 
 pub(super) async fn handle<R: Runtime>(
@@ -268,46 +216,5 @@ pub(super) async fn handle<R: Runtime>(
     request: Request,
     deadline: Instant,
 ) -> crate::Result<SocketResponse> {
-    let select_plan = match &request {
-        Request::Resolve {
-            dialog_id,
-            operation: Operation::Select,
-            path: Some(path),
-        } => Some((dialog_id.clone(), path.clone())),
-        _ => None,
-    };
-    if let Some((_, path)) = &select_plan {
-        if let Err(error) = fresh_path(path.clone(), deadline).await {
-            return Ok(error);
-        }
-    }
-    let mut result = on_main(app, Step::Request(request), deadline).await;
-    if let Some((identity, path)) = select_plan {
-        for _ in 0..20 {
-            if !result.success
-                || result
-                    .data
-                    .as_ref()
-                    .and_then(|v| v["action_dispatched"].as_bool())
-                    == Some(true)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let path = match fresh_path(path.clone(), deadline).await {
-                Ok(path) => path,
-                Err(error) => return Ok(error),
-            };
-            result = on_main(
-                app,
-                Step::Continue {
-                    identity: identity.clone(),
-                    path,
-                },
-                deadline,
-            )
-            .await;
-        }
-    }
-    Ok(result)
+    Ok(on_main(app, request, deadline).await)
 }

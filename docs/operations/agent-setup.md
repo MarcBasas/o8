@@ -20,24 +20,25 @@ Cancellation retains registered projects and saved choices. An in-flight app ope
 
 Sign-in, operating-system permissions, and privacy choices stay with the user. The setup tool does not grant permissions, edit credentials, answer consent, run the first task, or install runtimes.
 
-## Resolve an already-open native folder picker
+## Recover from an already-open native folder picker
 
-A native folder picker can hold onboarding's action lock while a setup request remains pending. Agents can inspect and resolve that existing picker through the authenticated webview socket commands. This does not create a picker or grant operating-system permissions.
+A native folder picker can hold onboarding's action lock while a setup request remains pending. Use the discoverable authenticated operator tools to cancel that exact picker, then use the existing setup service to open the desired Git project. This workflow requires no operator folder selection or pasted path. It does not complete the original picker with a selected URL.
 
-The discoverable operator tools are `o8_view_inspect_directory_dialog` (no arguments) and `o8_view_resolve_directory_dialog`. Resolve takes `dialog_id`, `operation` (`select` or `cancel`), and `path` (absolute directory for select, null for cancel). The handlers use the existing authenticated client socket transport. Native responses are pending until ordinary setup and project state establish completion. Do not reconnect-replay resolution.
+1. Call `o8_view_inspect_directory_dialog` with `{}` and retain its opaque `dialog_id`.
+2. Call `o8_view_resolve_directory_dialog` with `{"dialog_id":"<inspection identity>","operation":"cancel","path":null}` once.
+3. Inspect until `no_dialog` establishes that the sheet is absent. Cancellation dispatch returns `pending`; it does not prove callback completion or workspace entry. A replaced sheet or an unknown transport outcome requires reconciliation, never mutation replay.
+4. Read `o8_setup` with `{"action":"status"}`. If the desired path already has a pending request, observe that request instead of submitting it again. If another path is pending, reconcile its outcome or cancel that durable request by its request ID before opening a different project.
+5. Use `o8_setup` with `{"action":"open","path":"/absolute/existing/git-project"}`, then read status until its durable request reaches a terminal result. Verify `opened` and the normal project/workspace path. `needs_tools`, `needs_privacy`, or `error` requires the existing setup workflow; never convert these results to success.
 
-Directory existence and canonicalization run on a bounded background worker, with fresh validation before navigation and OK. Expired or closed requests cannot dispatch cancellation, navigation, or OK. Nonpicker sheets are refused before any picker-specific selector is sent.
+Only a visible, single-directory `NSOpenPanel` attached to this app's `main` window is supported on macOS. File pickers, other windows, unattached dialogs, consent prompts and other operating systems are refused. Inspect has no native side effects. Resolve requires the current identity. Cancellation is single-use and guarded against expired or disconnected requests immediately before dispatch. Nonpicker sheets are refused before picker-specific selectors are sent. No permissions or saved choices are changed.
 
-Send a string request `id` and the normal socket authentication. The command payloads are:
+Direct `operation: "select"` is retained as an explicit refusal: an absolute existing directory is validated on a bounded background worker, then a matching live dialog returns `selection_not_supported` without navigation or OK. Invalid paths, stale identities and wrong dialog types still return their specific errors. Setting AppKit [`directoryURL`](https://developer.apple.com/documentation/appkit/nssavepanel/directoryurl?language=objc) controls the displayed directory; it does not establish the selected URL. [Selected URLs are read-only](https://developer.apple.com/documentation/appkit/nsopenpanel/urls?language=objc). Native acceptance observed navigation remain pending with the prior selection unchanged, so this implementation uses cancellation plus ordinary setup registration rather than claiming picker selection.
+
+The existing authenticated socket commands remain `inspect_directory_dialog` and `resolve_directory_dialog`. Send a string request `id` and normal socket authentication; the payloads are:
 
 ```json
 {"command":"inspect_directory_dialog","payload":{"window_label":"main"}}
-{"command":"resolve_directory_dialog","payload":{"dialog_id":"<inspection identity>","operation":"select","path":"/absolute/existing/directory"}}
 {"command":"resolve_directory_dialog","payload":{"dialog_id":"<inspection identity>","operation":"cancel"}}
 ```
 
-Only a visible, single-directory `NSOpenPanel` attached to this app's `main` window is supported on macOS. File pickers, other windows, unattached dialogs, consent prompts and other operating systems are refused. Inspect has no native side effects. Resolve requires the current opaque identity; an accepted selection cannot be replayed. An explicit cancellation is allowed while directory navigation is still pending and no OK action has been dispatched. Select requires an absolute existing directory; cancel forbids `path`. Unknown fields and operations are rejected.
-
-Select navigates the existing panel and dispatches its normal OK action only after its selected URL matches the canonical requested directory. Navigation can remain pending. A dispatched action is also `pending`, because dispatch alone does not prove the native callback ran. Inspect reports the requested and observed paths while the sheet is live. A missing or replaced sheet returns a structured error, not a successful selection or cancellation. Read normal `o8 setup status` and project/workspace state to establish the persisted outcome and compare the selected project path. Do not repeat resolve after a socket disconnect or an `already_accepted` response. If the sheet closed with an unknown outcome, reconcile status before submitting another setup request.
-
-To unblock a durable setup request already queued for a different project, cancel the native picker, then observe that request through normal setup status. Selecting a folder follows the existing picker callback and normal onboarding path; it does not replace the setup request service. Native dialog control does not change saved choices or bypass privacy and tool checks.
+The MCP resolve schema is a plain strict object with required `dialog_id`, `operation` (`select` or `cancel`) and `path` (string or null). Cancel requires null; the native wire omits the path. Unknown fields and operations are rejected. The client never automatically retries resolution after a disconnect. Native cancellation followed by authenticated setup, ordinary onboarding and persisted project/request reconciliation remains a compiled-app acceptance gate.

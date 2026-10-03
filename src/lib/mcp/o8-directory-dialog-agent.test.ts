@@ -58,8 +58,10 @@ describe('discoverable directory dialog control', () => {
           expect(typeof request.id).toBe('string');
           if (request.command === 'inspect_directory_dialog') {
             socket.write(JSON.stringify({ id: request.id, success: true, data: { dialog_id: 'live', status: 'live' } }) + '\n');
-          } else if (request.payload.operation === 'cancel') {
+          } else if (request.payload.dialog_id === 'old') {
             socket.write(JSON.stringify({ id: request.id, success: false, error: 'stale_dialog', data: { code: 'stale_dialog' } }) + '\n');
+          } else if (request.payload.operation === 'select') {
+            socket.write(JSON.stringify({ id: request.id, success: false, error: 'selection_not_supported', data: { code: 'selection_not_supported' } }) + '\n');
           } else {
             socket.destroy(); // Unknown mutation outcome after its authenticated write.
           }
@@ -76,12 +78,16 @@ describe('discoverable directory dialog control', () => {
       const stale = await handlers.o8_view_resolve_directory_dialog({ dialog_id: 'old', operation: 'cancel' });
       expect(stale.isError).toBe(true);
       expect(JSON.stringify(stale)).toContain('stale_dialog');
-      const dropped = await handlers.o8_view_resolve_directory_dialog({ dialog_id: 'live', operation: 'select', path: directory });
+      const refused = await handlers.o8_view_resolve_directory_dialog({ dialog_id: 'live', operation: 'select', path: directory });
+      expect(refused.isError).toBe(true);
+      expect(JSON.stringify(refused)).toContain('selection_not_supported');
+      const dropped = await handlers.o8_view_resolve_directory_dialog({ dialog_id: 'live', operation: 'cancel', path: null });
       expect(dropped.isError).toBe(true);
       expect(JSON.stringify(dropped)).toContain('not retried automatically');
       await new Promise((resolve) => setTimeout(resolve, 30));
-      expect(requests.filter((entry) => entry.command === 'resolve_directory_dialog')).toHaveLength(2);
+      expect(requests.filter((entry) => entry.command === 'resolve_directory_dialog')).toHaveLength(3);
       expect(requests[2].payload).toEqual({ dialog_id: 'live', operation: 'select', path: directory });
+      expect(requests[3].payload).toEqual({ dialog_id: 'live', operation: 'cancel' });
     } finally {
       client.dispose();
       for (const socket of sockets) socket.destroy();

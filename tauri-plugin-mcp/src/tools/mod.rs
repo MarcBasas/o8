@@ -322,12 +322,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(accepted.data.unwrap()["status"], "pending");
+        assert_eq!(accepted.data.unwrap()["code"], "selection_not_supported");
+        assert!(!PANEL.lock().unwrap().as_ref().unwrap().claimed);
         let retry =
             super::handle_command(app.handle(), commands::RESOLVE_DIRECTORY_DIALOG, payload)
                 .await
                 .unwrap();
-        assert_eq!(retry.data.unwrap()["code"], "already_accepted");
+        assert_eq!(retry.data.unwrap()["code"], "selection_not_supported");
         let cancel = serde_json::json!({"dialog_id":"replacement", "operation":"cancel"});
         let recovery = super::handle_command(
             app.handle(),

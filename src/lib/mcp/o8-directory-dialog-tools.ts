@@ -35,7 +35,7 @@ export const DIRECTORY_DIALOG_TOOLS = [
   },
   {
     name: 'o8_view_resolve_directory_dialog',
-    description: 'Resolve the exact native directory picker from inspection. operation select requires path to an absolute existing directory; cancel requires path null or absent. Returns pending until normal setup/project state proves completion. Never automatically retry after a disconnect. Inspect and read o8_setup status to reconcile. macOS main window only.',
+    description: 'Cancel the exact native directory picker from inspection with operation cancel and path null. Observe closure with inspect, then use o8_setup open with the desired Git directory and status to verify workspace entry. Direct operation select validates the path but returns selection_not_supported without native action; AppKit navigation does not select a folder. Cancellation dispatch returns pending, not completion. Never retry after a disconnect. macOS main window only.',
     inputSchema: {
       type: 'object',
       properties: {
