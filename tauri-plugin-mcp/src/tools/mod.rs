@@ -361,8 +361,14 @@ mod tests {
             .unwrap()
         });
         tokio::task::yield_now().await;
-        #[allow(deprecated)]
-        app.run_iteration(|_, _| {});
+        for _ in 0..400 {
+            #[allow(deprecated)]
+            app.run_iteration(|_, _| {});
+            if task.is_finished() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         let result = task.await.unwrap();
         assert!(!result.success);
         assert_eq!(result.data.unwrap()["code"], "missing_window");

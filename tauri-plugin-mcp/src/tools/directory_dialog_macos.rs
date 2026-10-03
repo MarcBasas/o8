@@ -9,7 +9,10 @@ use std::{
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::oneshot;
 
-use super::{Operation, Request, check_identity, check_live, failure, response, validate_path};
+use super::{
+    Operation, Request, check_identity, check_panel, effect_if_active, failure, response,
+    validate_off_main, validate_path,
+};
 use crate::socket_server::SocketResponse;
 
 #[path = "directory_dialog_lifecycle.rs"]
@@ -60,7 +63,9 @@ unsafe fn url_path(panel: Id, selector: &[u8]) -> Option<std::path::PathBuf> {
         if bytes.is_null() {
             return None;
         }
-        validate_path(CStr::from_ptr(bytes).to_str().ok()?).ok()
+        Some(std::path::PathBuf::from(
+            CStr::from_ptr(bytes).to_str().ok()?,
+        ))
     }
 }
 
@@ -109,14 +114,15 @@ unsafe fn current(window: Id, slot: &mut Option<Current>) -> Result<&mut Current
         {
             *slot = None;
         }
-        if let Err(error) = check_live(
-            is_open_panel(panel),
-            get(panel, b"sheetParent\0") == window,
-            flag(panel, b"isVisible\0"),
-            flag(panel, b"canChooseDirectories\0"),
-            flag(panel, b"canChooseFiles\0"),
-            flag(panel, b"allowsMultipleSelection\0"),
-        ) {
+        if let Err(error) = check_panel(is_open_panel(panel), || {
+            [
+                get(panel, b"sheetParent\0") == window,
+                flag(panel, b"isVisible\0"),
+                flag(panel, b"canChooseDirectories\0"),
+                flag(panel, b"canChooseFiles\0"),
+                flag(panel, b"allowsMultipleSelection\0"),
+            ]
+        }) {
             *slot = None;
             return Err(error);
         }
@@ -139,13 +145,21 @@ unsafe fn current(window: Id, slot: &mut Option<Current>) -> Result<&mut Current
 
 enum Step {
     Request(Request),
-    Continue(String),
+    Continue {
+        identity: String,
+        path: std::path::PathBuf,
+    },
 }
 
-async fn on_main<R: Runtime>(app: &AppHandle<R>, step: Step) -> SocketResponse {
+async fn on_main<R: Runtime>(app: &AppHandle<R>, step: Step, deadline: Instant) -> SocketResponse {
     let (tx, rx) = oneshot::channel();
     let app_copy = app.clone();
-    let deadline = Instant::now() + Duration::from_secs(2);
+    if Instant::now() >= deadline {
+        return failure(
+            "request_expired",
+            "Request deadline elapsed; no native action queued",
+        );
+    }
     if app.run_on_main_thread(move || {
         // A timed-out queued closure must never perform a later mutation.
         if Instant::now() >= deadline || tx.is_closed() { return; }
@@ -169,36 +183,40 @@ async fn on_main<R: Runtime>(app: &AppHandle<R>, step: Step) -> SocketResponse {
                         check_identity(&state.identity, &dialog_id, state.claimed, state.dispatched, &operation)?;
                         match operation {
                             Operation::Cancel => {
-                                state.claimed = true;
-                                state.dispatched = true;
-                                arg(state.panel, b"cancel:\0", std::ptr::null_mut());
+                                effect_if_active(deadline, tx.is_closed(), || {
+                                    state.claimed = true;
+                                    state.dispatched = true;
+                                    arg(state.panel, b"cancel:\0", std::ptr::null_mut());
+                                })?;
                             }
                             Operation::Select => {
                                 let path = path.unwrap();
-                                let path = validate_path(path.to_str().ok_or_else(|| failure("invalid_path", "Directory path must be UTF-8"))?)?;
                                 let encoded = CString::new(path.to_str().unwrap()).map_err(|_| failure("invalid_path", "Invalid directory path"))?;
                                 let send_string: unsafe extern "C" fn(Id, Sel, *const i8) -> Id = std::mem::transmute(objc_msgSend as *const c_void);
                                 let string = send_string(objc_getClass(b"NSString\0".as_ptr()), sel_registerName(b"stringWithUTF8String:\0".as_ptr()), encoded.as_ptr());
                                 let send_url: unsafe extern "C" fn(Id, Sel, Id, i8) -> Id = std::mem::transmute(objc_msgSend as *const c_void);
                                 let url = send_url(objc_getClass(b"NSURL\0".as_ptr()), sel_registerName(b"fileURLWithPath:isDirectory:\0".as_ptr()), string, 1);
                                 if url.is_null() { return Err(failure("invalid_path", "Cannot create directory URL")); }
-                                state.claimed = true;
-                                state.requested = Some(path);
-                                arg(state.panel, b"setDirectoryURL:\0", url);
+                                effect_if_active(deadline, tx.is_closed(), || {
+                                    state.claimed = true;
+                                    state.requested = Some(path);
+                                    arg(state.panel, b"setDirectoryURL:\0", url);
+                                })?;
                             }
                         }
                         Ok(pending(state))
                     }
-                    Step::Continue(identity) => {
+                    Step::Continue { identity, path } => {
                         if identity != state.identity { return Err(failure("stale_dialog", "Dialog changed during selection; no further action taken")); }
-                        if !state.dispatched {
-                            if let Some(path) = state.requested.as_ref() {
-                                // Navigation is asynchronous. Never press OK for a different selection.
-                                if url_path(state.panel, b"directoryURL\0").as_ref() == Some(path)
-                                    && url_path(state.panel, b"URL\0").as_ref() == Some(path) {
+                        if !state.dispatched && state.requested.as_ref() == Some(&path) {
+                            // Filesystem validation ran off the main thread immediately
+                            // before this step. Native URL reads here are lexical only.
+                            if url_path(state.panel, b"directoryURL\0").as_ref() == Some(&path)
+                                && url_path(state.panel, b"URL\0").as_ref() == Some(&path) {
+                                effect_if_active(deadline, tx.is_closed(), || {
                                     state.dispatched = true;
                                     arg(state.panel, b"ok:\0", std::ptr::null_mut());
-                                }
+                                })?;
                             }
                         }
                         Ok(pending(state))
@@ -208,7 +226,7 @@ async fn on_main<R: Runtime>(app: &AppHandle<R>, step: Step) -> SocketResponse {
         })();
         let _ = tx.send(result.unwrap_or_else(|error| error));
     }).is_err() { return failure("main_thread_unavailable", "Native operation was not queued"); }
-    match tokio::time::timeout(Duration::from_secs(2), rx).await {
+    match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), rx).await {
         Ok(Ok(result)) => result,
         _ => failure(
             "outcome_unknown",
@@ -225,21 +243,46 @@ fn pending(state: &Current) -> SocketResponse {
     )
 }
 
+async fn fresh_path(
+    path: std::path::PathBuf,
+    deadline: Instant,
+) -> Result<std::path::PathBuf, SocketResponse> {
+    validate_off_main(deadline, move || {
+        let fresh = validate_path(
+            path.to_str()
+                .ok_or_else(|| failure("invalid_path", "Directory path must be UTF-8"))?,
+        )?;
+        if fresh != path {
+            return Err(failure(
+                "path_changed",
+                "Validated directory changed; no further native action taken",
+            ));
+        }
+        Ok(fresh)
+    })
+    .await
+}
+
 pub(super) async fn handle<R: Runtime>(
     app: &AppHandle<R>,
     request: Request,
+    deadline: Instant,
 ) -> crate::Result<SocketResponse> {
-    let select_identity = match &request {
+    let select_plan = match &request {
         Request::Resolve {
             dialog_id,
             operation: Operation::Select,
-            ..
-        } => Some(dialog_id.clone()),
+            path: Some(path),
+        } => Some((dialog_id.clone(), path.clone())),
         _ => None,
     };
-    let mut result = on_main(app, Step::Request(request)).await;
-    if let Some(identity) = select_identity {
-        // Bounded continuation of this single accepted request, never a socket retry.
+    if let Some((_, path)) = &select_plan {
+        if let Err(error) = fresh_path(path.clone(), deadline).await {
+            return Ok(error);
+        }
+    }
+    let mut result = on_main(app, Step::Request(request), deadline).await;
+    if let Some((identity, path)) = select_plan {
         for _ in 0..20 {
             if !result.success
                 || result
@@ -251,7 +294,19 @@ pub(super) async fn handle<R: Runtime>(
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
-            result = on_main(app, Step::Continue(identity.clone())).await;
+            let path = match fresh_path(path.clone(), deadline).await {
+                Ok(path) => path,
+                Err(error) => return Ok(error),
+            };
+            result = on_main(
+                app,
+                Step::Continue {
+                    identity: identity.clone(),
+                    path,
+                },
+                deadline,
+            )
+            .await;
         }
     }
     Ok(result)

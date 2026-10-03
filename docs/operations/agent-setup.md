@@ -24,6 +24,10 @@ Sign-in, operating-system permissions, and privacy choices stay with the user. T
 
 A native folder picker can hold onboarding's action lock while a setup request remains pending. Agents can inspect and resolve that existing picker through the authenticated webview socket commands. This does not create a picker or grant operating-system permissions.
 
+The discoverable operator tools are `o8_view_inspect_directory_dialog` (no arguments) and `o8_view_resolve_directory_dialog`. Resolve takes `dialog_id`, `operation` (`select` or `cancel`), and `path` (absolute directory for select, null for cancel). The handlers use the existing authenticated client socket transport. Native responses are pending until ordinary setup and project state establish completion. Do not reconnect-replay resolution.
+
+Directory existence and canonicalization run on a bounded background worker, with fresh validation before navigation and OK. Expired or closed requests cannot dispatch cancellation, navigation, or OK. Nonpicker sheets are refused before any picker-specific selector is sent.
+
 Send a string request `id` and the normal socket authentication. The command payloads are:
 
 ```json

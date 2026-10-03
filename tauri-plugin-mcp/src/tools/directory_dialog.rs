@@ -1,7 +1,10 @@
 //! Narrow control of the app's existing directory sheet, never a new picker.
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 use tauri::{AppHandle, Runtime};
 
 use crate::{shared::commands, socket_server::SocketResponse};
@@ -145,6 +148,18 @@ pub(super) fn check_live(
     Ok(())
 }
 
+// Keep picker-only selector reads lazy until runtime class membership is known.
+pub(super) fn check_panel(
+    is_panel: bool,
+    details: impl FnOnce() -> [bool; 5],
+) -> Result<(), SocketResponse> {
+    if !is_panel {
+        return check_live(false, false, false, false, false, false);
+    }
+    let [attached, visible, directories, files, multiple] = details();
+    check_live(is_panel, attached, visible, directories, files, multiple)
+}
+
 pub(super) fn check_identity(
     current: &str,
     supplied: &str,
@@ -209,12 +224,51 @@ pub(super) mod fixture {
     }
 }
 
+pub(super) fn effect_if_active(
+    deadline: Instant,
+    receiver_closed: bool,
+    effect: impl FnOnce(),
+) -> Result<(), SocketResponse> {
+    if receiver_closed || Instant::now() >= deadline {
+        return Err(failure(
+            "request_expired",
+            "Request expired or receiver closed; no further native action taken",
+        ));
+    }
+    effect();
+    Ok(())
+}
+
+pub(super) async fn validate_off_main<T: Send + 'static>(
+    deadline: Instant,
+    validate: impl FnOnce() -> Result<T, SocketResponse> + Send + 'static,
+) -> Result<T, SocketResponse> {
+    match tokio::time::timeout_at(
+        tokio::time::Instant::from_std(deadline),
+        tokio::task::spawn_blocking(validate),
+    )
+    .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err(failure(
+            "validation_unavailable",
+            "Directory validation worker failed; no native action taken",
+        )),
+        Err(_) => Err(failure(
+            "request_expired",
+            "Directory validation exceeded request deadline; no native action taken",
+        )),
+    }
+}
+
 pub async fn handle<R: Runtime>(
     app: &AppHandle<R>,
     command: &str,
     payload: Value,
 ) -> crate::Result<SocketResponse> {
-    let request = match parse(command, payload) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let command = command.to_owned();
+    let request = match validate_off_main(deadline, move || parse(&command, payload)).await {
         Ok(request) => request,
         Err(error) => return Ok(error),
     };
@@ -224,7 +278,7 @@ pub async fn handle<R: Runtime>(
     }
     #[cfg(target_os = "macos")]
     {
-        macos::handle(app, request).await
+        macos::handle(app, request, deadline).await
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -239,6 +293,46 @@ pub async fn handle<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nonpicker_refusal_does_not_read_picker_selectors() {
+        let reads = std::cell::Cell::new(0);
+        let result = check_panel(false, || {
+            reads.set(reads.get() + 1);
+            [true, true, true, false, false]
+        });
+        assert_eq!(
+            result.unwrap_err().error.as_deref(),
+            Some("wrong_dialog_type")
+        );
+        assert_eq!(
+            reads.get(),
+            0,
+            "Nonpicker objects must not receive picker selectors"
+        );
+    }
+
+    #[tokio::test]
+    async fn slow_validation_and_closed_receivers_cannot_dispatch_late_effects() {
+        let effects = std::cell::Cell::new(0);
+        let deadline = Instant::now() + Duration::from_millis(5);
+        let result = validate_off_main(deadline, || {
+            std::thread::sleep(Duration::from_millis(30));
+            Ok(())
+        })
+        .await;
+        assert_eq!(
+            result.unwrap_err().error.as_deref(),
+            Some("request_expired")
+        );
+        assert!(effect_if_active(deadline, false, || effects.set(1)).is_err());
+        assert!(
+            effect_if_active(Instant::now() + Duration::from_secs(1), true, || effects
+                .set(1))
+            .is_err()
+        );
+        assert_eq!(effects.get(), 0);
+    }
 
     #[test]
     fn shared_commands_validate_schema_and_path_before_native_dispatch() {
