@@ -1252,6 +1252,12 @@
       ]
     },
     {
+      "path": "tests/auth-native-logging.test.ts",
+      "reasons": [
+        "native-build"
+      ]
+    },
+    {
       "path": "tests/automatic-release-real-path.test.ts",
       "reasons": [
         "child-process",
@@ -2998,6 +3004,18 @@
       "path": "tests/persistent-terminals.test.ts",
       "reasons": [
         "terminal-tool"
+      ]
+    },
+    {
+      "path": "tests/pi-sdk-approved-write.test.ts",
+      "reasons": [
+        "child-process"
+      ]
+    },
+    {
+      "path": "tests/pi-sdk-worker-real-path.test.ts",
+      "reasons": [
+        "real-path"
       ]
     },
     {
