@@ -104,9 +104,11 @@ service configuration are set. Do not invent credentials or change a user's
 OAuth settings as part of package validation.
 
 The domain challenge must contain the portal-generated token verbatim at
-`https://relay.o8.run/.well-known/openai-apps-challenge`. Preserve existing
-challenge tokens when adding another draft. A challenge response alone does
-not prove the MCP service or OAuth flow works.
+`https://relay.o8.run/.well-known/openai-apps-challenge`. Return only one exact
+plaintext token: no JSON, list, or added newline. If another plugin already
+uses that challenge URL, use an eligible parent domain or a distinct hostname;
+never replace its token or combine tokens. A challenge response alone does not
+prove the MCP service or OAuth flow works.
 
 ## Upload, review, publication
 
