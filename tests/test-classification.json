@@ -2207,6 +2207,17 @@
       ]
     },
     {
+      "path": "tests/interrupted-supervisor-recovery-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli",
+        "network-listener",
+        "process-signal",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/judgment-client-real-path.test.ts",
       "reasons": [
         "executable-fixture",
