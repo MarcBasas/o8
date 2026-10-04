@@ -3007,6 +3007,18 @@
       ]
     },
     {
+      "path": "tests/pi-sdk-approved-write.test.ts",
+      "reasons": [
+        "child-process"
+      ]
+    },
+    {
+      "path": "tests/pi-sdk-worker-real-path.test.ts",
+      "reasons": [
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/plugin-principal-real-path.test.ts",
       "reasons": [
         "real-path"
