@@ -1609,6 +1609,15 @@
       ]
     },
     {
+      "path": "tests/close-current-registry-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "real-path",
+        "worktree-api"
+      ]
+    },
+    {
       "path": "tests/close-packet-unmerged-preservation-real-path.test.ts",
       "reasons": [
         "child-process",
