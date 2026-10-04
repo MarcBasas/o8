@@ -1613,7 +1613,8 @@
       "reasons": [
         "child-process",
         "git-cli",
-        "real-path"
+        "real-path",
+        "worktree-api"
       ]
     },
     {
