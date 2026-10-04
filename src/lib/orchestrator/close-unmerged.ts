@@ -190,6 +190,9 @@ async function markPacketClosed(
   closedAt: string,
   worktreeCleanup: 'missing' | 'removed' | 'preserved',
 ): Promise<boolean> {
+  const sameGeneration = (packet: OrchestratorPacket) => packet.storageAdmissionEpoch === guard.previousPacket.storageAdmissionEpoch
+    && packet.attemptCount === guard.previousPacket.attemptCount
+    && packet.lane?.laneId === guard.previousPacket.lane?.laneId;
   const archive = (packet: OrchestratorPacket) => {
     packet.status = 'archived';
     packet.queueState = 'held';
@@ -208,7 +211,7 @@ async function markPacketClosed(
     const { result } = await withLockedState<boolean | null>(async (state) => {
       if (state.missionId !== guard.missionId) return null;
       const packet = state.packets.find((candidate) => candidate.id === guard.packetId);
-      if (!packet || !packetLifecycleGuardMatches(packet, guard)) return false;
+      if (!packet || !sameGeneration(packet) || !packetLifecycleGuardMatches(packet, guard)) return false;
       if (readMissionRegistryEntry(guard.missionId, { includeArchived: true })) {
         const { result: mirrored } = await withMissionRegistryState(guard.missionId, (registry) => {
           const target = registry.packets.find((candidate) => candidate.id === guard.packetId);
@@ -216,17 +219,12 @@ async function markPacketClosed(
           // The current hold may not have reached the registry. Accept that
           // captured lifecycle only; never overwrite a newer owner/generation.
           const captured = target
-            && target.storageAdmissionEpoch === previous.storageAdmissionEpoch
-            && target.attemptCount === previous.attemptCount
-            && target.lane?.laneId === previous.lane?.laneId
             && target.releaseStatePayload?.source === previous.releaseStatePayload?.source
             && target.status === previous.status
             && target.queueState === previous.queueState
             && target.operatorStopped === previous.operatorStopped;
           if (!target
-            || target.storageAdmissionEpoch !== previous.storageAdmissionEpoch
-            || target.attemptCount !== previous.attemptCount
-            || target.lane?.laneId !== previous.lane?.laneId
+            || !sameGeneration(target)
             || (!packetLifecycleGuardMatches(target, guard) && !captured)) {
             return { state: registry, result: false };
           }
@@ -241,7 +239,7 @@ async function markPacketClosed(
     if (result !== null) return result;
     const { result: closed } = await withMissionRegistryState(guard.missionId, (state) => {
       const packet = state.packets.find((candidate) => candidate.id === guard.packetId);
-      if (!packet || !packetLifecycleGuardMatches(packet, guard)) return { state, result: false };
+      if (!packet || !sameGeneration(packet) || !packetLifecycleGuardMatches(packet, guard)) return { state, result: false };
       archive(packet);
       return { state, result: true };
     });
