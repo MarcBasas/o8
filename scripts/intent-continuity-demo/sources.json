@@ -1,0 +1,52 @@
+{
+  "schema": "o8/intent-demo-sources/v1",
+  "files": [
+    {
+      "name": "aodl-validation.ts",
+      "commit": "16e2dd430e274eeb344a66eec2bbbe7adb3f40d9",
+      "path": "src/lib/orchestrator/aodl-validation.ts",
+      "sha256": "afdfbd98ffcbd1676400d7f45d34c9124b87948a55f735ffdfbd72677e796fcd",
+      "url": "https://raw.githubusercontent.com/kvnloo/o8/16e2dd430e274eeb344a66eec2bbbe7adb3f40d9/src/lib/orchestrator/aodl-validation.ts"
+    },
+    {
+      "name": "intent-contract-store.ts",
+      "commit": "16e2dd430e274eeb344a66eec2bbbe7adb3f40d9",
+      "path": "src/lib/orchestrator/intent-contract-store.ts",
+      "sha256": "a40aa31a4664c6eabdf1e31c357184123c281c1d97b649565e85cb50ac798905",
+      "url": "https://raw.githubusercontent.com/kvnloo/o8/16e2dd430e274eeb344a66eec2bbbe7adb3f40d9/src/lib/orchestrator/intent-contract-store.ts"
+    },
+    {
+      "name": "route.ts",
+      "commit": "16e2dd430e274eeb344a66eec2bbbe7adb3f40d9",
+      "path": "src/app/api/orchestrator/intent-contract/route.ts",
+      "sha256": "7aadd9b278cb9febdc9c7d8fe27d3328fdf725838aa106ed2af920ba6f686002",
+      "url": "https://raw.githubusercontent.com/kvnloo/o8/16e2dd430e274eeb344a66eec2bbbe7adb3f40d9/src/app/api/orchestrator/intent-contract/route.ts"
+    },
+    {
+      "name": "mobile-ripple-overlay.tsx",
+      "commit": "ffb2b152ebec6be647b5905d9b53f809a56dbebc",
+      "path": "src/app/mobile/mobile-ripple-overlay.tsx",
+      "sha256": "3e7ab76d33dc1ae706529431d4a39c1e1607fcb73b18c3ca8cb09fa5d58641de",
+      "url": "https://raw.githubusercontent.com/kvnloo/o8/ffb2b152ebec6be647b5905d9b53f809a56dbebc/src/app/mobile/mobile-ripple-overlay.tsx"
+    },
+    {
+      "name": "ripple-contract.ts",
+      "commit": "ffb2b152ebec6be647b5905d9b53f809a56dbebc",
+      "path": "src/lib/mobile/ripple-contract.ts",
+      "sha256": "7063191eab538700776f893d08718d18179f38050b28758cddfc05242902d6f1",
+      "url": "https://raw.githubusercontent.com/kvnloo/o8/ffb2b152ebec6be647b5905d9b53f809a56dbebc/src/lib/mobile/ripple-contract.ts"
+    },
+    {
+      "name": "mobile-approvals-shared.tsx",
+      "commit": "ffb2b152ebec6be647b5905d9b53f809a56dbebc",
+      "path": "src/app/mobile/mobile-approvals-shared.tsx",
+      "sha256": "c2b4849d5e8ec7527b73271ab5f65c539aa5ea75e9c832cca383e8e74c4782ad",
+      "url": "https://raw.githubusercontent.com/kvnloo/o8/ffb2b152ebec6be647b5905d9b53f809a56dbebc/src/app/mobile/mobile-approvals-shared.tsx"
+    }
+  ],
+  "aodl": {
+    "commit": "ba9190a6dadcc5ca747c7766b3b53bfc246ce53e",
+    "sha256": "b597d2e119488119e818eb5555bae00e304e1505132000afe262410846fca530",
+    "url": "https://codeload.github.com/kvnloo/aodl/tar.gz/ba9190a6dadcc5ca747c7766b3b53bfc246ce53e"
+  }
+}

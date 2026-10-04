@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Intent continuity, running locally</title>
+<style>
+  :root{color-scheme:light dark;--page:light-dark(#fbfbfb,#17191e);--text:light-dark(#202226,#e8eaee);--secondary:light-dark(#60656c,#b9bec7);--line:light-dark(#dadde2,#444a55);--surface:light-dark(#fff,#252a32);--good:light-dark(#20623a,#96d4aa);--bad:light-dark(#9a3226,#f8ada2)}
+  *{box-sizing:border-box}body::-webkit-scrollbar{display:none}body{scrollbar-width:none;margin:0;background:var(--page);color:var(--text);font:16px/1.5 system-ui,sans-serif}
+  main{max-width:880px;padding:36px 24px 48px;margin:auto}h1{font-size:30px;font-weight:500;letter-spacing:-.6px;margin:0 0 8px}
+  h2{font-size:21px;font-weight:500;margin:0 0 12px}p{margin:0 0 18px}.muted{color:var(--secondary);font-size:14px}
+  nav{display:flex;gap:8px;flex-wrap:wrap;margin:28px 0 24px}button{font:inherit;min-height:44px;background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:8px 13px}
+  button[aria-selected="true"]{background:var(--text);color:var(--page);border-color:var(--text)}button:disabled{opacity:.55}
+  .actions{display:flex;gap:9px;flex-wrap:wrap;margin:18px 0}.sample{padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--surface)}
+  .result{padding:14px 0;color:var(--good);min-height:58px}.result[data-error="true"]{color:var(--bad)}
+  .versions{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:18px 0}.versions article{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--surface)}
+  .versions p{margin:8px 0 0}.stamp{color:var(--secondary);font-size:14px;overflow-wrap:anywhere}a{color:inherit}
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:22px 0}.flow span{padding:8px 0}.planned{border-bottom:1px dashed var(--line)}
+  [hidden]{display:none!important}.receipt{border-top:1px solid var(--line);padding-top:18px;margin-top:24px}
+  @media(max-width:550px){main{padding:24px 16px}h1{font-size:25px}.versions{grid-template-columns:1fr}}
+</style>
+</head>
+<body><main>
+<h1>Intent continuity, running locally</h1>
+<p>The checker and version storage below run the pinned draft code. The mobile question panel is the pinned component.</p>
+<p class="muted">Private demonstration • synthetic instructions • supplied login and storage setup • no model calls or workers started</p>
+<nav role="tablist" aria-label="Demo sections">
+<button id="storage-tab" type="button" role="tab" aria-controls="storage-panel" aria-selected="true">Original instructions</button>
+<button id="ripple-tab" type="button" role="tab" aria-controls="ripple-panel" aria-selected="false">Ripple panel</button>
+<button id="experiment-tab" type="button" role="tab" aria-controls="experiment-panel" aria-selected="false">Planned handoff test</button>
+<button id="fit-tab" type="button" role="tab" aria-controls="fit-panel" aria-selected="false">How it fits o8</button>
+</nav>
+<section id="storage-panel" role="tabpanel" aria-labelledby="storage-tab">
+<h2>Can an agent quietly change the assignment?</h2>
+<div class="sample">“Make checkout respond in 150 ms. Keep the layout. Do not deploy.”</div>
+<div class="actions">
+<button type="button" data-action="check">Check instructions</button>
+<button type="button" data-action="save">Save original</button>
+<button type="button" data-action="replay" disabled>Save same again</button>
+<button type="button" data-action="overwrite" disabled>Try to overwrite</button>
+<button type="button" data-action="new-version" disabled>Add revised version</button>
+<button type="button" data-action="read-original" disabled>Read original again</button>
+</div>
+<div id="result" class="result" aria-live="polite">Start by checking or saving the original.</div>
+<div class="versions">
+<article><span>Original • version 0</span><p id="original-goal">Not saved yet</p><div id="original-stamp" class="stamp"></div></article>
+<article><span>Revision • version 1</span><p id="revised-goal">Not saved yet</p><div id="revised-stamp" class="stamp"></div></article>
+</div>
+<p class="muted">Changing the goal at the same version is refused. A deliberate new version can sit beside the old one. Storage cannot decide whether your instructions are sensible or your work is correct.</p>
+<div class="receipt">Run <code>npm test</code> and <code>npm run test:checker</code> to collect your own local receipts. These are fixture checks, not installed-app acceptance.</div>
+</section>
+<section id="ripple-panel" role="tabpanel" aria-labelledby="ripple-tab" hidden>
+<h2>Ask one useful question before acting</h2>
+<p>The unchanged mobile Ripple component is below. The question, options, palette and callbacks are supplied by this demo.</p>
+<div id="ripple-preview-root"></div>
+<p class="muted" style="margin-top:24px">This proves the component renders and responds to a choice. It does not prove real dictation, whole-screen drawing, model judgment, or connection to the new saved instruction versions.</p>
+</section>
+<section id="experiment-panel" role="tabpanel" aria-labelledby="experiment-tab" hidden>
+<h2>Can the original goal survive a handoff?</h2>
+<p class="muted">Planned experiment. This screen illustrates expected behavior; no workers run here.</p>
+<div class="actions"><button type="button" id="previous-step" disabled>Previous step</button><button type="button" id="next-step">Next step</button></div>
+<div class="sample">
+<div class="muted" id="step-count"></div>
+<h2 id="step-title"></h2>
+<div id="step-scene"></div>
+</div>
+<div class="result" id="step-detail" aria-live="polite"></div>
+<p>The real test must record worker actions and verify the result against the saved goal. Reading this walkthrough does not make the experiment pass.</p>
+</section>
+<section id="fit-panel" role="tabpanel" aria-labelledby="fit-tab" hidden>
+<h2>One assignment, many workers</h2>
+<div class="flow" role="img" aria-label="Your instructions lead to clarification, validation, storage, planned worker handoff and verification.">
+<span>Your request</span><span>→</span><span>Clarify</span><span>→</span><span>Check + save</span><span>→</span><span class="planned">Worker handoff</span><span>→</span><span class="planned">Verify original</span>
+</div>
+<p>The new backend stops at “check + save.” The useful next proof is a real task switching workers, surviving a source change, and finishing against the original instructions.</p>
+<p>Shared memory would carry a short, source-linked handoff. z0 would offer small decision helpers. Ripple would capture a choice through voice, drawing or text. o8 would keep control of task execution and permissions.</p>
+<p class="muted">The handoff and quality helpers have earlier separate code and studies. Their connection to this new storage is still a proposal.</p>
+</section>
+<div class="receipt muted">
+Source: <a href="https://github.com/kvnloo/o8/pull/27">backend draft</a> ·
+<a href="https://github.com/kvnloo/aodl/pull/42">checker draft</a> ·
+<a href="https://github.com/hurttlocker/o8/pull/3146">mobile Ripple draft</a>
+</div>
+</main>
+<script src="/ripple-preview.js"></script>
+<script src="/demo-ui.js"></script>
+</body></html>

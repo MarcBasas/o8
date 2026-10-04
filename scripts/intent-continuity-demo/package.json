@@ -1,0 +1,19 @@
+{
+  "name": "o8-intent-continuity-demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "prepare-demo": "python3 prepare.py",
+    "build": "npm run prepare-demo && node build.mjs",
+    "demo": "npm run build && node server.mjs",
+    "test": "npm run build && node verify.mjs",
+    "test:checker": "python3 prepare.py --test"
+  },
+  "dependencies": {
+    "esbuild": "0.28.1",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  }
+}
