@@ -14,8 +14,9 @@ process.env.O8_DATA_DIR = root;
 process.env.CORTEX_IDE_DATA_DIR = root;
 process.env.O8_CLOUD_JOB_LEASE_MS = '3000';
 const { createCloudWorkerKey } = await import('@/lib/cloud/worker-auth');
-const { enqueueCloudJob, getJob, readJobEvents } = await import('@/lib/cloud/job-queue');
+const { cancelJob, enqueueCloudJob, getJob, readJobEvents } = await import('@/lib/cloud/job-queue');
 const { closeDb } = await import('@/lib/db');
+const { listConnectedCloudWorkers } = await import('@/lib/cloud/worker-presence');
 const poll = await import('@/app/api/cloud/worker-poll/route');
 const stream = await import('@/app/api/cloud/worker-stream/route');
 const control = await import('@/app/api/cloud/worker-control/route');
@@ -36,8 +37,10 @@ function isAlive(pid: number) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-async function bridge(immediateEmpty = false) {
+async function bridge(immediateEmpty = false, holdHeartbeat = false) {
   let polls = 0;
+  let emptyResponses = 0;
+  const waits: Array<number | null> = [];
   const server = createServer(async (incoming, outgoing) => {
     const disconnect = new AbortController();
     outgoing.once('close', () => disconnect.abort());
@@ -50,13 +53,27 @@ async function bridge(immediateEmpty = false) {
         ...(chunks.length ? { body: Buffer.concat(chunks) } : {}),
       });
       const route = new URL(request.url).pathname;
-      if (route === '/api/cloud/worker-poll') polls += 1;
+      if (route === '/api/cloud/worker-poll') {
+        polls += 1;
+        const wait = new URL(request.url).searchParams.get('waitMs');
+        waits.push(wait === null ? null : Number(wait));
+      }
       const response = route === '/api/cloud/worker-poll'
         ? immediateEmpty ? new Response(null, { status: 204 }) : await poll.GET(request)
         : route === '/api/cloud/worker-stream' ? await stream.POST(request)
           : route === '/api/cloud/worker-control' ? await control.GET(request)
             : new Response(null, { status: 404 });
+      if (holdHeartbeat && route === '/api/cloud/worker-stream'
+        && chunks.length && JSON.parse(Buffer.concat(chunks).toString()).type === 'heartbeat') {
+        // Persist the renewal, but lose its acknowledgement until this request
+        // disconnects. The worker must report its watchdog cause before expiry.
+        await new Promise<void>((resolve) => {
+          if (disconnect.signal.aborted) resolve();
+          else disconnect.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+      }
       if (!outgoing.destroyed) {
+        if (route === '/api/cloud/worker-poll' && response.status === 204) emptyResponses += 1;
         outgoing.writeHead(response.status, Object.fromEntries(response.headers));
         outgoing.end(Buffer.from(await response.arrayBuffer()));
       }
@@ -68,6 +85,8 @@ async function bridge(immediateEmpty = false) {
   return {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     polls: () => polls,
+    waits: () => waits,
+    emptyResponses: () => emptyResponses,
     close: async () => {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -100,6 +119,57 @@ async function forceCleanup(child: ChildProcess) {
 }
 
 describe.skipIf(process.platform === 'win32')('built durable worker shutdown', () => {
+  it('persists the lease watchdog cause when a heartbeat acknowledgement is lost', async () => {
+    process.env.O8_CLOUD_JOB_LEASE_MS = '6000';
+    const jobId = 'lost-heartbeat-acknowledgement';
+    enqueueCloudJob('team_default', jobId, {
+      cwd: '', prompt: 'Do not start an agent before lease confirmation.',
+      remoteSource: { repoUrl: 'https://example.invalid/never-cloned.git', baseSha: 'a'.repeat(40), branch: 'o8/watchdog' },
+    });
+    const http = await bridge(false, true);
+    const workspace = join(root, 'watchdog-cause');
+    const worker = runner(http.url, workspace);
+    try {
+      await until(() => readJobEvents('team_default', jobId).some((event) => event.type === 'errored'));
+      closeDb();
+      const event = readJobEvents('team_default', jobId).find((entry) => entry.type === 'errored')!;
+      expect(event.payload).toMatchObject({ message: '[worker] lease renewal was not confirmed before expiry' });
+      expect(worker.output()).toContain('lease renewal was not confirmed before expiry');
+      expect(worker.output()).not.toContain(key.plaintext);
+      expect(readdirSync(workspace).some((name) => name.startsWith(jobId + '-'))).toBe(false);
+      worker.child.kill('SIGTERM');
+      await until(() => worker.child.exitCode !== null, 2500);
+    } finally {
+      cancelJob('team_default', jobId);
+      await forceCleanup(worker.child);
+      await http.close();
+      process.env.O8_CLOUD_JOB_LEASE_MS = '3000';
+    }
+  }, 20_000);
+
+  it('finishes an authenticated empty poll below its request deadline without a false timeout', async () => {
+    const http = await bridge();
+    const workspace = join(root, 'healthy-idle');
+    const worker = runner(http.url, workspace);
+    try {
+      await until(() => http.polls() === 1);
+      expect(http.waits()[0]).toBeGreaterThan(0);
+      expect(http.waits()[0]).toBeLessThan(12_000);
+      await until(() => http.emptyResponses() === 1);
+      closeDb();
+      const identity = JSON.parse(readFileSync(join(workspace, 'worker-state.json'), 'utf8')) as { workerId: string; cursor: number };
+      expect(listConnectedCloudWorkers()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ workerId: identity.workerId }),
+      ]));
+      expect(identity.cursor).toBe(0);
+      expect(worker.output()).not.toContain('poll failed');
+      worker.child.kill('SIGTERM');
+      await until(() => worker.child.exitCode !== null, 2500);
+      expect(await worker.exited).toBe(0);
+      expect(http.polls()).toBe(1);
+    } finally { await forceCleanup(worker.child); await http.close(); }
+  }, 20_000);
+
   it.each([false, true])('interrupts an idle %s poll or delay without another claim', async (immediateEmpty) => {
     const http = await bridge(immediateEmpty);
     const worker = runner(http.url, join(root, `idle-${immediateEmpty}`));

@@ -1,4 +1,4 @@
-import { normalizeClaudeCodePacketPins, normalizeDecompositionMetadata, normalizePacketDispatcher, normalizePacketExecutionCarrier, normalizePacketLaunchContext, normalizePacketTaskContractFields, normalizePacketType } from '@/lib/orchestrator/normalize/decomposition';
+import { normalizeClaudeCodePacketPins, normalizeDecompositionMetadata, normalizePacketDispatcher, normalizePacketExecutionCarrier, normalizePacketLaunchContext, normalizePacketTaskContractFields, normalizePacketType, normalizePacketWorkspaceIdentity } from '@/lib/orchestrator/normalize/decomposition';
 import { normalizeRuntimeStatusToOrchestratorStatus } from '@/lib/orchestrator/runtime-status';
 import { runtimeTruthHasActiveWriter } from '@/lib/orchestrator/runtime-truth';
 import { normalizePacketRecovery } from '@/lib/lane/recovery-info';
@@ -40,7 +40,7 @@ import { normalizeReleaseStatePayload } from '@/lib/orchestrator/release-state-p
 import type { MobileTranscriptEntry } from '@/lib/mobile/types';
 export type { DomainLaneSummary } from '@/lib/orchestrator/domain-lane-summary';
 function normalizeRuntime(value: unknown): OrchestratorRuntime {
-  return isDispatchableRuntime(value) ? value : 'codex';
+  return isDispatchableRuntime(value) || value === 'cloud' ? value : 'codex';
 }
 if (typeof window !== 'undefined') installOrchestratorTurnPinFetchPatch();
 export const ORCHESTRATOR_STATE_EVENT = 'cortex:orchestrator-state-changed';
@@ -323,7 +323,7 @@ function normalizePacket(raw: unknown, index: number, existing: Array<Pick<Orche
     referenceLabel,
     title: typeof packet.title === 'string' && packet.title.trim() ? packet.title : `Packet ${index + 1}`,
     summary: typeof packet.summary === 'string' ? packet.summary : '', origin: packet.origin === 'design-mode' ? 'design-mode' : undefined,
-    workspaceTargetPath: typeof packet.workspaceTargetPath === 'string' && packet.workspaceTargetPath.trim() ? packet.workspaceTargetPath : null,
+    ...normalizePacketWorkspaceIdentity(packet),
     branchTarget: branchTarget || (queueState === 'draft' ? '' : 'main'),
     runtime: workerRouting.selectedRuntime, model: typeof packet.model === 'string' && packet.model.trim() ? packet.model.trim() : null,
     dependencyLabels: Array.isArray(packet.dependencyLabels)
@@ -1030,7 +1030,7 @@ export function reconcileOrchestratorMissionState(
       if (ds === 'running') { next.status = 'running'; return next; }
       if (ds === 'launching') { next.status = 'launching'; return next; }
       if (ds === 'awaiting_input') {
-        next.status = 'blocked';
+        next.status = 'blocked'; if (domainLane.authRecoveryRequired) next.queueState = 'held';
         // #1469 — preserve the REAL reason. The dag fold-back and the
         // rebase-conflict path both set a truthful blockedReason (conflicting
         // files, fetch failure) before the lane parks awaiting_input;
