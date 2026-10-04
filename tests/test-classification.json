@@ -1696,6 +1696,7 @@
         "child-process",
         "executable-fixture",
         "git-cli",
+        "network-listener",
         "real-path"
       ]
     },
