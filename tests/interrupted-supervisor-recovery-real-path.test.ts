@@ -91,6 +91,18 @@ async function action(surfaceId: string, extra: Record<string, unknown> = {}) {
   });
   return response.json();
 }
+async function httpLaunch(extra: Record<string, unknown> = {}) {
+  const response = await fetch(`http://127.0.0.1:${port}/api/runtime/launch`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ runtime: 'codex', prompt: 'Synthetic launch fixture.', cwd: repo, repoPath: repo,
+      model: MODEL_IDS.raw.openAiGpt61Sol, effort: 'medium', skipSetup: true, isolate: false,
+      clientMutationId: crypto.randomUUID(), ...extra }),
+  });
+  const result = await response.json();
+  expect(response.status, JSON.stringify(result)).toBe(result.ok ? 200 : 400);
+  if (result.ok) surfaces.push(result.surfaceId);
+  return result;
+}
 function watch(surfaceId: string, fleetStatus?: string) {
   const callbacks = {
     fetchFleetStatus: async () => fleetStatus ? [{ sessionKey: surfaceId, status: fleetStatus }] :
@@ -243,6 +255,67 @@ it('returns a durable no-effect launch refusal for interrupted retry generations
   expect((await send({ ...body, automaticRecoveryRunId: 'changed' })).status).toBe(409);
   expect(starts()).toBe(before);
 }, 25_000);
+
+it('launches an uninterrupted current-generation retry and an explicit normal launch through the authenticated route', async () => {
+  const original = await launch('finished'); const generation = record(original).recentRuns[0].id;
+  writeFileSync(join(root, 'mode'), 'running'); const before = starts();
+  const retry = await httpLaunch({ automaticRecoverySurfaceId: original, automaticRecoveryRunId: generation });
+  expect(retry, retry.note).toMatchObject({ ok: true, runtime: 'codex' });
+  expect(retry.surfaceId).not.toBe(original);
+  await waitFor(() => starts() === before + 1 && Boolean(record(retry.surfaceId).threadId));
+  expect(record(original).recentRuns[0]).toMatchObject({ id: generation, outcome: 'finished' });
+  const explicit = await httpLaunch();
+  expect(explicit, explicit.note).toMatchObject({ ok: true, runtime: 'codex' });
+  await waitFor(() => starts() === before + 2 && Boolean(record(explicit.surfaceId).threadId));
+  expect(explicit.surfaceId).not.toBe(retry.surfaceId);
+}, 40_000);
+
+it.each(['interrupt', 'resume'] as const)('refuses a queued automatic launch after the original session lock observes %s', async transition => {
+  const original = await launch(transition === 'interrupt' ? 'running' : 'finished');
+  const generation = (record(original).activeRun ?? record(original).recentRuns[0]).id;
+  writeFileSync(join(root, 'mode'), 'running'); const before = starts();
+  const { ensureDispatchBackendReady } = await import('@/lib/runtimes/shared/dispatch-readiness');
+  let entered = false; let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  // The first real launch holds the ORIGINAL store mutex while its provider
+  // readiness boundary waits. Neither the launch wrapper nor lock is replaced.
+  vi.mocked(ensureDispatchBackendReady).mockImplementationOnce(async () => {
+    entered = true; await blocked;
+    return { ready: true, reason: 'Synthetic provider ready.', waitedMs: 0, attempts: 1,
+      lastCheck: { ready: true, reason: 'Synthetic provider ready.', apiBase: `http://127.0.0.1:${port}`,
+        portSource: 'file', apiPortFilePresent: true } };
+  });
+  const guard = { automaticRecoverySurfaceId: original, automaticRecoveryRunId: generation };
+  const first = httpLaunch(guard);
+  try {
+    await waitFor(() => entered);
+    // These production store operations queue on the same mutex before the
+    // second authenticated launch, changing the generation while it waits.
+    const changed = transition === 'interrupt'
+      ? owned.interruptOwnedCodexSession(original)
+      : owned.continueOwnedCodexSession(original, 'Explicit new generation.');
+    let settled = false;
+    const queued = httpLaunch(guard).then(result => { settled = true; return result; });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(settled).toBe(false); expect(starts()).toBe(before);
+    release();
+    expect(await first).toMatchObject({ ok: true });
+    expect(await changed).toMatchObject(transition === 'interrupt' ? { interrupted: true } : { ok: true });
+    const refused = await queued;
+    expect(refused).toMatchObject({ ok: false, surfaceId: '', note: expect.stringContaining(
+      transition === 'interrupt' ? 'interrupted' : 'changed') });
+    expect(refused.outcomeUnknown).not.toBe(true);
+    const expectedStarts = before + (transition === 'interrupt' ? 1 : 2);
+    await waitFor(() => starts() === expectedStarts);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(starts()).toBe(expectedStarts);
+    const current = record(original).activeRun ?? record(original).recentRuns[0];
+    if (transition === 'interrupt') expect(current).toMatchObject({ id: generation, outcome: 'interrupted' });
+    else expect(current.id).not.toBe(generation);
+  } finally {
+    release(); await first;
+  }
+}, 40_000);
 
 it('retains unknown action outcomes without retrying the automatic mutation', async () => {
   const surface = await launch('finished'); const before = starts();
