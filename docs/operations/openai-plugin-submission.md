@@ -98,6 +98,11 @@ The dashboard sets the public developer name from that identity. Verify that
 website, support, privacy and terms identify the publisher and are accessible.
 Do not treat an existing unrelated organization as the chosen publisher.
 
+This package uses its creator's public individual name. Select the approved
+individual identity in the dashboard and reconcile its displayed name before
+submission. The service operator named in the privacy policy and terms remains
+the legal provider; choosing an individual publisher does not change it.
+
 Prepare configuration and deploy approval separately from code review. The
 hosted implementation remains unavailable until the account provider and
 service configuration are set. Do not invent credentials or change a user's
