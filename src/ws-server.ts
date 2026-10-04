@@ -8182,7 +8182,7 @@ const httpServer = createServer((req, res) => {
     req.on('end', () => {
       void (async () => {
         try {
-          const body = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as { surfaceId?: string };
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as { surfaceId?: string; runId?: string };
           const surfaceId = typeof body.surfaceId === 'string' ? body.surfaceId.trim() : '';
           if (!surfaceId) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -8199,12 +8199,13 @@ const httpServer = createServer((req, res) => {
             if (exit && watched) watchedAttemptIds.set(watched, workerExitAttemptId(exit));
           };
           stampAttempt();
-          let ingested = await ingestAgentCompletionSignal(surfaceId);
+          const runId = typeof body.runId === 'string' ? body.runId : undefined;
+          let ingested = await ingestAgentCompletionSignal(surfaceId, runId);
           if (!ingested) {
             if (lane && !isTerminalLaneStatus(lane.status)) {
               registerWatchedAgent(surfaceId, lane.repoPath, lane.label || lane.branch, '');
               stampAttempt();
-              ingested = await ingestAgentCompletionSignal(surfaceId);
+              ingested = await ingestAgentCompletionSignal(surfaceId, runId);
             }
           }
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -9608,11 +9609,12 @@ async function bootstrapWsServer() {
           toolName: entry.toolName,
         }));
       },
-      async steerAgent(surfaceId, message) {
+      async steerAgent(surfaceId, message, automaticRecoveryRunId) {
         await fetchRuntimeAction({
           action: 'steer',
           surfaceId,
           message,
+          automaticRecoveryRunId,
           clientMutationId: randomUUID(),
         });
       },
