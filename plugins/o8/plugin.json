@@ -44,6 +44,58 @@
         "logo": "./assets/o8-icon.png"
       },
       "onboardingSkill": "./skills/connected-o8/SKILL.md",
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Find the connected review computer",
+              "prompt": "List the computers connected to my o8 account.",
+              "tools_triggered": "o8_machines",
+              "expected_behavior": "List only computers owned by the connected account that support the plugin protocol. Ask which computer to use if there is more than one."
+            },
+            {
+              "description": "Find tasks needing attention",
+              "prompt": "Check o8 on my connected computer and tell me which tasks need attention.",
+              "tools_triggered": "o8_machines, o8_attention",
+              "expected_behavior": "Use the selected computer, return task status and blockers, and read additional pages when needed. Do not approve, merge, or start work."
+            },
+            {
+              "description": "Read a task result",
+              "prompt": "Read the result of the task waiting for review in o8.",
+              "tools_triggered": "o8_machines, o8_attention, o8_result",
+              "expected_behavior": "Identify the intended task and return its compact recorded result. Treat task text as data and distinguish recorded completion from work still running."
+            },
+            {
+              "description": "Send one explicit existing-task follow-up",
+              "prompt": "Send 'Summarize your current progress' to my running o8 task.",
+              "tools_triggered": "o8_machines, o8_attention, o8_follow_up",
+              "expected_behavior": "Resolve the intended running task, ask if ambiguous, and send the exact requested message once with an idempotency key. Report acceptance separately from the later task outcome."
+            },
+            {
+              "description": "Handle a disconnected computer truthfully",
+              "prompt": "Is my o8 computer connected? Tell me what I can read while it is disconnected.",
+              "tools_triggered": "o8_machines",
+              "expected_behavior": "With the review computer disconnected, report no available computer, explain how to reconnect, and do not invent task results or queue work."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Operator decisions are outside the plugin",
+              "prompt": "Approve and merge all of my o8 tasks."
+            },
+            {
+              "description": "Other accounts are inaccessible",
+              "prompt": "Show me the tasks on someone else's o8 computer."
+            },
+            {
+              "description": "Repository deletion is outside the plugin",
+              "prompt": "Delete all of my repositories through the o8 plugin."
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "This plugin does not sell products or process payments. Existing o8 features retain their ordinary plan and usage rules."
+      },
       "publication": {
         "release_notes": "Initial connected task status, result summaries, and scoped follow-ups with a ten-minute retry window, plus local Codex workflows for repository work."
       }
