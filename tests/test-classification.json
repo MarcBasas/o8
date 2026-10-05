@@ -4160,6 +4160,16 @@
       ]
     },
     {
+      "path": "tests/workspace-git-bundle-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli",
+        "real-path",
+        "worktree-api"
+      ]
+    },
+    {
       "path": "tests/workspace-lifecycle-cross-process-real-path.test.ts",
       "reasons": [
         "child-process",

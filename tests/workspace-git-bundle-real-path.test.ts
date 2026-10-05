@@ -1,0 +1,349 @@
+import { execFileSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { NextRequest } from 'next/server';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+import type { OwnedSessionRecord } from '@/lib/runtimes/shared/owned-session';
+
+const root = mkdtempSync(path.join(os.tmpdir(), 'o8-git-bundle-real-path-'));
+const dataDir = path.join(root, 'data');
+const token = 'git-bundle-operator-test-token';
+mkdirSync(dataDir);
+writeFileSync(path.join(dataDir, 'ws-token'), token);
+writeFileSync(path.join(dataDir, 'worker-token'), 'git-bundle-worker-test-token');
+process.env.O8_DATA_DIR = dataDir;
+process.env.CORTEX_IDE_DATA_DIR = dataDir;
+process.env.O8_WORKTREE_ROOT = path.join(root, 'worktrees');
+process.env.CORTEX_IDE_OWNED_CODEX_ROOT = path.join(root, 'sessions');
+const fakeCodex = path.join(root, 'fake-codex');
+writeFileSync(fakeCodex, '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "codex-cli 0.130.0\\n"; exit 0; fi\nexit 17\n', { mode: 0o700 });
+process.env.O8_CODEX_BIN = fakeCodex;
+
+const { GET } = await import('@/app/api/orchestrator/workspace/preservation/route');
+const { closeDb, getSqlite } = await import('@/lib/db');
+const { createLane, setLaneStatus } = await import('@/lib/lane/registry');
+const { addRepo } = await import('@/lib/repos/registry');
+const { WorktreeManager } = await import('@/lib/worktree/manager');
+const { withWorktreeMetaTransaction } = await import('@/lib/worktree/metadata-store');
+const { getWorkspaceSnapshot, listWorkspaceSnapshotTransitions } = await import('@/lib/worktree/snapshot-state');
+const { preserveWorkspaceArtifacts, readWorkspacePreservation } = await import('@/lib/workspace/preservation-store');
+const { captureWorkspaceMaterializationSnapshot } = await import('@/lib/workspace/workspace-materialization-retirement');
+const { getWorkspaceRetentionHold } = await import('@/lib/workspace/retention-holds');
+const execution = await import('@/lib/worktree/materialization-execution');
+const repoPath = path.join(root, 'repo');
+let repo: Awaited<ReturnType<typeof addRepo>>;
+let finished = false;
+
+function git(cwd: string, ...args: string[]): string {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith('GIT_')) delete env[key];
+  return execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+async function workspace(packetId: string) {
+  finished = false;
+  const manager = new WorktreeManager(repo.localPath);
+  const created = await manager.create({
+    agentType: 'codex', taskName: packetId, packetId, managed: true, skipSetup: true,
+    branchName: 'codex/' + packetId, baseBranch: 'main', isolationPreference: 'git-worktree',
+  });
+  const sessionId = 'codex-owned-' + packetId;
+  const sessionDir = path.join(root, 'sessions', sessionId);
+  const surfaceId = 'codex-owned:' + sessionId;
+  mkdirSync(sessionDir, { recursive: true });
+  const session: OwnedSessionRecord = {
+    surfaceId, packetId, sessionDir, cwd: created.path, repoPath: created.path, branch: created.branch,
+    head: git(created.path, 'rev-parse', 'HEAD'), title: 'Portable preservation regression',
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), recentRuns: [],
+    latestPrompt: '', latestSummary: 'Idle owned fixture.', threadId: randomUUID(),
+    runIdentityLedger: { version: 1, totalRuns: 0, complete: true },
+    workspaceBinding: { logicalWorkspaceId: 'packet:' + packetId, repositoryUuid: repo.id, packetId,
+      cwd: created.path, version: 1, verifiedAt: new Date().toISOString() },
+  };
+  writeFileSync(path.join(sessionDir, 'session.json'), JSON.stringify(session));
+  await withWorktreeMetaTransaction(repo.localPath, async (transaction) => {
+    const entry = (await transaction.readAll())[created.id]!;
+    await transaction.save(created.id, { ...entry, sessionKey: surfaceId });
+  });
+  const lane = createLane({ repoPath: repo.localPath, worktreePath: created.path, branch: created.branch,
+    baseBranch: 'main', runtime: 'codex', packetId, sessionKey: surfaceId, ownership: 'managed' });
+  setLaneStatus(lane.id, 'reviewing');
+  return { manager, created, lane };
+}
+
+function request(packetId: string, format = '') {
+  return new NextRequest('http://localhost/api/orchestrator/workspace/preservation?packetId=' + packetId
+    + (format ? '&format=' + format : ''), { headers: { authorization: 'Bearer ' + token } });
+}
+
+beforeAll(async () => {
+  mkdirSync(repoPath);
+  git(repoPath, 'init', '-q', '-b', 'main');
+  git(repoPath, 'config', 'user.name', 'o8 regression');
+  git(repoPath, 'config', 'user.email', 'o8@example.test');
+  writeFileSync(path.join(repoPath, '.gitignore'), '.o8/\n.claude/\nnode_modules/\n');
+  writeFileSync(path.join(repoPath, 'tracked.txt'), 'base source\n');
+  git(repoPath, 'add', '.gitignore', 'tracked.txt');
+  git(repoPath, 'commit', '-qm', 'base');
+  repo = await addRepo(repoPath);
+});
+
+afterAll(() => {
+  closeDb();
+  if (finished) rmSync(root, { recursive: true, force: true });
+});
+
+describe('portable source preservation through the managed retirement entry', () => {
+  it('recovers dirty, untracked and unpushed source with its parents in an empty repository', async () => {
+    const packetId = 'portable-source';
+    const { manager, created } = await workspace(packetId);
+    writeFileSync(path.join(created.path, 'unpushed.txt'), 'unpushed commit\n');
+    git(created.path, 'add', 'unpushed.txt');
+    git(created.path, 'commit', '-qm', 'unpublished work');
+    const unpushedHead = git(created.path, 'rev-parse', 'HEAD');
+    writeFileSync(path.join(created.path, 'tracked.txt'), 'dirty source at retirement\n');
+    writeFileSync(path.join(created.path, 'untracked.txt'), 'untracked source at retirement\n');
+    mkdirSync(path.join(created.path, '.o8'), { recursive: true });
+    const checkpoint = Buffer.from([0, 255, 42, 128, 0]);
+    writeFileSync(path.join(created.path, '.o8', 'checkpoint.bin'), checkpoint);
+    expect(await manager.cleanup(created.id)).toBe(true);
+    expect(existsSync(created.path)).toBe(false);
+    const snapshot = getWorkspaceSnapshot(repo.id, packetId)!;
+    expect(snapshot.state).toBe('retired');
+    const inspected = await GET(request(packetId));
+    expect(inspected.status).toBe(200);
+    const summary = (await inspected.json()).result;
+    expect(summary.gitBundle).toMatchObject({
+      schema: 'o8/workspace-git-bundle/v1', repositoryUuid: repo.id, packetId,
+      snapshotGeneration: snapshot.snapshotGeneration, snapshotFingerprint: snapshot.snapshotFingerprint,
+      headCommit: snapshot.headCommit, treeSha: snapshot.treeSha, recoveryRef: snapshot.recoveryRef,
+      prerequisiteCount: 0, commitCount: 3,
+    });
+    expect(summary.gitBundle.sha256).toMatch(/^[a-f0-9]{64}$/);
+    const downloaded = await GET(request(packetId, 'bundle'));
+    expect(downloaded.status).toBe(200);
+    expect(downloaded.headers.get('cache-control')).toContain('no-store');
+    const bundle = Buffer.from(await downloaded.arrayBuffer());
+    expect(createHash('sha256').update(bundle).digest('hex')).toBe(summary.gitBundle.sha256);
+    expect(bundle.length).toBe(summary.gitBundle.bytes);
+    const recovery = path.join(root, 'empty-recovery');
+    mkdirSync(recovery);
+    git(recovery, 'init', '-q', '--template=');
+    expect(git(recovery, 'remote')).toBe('');
+    expect(existsSync(path.join(recovery, '.git', 'objects', 'info', 'alternates'))).toBe(false);
+    const bundlePath = path.join(root, 'source.bundle');
+    writeFileSync(bundlePath, bundle, { mode: 0o600 });
+    git(recovery, 'bundle', 'verify', bundlePath);
+    git(recovery, 'fetch', '--no-tags', bundlePath, snapshot.recoveryRef + ':refs/heads/recovered');
+    git(recovery, 'checkout', '-q', 'recovered');
+    git(recovery, 'fsck', '--full', '--strict');
+    expect(git(recovery, 'rev-parse', 'HEAD')).toBe(snapshot.headCommit);
+    expect(git(recovery, 'rev-parse', 'HEAD^{tree}')).toBe(snapshot.treeSha);
+    expect(git(recovery, 'rev-list', 'HEAD').split('\n')).toContain(unpushedHead);
+    expect(readFileSync(path.join(recovery, 'tracked.txt'), 'utf8')).toBe('dirty source at retirement\n');
+    expect(readFileSync(path.join(recovery, 'untracked.txt'), 'utf8')).toBe('untracked source at retirement\n');
+    expect(readFileSync(path.join(recovery, 'unpushed.txt'), 'utf8')).toBe('unpushed commit\n');
+    const archived = await readWorkspacePreservation(summary.preservationId);
+    const entry = archived.payload.capture.entries.find((candidate) => candidate.path === '.o8/checkpoint.bin')!;
+    expect(Buffer.from(entry.content!, 'base64')).toEqual(checkpoint);
+    const bank = path.join(dataDir, 'workspace-preservation', 'git-bundles');
+    expect(readdirSync(bank)).toEqual([summary.gitBundle.sha256 + '.bundle']);
+    expect(statSync(bank).mode & 0o077).toBe(0);
+    expect(statSync(path.join(bank, summary.gitBundle.sha256 + '.bundle')).mode & 0o077).toBe(0);
+    const admission = listWorkspaceSnapshotTransitions(repo.id, packetId).find((entry) => entry.toState === 'retiring');
+    expect(admission?.receipt?.gitBundleSha256).toBe(summary.gitBundle.sha256);
+    expect(getSqlite().prepare('SELECT count(*) AS count FROM workspace_preservations WHERE packet_id = ?')
+      .get(packetId)).toEqual({ count: 1 });
+    finished = true;
+  }, 60_000);
+
+  it('deduplicates the verified bundle and refuses a tampered bank before removal', async () => {
+    const packetId = 'portable-tamper';
+    const { manager, created, lane } = await workspace(packetId);
+    const identity = { device: statSync(created.path).dev, inode: statSync(created.path).ino };
+    const snapshot = (await captureWorkspaceMaterializationSnapshot(repo.localPath, created.path, 'cleanup'))!;
+    const first = await preserveWorkspaceArtifacts(snapshot, repo.localPath);
+    const second = await preserveWorkspaceArtifacts(snapshot, repo.localPath);
+    expect(second).toEqual(first);
+    const bank = path.join(dataDir, 'workspace-preservation', 'git-bundles');
+    expect(readdirSync(bank).filter((name) => name.startsWith('.prepare-'))).toEqual([]);
+    const bundlePath = path.join(bank, first.gitBundle!.sha256 + '.bundle');
+    writeFileSync(bundlePath, Buffer.concat([readFileSync(bundlePath), Buffer.from('tampered')]));
+    expect(await manager.cleanup(created.id)).toBe(false);
+    expect(statSync(created.path)).toMatchObject({ dev: identity.device, ino: identity.inode });
+    expect(getWorkspaceSnapshot(repo.id, packetId)?.state).toBe('materialized');
+    expect(listWorkspaceSnapshotTransitions(repo.id, packetId).some((entry) => entry.toState === 'retiring')).toBe(false);
+    expect(getWorkspaceRetentionHold(created.path, identity)).toMatchObject({
+      packetId, laneId: lane.id, sourceDevice: identity.device, sourceInode: identity.inode,
+      holdId: 'preservation-failed:' + snapshot.snapshotFingerprint,
+    });
+    await expect(readWorkspacePreservation(first.preservationId)).rejects.toThrow(/hash or size/);
+    expect((await GET(request(packetId, 'bundle'))).status).toBe(409);
+    expect(readdirSync(bank).filter((name) => name.startsWith('.prepare-'))).toEqual([]);
+    finished = true;
+  }, 60_000);
+
+  it('refuses a redirected bank with a scoped hold and leaves outside bytes intact', async () => {
+    const packetId = 'portable-redirect';
+    const { manager, created, lane } = await workspace(packetId);
+    const bank = path.join(dataDir, 'workspace-preservation', 'git-bundles');
+    const retainedBank = bank + '-retained';
+    const outside = path.join(root, 'outside-bank');
+    mkdirSync(outside, { mode: 0o700 });
+    writeFileSync(path.join(outside, 'unowned.txt'), 'outside bytes stay intact\n');
+    renameSync(bank, retainedBank);
+    symlinkSync(outside, bank, 'dir');
+    try {
+      expect(await manager.cleanup(created.id)).toBe(false);
+      expect(existsSync(created.path)).toBe(true);
+      expect(readFileSync(path.join(outside, 'unowned.txt'), 'utf8')).toBe('outside bytes stay intact\n');
+      expect(readdirSync(outside)).toEqual(['unowned.txt']);
+      expect(getWorkspaceSnapshot(repo.id, packetId)?.state).toBe('materialized');
+      expect(getWorkspaceRetentionHold(created.path)).toMatchObject({ packetId, laneId: lane.id });
+    } finally {
+      unlinkSync(bank);
+      renameSync(retainedBank, bank);
+    }
+    finished = true;
+  }, 60_000);
+
+  it('refuses incomplete shallow ancestry instead of relying on the source object store', async () => {
+    const packetId = 'portable-incomplete';
+    const { manager, created, lane } = await workspace(packetId);
+    writeFileSync(path.join(created.path, 'incomplete.txt'), 'source with a required parent\n');
+    git(created.path, 'add', 'incomplete.txt');
+    git(created.path, 'commit', '-qm', 'shallow boundary fixture');
+    const boundary = git(created.path, 'rev-parse', 'HEAD');
+    writeFileSync(path.join(created.path, 'tracked.txt'), 'new head above boundary\n');
+    git(created.path, 'add', 'tracked.txt');
+    git(created.path, 'commit', '-qm', 'head above shallow boundary');
+    await captureWorkspaceMaterializationSnapshot(repo.localPath, created.path, 'cleanup');
+    const shallow = path.join(repo.localPath, '.git', 'shallow');
+    writeFileSync(shallow, boundary + '\n', { flag: 'wx' });
+    try {
+      expect(await manager.cleanup(created.id)).toBe(false);
+      expect(readFileSync(path.join(created.path, 'incomplete.txt'), 'utf8')).toBe('source with a required parent\n');
+      expect(getWorkspaceSnapshot(repo.id, packetId)?.state).toBe('materialized');
+      expect(getWorkspaceRetentionHold(created.path)).toMatchObject({ packetId, laneId: lane.id });
+      expect(readdirSync(path.join(dataDir, 'workspace-preservation', 'git-bundles'))
+        .filter((name) => name.startsWith('.prepare-'))).toEqual([]);
+    } finally {
+      unlinkSync(shallow);
+    }
+    finished = true;
+  }, 60_000);
+
+  it('holds the captured owner when its public workspace name is replaced during Git capture', async () => {
+    const packetId = 'portable-owner-change';
+    const { manager, created, lane } = await workspace(packetId);
+    const original = statSync(created.path);
+    const retainedPath = created.path + '-retained';
+    const proxyDir = path.join(root, 'git-proxy');
+    mkdirSync(proxyDir);
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+    const proxy = [
+      '#!/usr/bin/env node',
+      "const { spawnSync } = require('node:child_process');",
+      "const fs = require('node:fs');",
+      'const args = process.argv.slice(2);',
+      'const result = spawnSync(' + JSON.stringify(realGit) + ", args, { stdio: 'inherit' });",
+      "if (result.status === 0 && args[4] === 'bundle' && args[5] === 'create') {",
+      '  fs.renameSync(' + JSON.stringify(created.path) + ', ' + JSON.stringify(retainedPath) + ');',
+      '  fs.mkdirSync(' + JSON.stringify(created.path) + ');',
+      '  fs.writeFileSync(' + JSON.stringify(path.join(created.path, 'replacement.txt')) + ", 'unowned replacement');",
+      '}',
+      'process.exit(result.status ?? 17);',
+    ].join('\n');
+    writeFileSync(path.join(proxyDir, 'git'), proxy, { mode: 0o700 });
+    const priorPath = process.env.PATH;
+    process.env.PATH = proxyDir + path.delimiter + priorPath;
+    try {
+      expect(await manager.cleanup(created.id)).toBe(false);
+      expect(statSync(retainedPath)).toMatchObject({ dev: original.dev, ino: original.ino });
+      expect(readFileSync(path.join(created.path, 'replacement.txt'), 'utf8')).toBe('unowned replacement');
+      expect(readFileSync(path.join(retainedPath, 'tracked.txt'), 'utf8')).toBe('base source\n');
+      expect(getWorkspaceSnapshot(repo.id, packetId)?.state).toBe('materialized');
+      expect(getWorkspaceRetentionHold(created.path)).toMatchObject({ packetId, laneId: lane.id,
+        sourceDevice: original.dev, sourceInode: original.ino });
+      expect(listWorkspaceSnapshotTransitions(repo.id, packetId).some((entry) => entry.toState === 'retiring')).toBe(false);
+    } finally {
+      process.env.PATH = priorPath;
+    }
+    finished = true;
+  }, 60_000);
+
+  it('retains a substituted verifier name without unlinking an outside bundle at publication', async () => {
+    const packetId = 'portable-publication-race';
+    const { manager, created, lane } = await workspace(packetId);
+    const outside = path.join(root, 'publication-outside');
+    mkdirSync(outside, { mode: 0o700 });
+    const outsideBundle = path.join(outside, 'source.bundle');
+    const outsideBytes = Buffer.from('outside source bundle remains at its original name');
+    writeFileSync(outsideBundle, outsideBytes, { mode: 0o600 });
+    let exercised = false;
+    const originalExec = execution.materializationAwareExecFile;
+    const spy = vi.spyOn(execution, 'materializationAwareExecFile').mockImplementation((command, args, options) => {
+      if (command === process.execPath && args[0] === '-e' && typeof args[2] === 'string'
+        && args[1].includes("input.operation === 'publish'")) {
+        const input = JSON.parse(args[2]);
+        if (input.operation === 'publish') {
+          exercised = true;
+          // Move the public verifier name after file/FD validation, just before the actual link syscall.
+          const actor = '    const publicName = path.join(fdPath(bankFd), input.leaf);\n'
+            + "    fs.renameSync(publicName, publicName + '-retained');\n"
+            + '    fs.symlinkSync(' + JSON.stringify(outside) + ", publicName, 'dir');\n";
+          const modified = args[1].replace('    try {\n      fs.linkSync', actor + '    try {\n      fs.linkSync');
+          return originalExec(command, ['-e', modified, args[2]], options);
+        }
+      }
+      return originalExec(command, args, options);
+    });
+    try {
+      expect(await manager.cleanup(created.id)).toBe(false);
+      expect(exercised).toBe(true);
+      expect(readFileSync(outsideBundle)).toEqual(outsideBytes);
+      expect(readdirSync(outside)).toEqual(['source.bundle']);
+      expect(existsSync(created.path)).toBe(true);
+      expect(getWorkspaceSnapshot(repo.id, packetId)?.state).toBe('materialized');
+      expect(getWorkspaceRetentionHold(created.path)).toMatchObject({ packetId, laneId: lane.id });
+    } finally {
+      spy.mockRestore();
+    }
+    finished = true;
+  }, 60_000);
+
+  it('keeps historical trusted manifests readable and denies private downloads to workers', async () => {
+    finished = false;
+    const summary = (await (await GET(request('portable-source'))).json()).result;
+    const archive = await readWorkspacePreservation(summary.preservationId);
+    const historical = { ...archive.payload };
+    delete historical.gitBundle;
+    const content = Buffer.from(JSON.stringify(historical));
+    const legacyId = createHash('sha256').update(content).digest('hex');
+    writeFileSync(path.join(dataDir, 'workspace-preservation', legacyId + '.json'), content, { mode: 0o600, flag: 'wx' });
+    // Seed a separate historical fixture receipt; never rewrite an existing manifest or owner journal.
+    const row = getSqlite().prepare('SELECT * FROM workspace_preservations WHERE preservation_id = ?')
+      .get(summary.preservationId) as Record<string, string | number | null>;
+    const columns = Object.keys(row);
+    getSqlite().prepare('INSERT INTO workspace_preservations (' + columns.join(', ') + ') VALUES ('
+      + columns.map(() => '?').join(', ') + ')').run(...columns.map((column) => (
+      column === 'preservation_id' || column === 'manifest_sha256' ? legacyId : row[column]
+    )));
+    closeDb();
+    const legacy = await readWorkspacePreservation(legacyId);
+    expect(legacy.payload.gitBundle).toBeUndefined();
+    expect(legacy.receipt.headCommit).toBe(archive.receipt.headCommit);
+    expect(legacy.payload.capture).toEqual(archive.payload.capture);
+    const worker = new NextRequest('http://localhost/api/orchestrator/workspace/preservation?packetId=portable-source&format=bundle', {
+      headers: { authorization: 'Bearer git-bundle-worker-test-token', host: 'localhost' },
+    });
+    expect((await GET(worker)).status).toBe(403);
+    const anonymous = new NextRequest(worker.url);
+    expect((await GET(anonymous)).status).toBe(401);
+    finished = true;
+  });
+});
