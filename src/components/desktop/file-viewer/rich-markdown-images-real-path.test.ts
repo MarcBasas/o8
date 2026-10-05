@@ -220,5 +220,4 @@ describe('Rich Markdown images through FileViewer and the workspace asset route'
     expect(image().getAttribute('src')).toBe(remote);
     expect(view.sourceChangeCount).toBe(0);
   });
-
 });
