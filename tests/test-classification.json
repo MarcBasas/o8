@@ -3589,6 +3589,8 @@
     {
       "path": "tests/runtime-action-idempotency-real-path.test.ts",
       "reasons": [
+        "child-process",
+        "network-listener",
         "real-path"
       ]
     },
