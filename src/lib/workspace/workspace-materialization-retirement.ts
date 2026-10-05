@@ -409,10 +409,10 @@ export async function captureWorkspaceMaterializationSnapshot(
 }
 
 /** Persist terminal cleanup intent before any exact path removal begins. */
-export function beginWorkspaceMaterializationRetirement(
+export async function beginWorkspaceMaterializationRetirement(
   workspacePath: string,
   action: WorkspaceRetirementAction,
-): WorkspaceSnapshotRecord | null {
+): Promise<WorkspaceSnapshotRecord | null> {
   const snapshot = exactSnapshot(workspacePath);
   if (!snapshot) return null;
   if (snapshot.state === 'retiring' || snapshot.state === 'retired') {
@@ -424,7 +424,7 @@ export function beginWorkspaceMaterializationRetirement(
   if (snapshot.state !== 'materialized') {
     throw new Error(`Workspace retirement requires materialized truth, not ${snapshot.state}.`);
   }
-  const preservation = preservationReceiptForSnapshot(snapshot);
+  const preservation = await preservationReceiptForSnapshot(snapshot);
   return beginRetirementWithReceipt(snapshot, action, {
     preservationId: preservation.preservationId,
     manifestSha256: preservation.manifestSha256,
@@ -433,6 +433,8 @@ export function beginWorkspaceMaterializationRetirement(
     artifactBytes: preservation.artifactBytes,
     sourceDevice: preservation.sourceDevice,
     sourceInode: preservation.sourceInode,
+    gitBundleSha256: preservation.gitBundle!.sha256,
+    gitBundleBytes: preservation.gitBundle!.bytes,
   });
 }
 
