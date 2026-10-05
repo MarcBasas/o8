@@ -292,11 +292,13 @@ describe('portable source preservation through the managed retirement entry', ()
         const input = JSON.parse(args[2]);
         if (input.operation === 'publish') {
           exercised = true;
-          // Move the public verifier name after file/FD validation, just before the actual link syscall.
-          const actor = '    const publicName = path.join(fdPath(bankFd), input.leaf);\n'
+          // Move the public verifier name after capture, just before the bank child inherits the file descriptor.
+          const actor = "    const path = require('node:path');\n"
+            + '    const publicName = path.join(input.bankDirectory, input.leaf);\n'
             + "    fs.renameSync(publicName, publicName + '-retained');\n"
             + '    fs.symlinkSync(' + JSON.stringify(outside) + ", publicName, 'dir');\n";
-          const modified = args[1].replace('    try {\n      fs.linkSync', actor + '    try {\n      fs.linkSync');
+          const modified = args[1].replace('    const result = spawnSync', actor + '    const result = spawnSync');
+          expect(modified).not.toBe(args[1]);
           return originalExec(command, ['-e', modified, args[2]], options);
         }
       }

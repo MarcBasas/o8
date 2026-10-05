@@ -1,11 +1,8 @@
-import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants, type Stats } from 'node:fs';
-import { lstat, mkdir, mkdtemp, open, realpath } from 'node:fs/promises';
+import { lstat, mkdir, open, realpath } from 'node:fs/promises';
 import { devNull } from 'node:os';
 import path from 'node:path';
-import { Writable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 
 import { getDataDir } from '@/lib/data-dir-migration';
 import {
@@ -17,10 +14,6 @@ import { guardedWorkspaceInvocation, materializationAwareExecFile, withWorktreeM
 import type { WorkspaceSnapshotRecord } from '@/lib/worktree/snapshot-state';
 
 const MAX_BUNDLE_BYTES = 512 * 1024 * 1024;
-
-function descriptorPath(fd: number): string {
-  return (process.platform === 'linux' ? '/proc/self/fd/' : '/dev/fd/') + fd;
-}
 
 export interface WorkspaceGitBundleReceipt {
   schema: 'o8/workspace-git-bundle/v1';
@@ -139,115 +132,204 @@ async function gitValue(cwd: string, identity: WorktreeMaterializationIdentity, 
   });
 }
 
+// Each process receives an OS-captured cwd. macOS cannot traverse directory
+// descriptors through /dev/fd; only the regular bundle descriptor crosses cwd boundaries.
+const PREPARE_DIRECTORY = String.raw`
+const fs = require('node:fs');
+const leaf = fs.mkdtempSync('.prepare-');
+const stat = fs.lstatSync(leaf);
+if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077)
+  || (process.getuid && stat.uid !== process.getuid())) throw new Error('Verifier ownership is unsafe.');
+process.stdout.write(JSON.stringify({ leaf, device: stat.dev, inode: stat.ino }));
+`;
+
+const CAPTURE_BUNDLE = String.raw`
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+const { Writable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
+const input = JSON.parse(process.argv[1]);
+const fd = fs.openSync('source.bundle', fs.constants.O_WRONLY | fs.constants.O_CREAT
+  | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+const child = spawn(input.invocation.command, input.invocation.args, {
+  cwd: input.repositoryPath, env: process.env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+});
+let bytes = 0;
+let stderrBytes = 0;
+const abort = () => child.kill();
+process.once('SIGTERM', abort);
+child.stderr.on('data', (chunk) => { stderrBytes += chunk.length; if (stderrBytes > 1024 * 1024) abort(); });
+const timer = setTimeout(abort, 120000);
+const completed = new Promise((resolve, reject) => {
+  child.once('error', reject);
+  child.once('close', (code) => code === 0 ? resolve() : reject(new Error('Portable Git bundle creation failed.')));
+});
+const written = pipeline(child.stdout, new Writable({
+  write(chunk, _encoding, callback) {
+    try {
+      bytes += chunk.length;
+      if (bytes > input.maxBytes) throw new Error('Portable Git source exceeds the bounded preservation budget.');
+      let offset = 0;
+      while (offset < chunk.length) {
+        const count = fs.writeSync(fd, chunk, offset, chunk.length - offset);
+        if (!count) throw new Error('Portable Git bundle descriptor write was incomplete.');
+        offset += count;
+      }
+      callback();
+    } catch (error) { callback(error); }
+  },
+}));
+(async () => {
+  try { await Promise.all([completed, written]); fs.fsyncSync(fd); }
+  catch (error) { abort(); await Promise.allSettled([completed, written]); throw error; }
+  finally { clearTimeout(timer); process.removeListener('SIGTERM', abort); fs.closeSync(fd); }
+})().catch((error) => { process.stderr.write(error.message + '\n'); process.exitCode = 1; });
+`;
+
 async function createBundle(snapshot: WorkspaceSnapshotRecord, repositoryPath: string,
   repositoryIdentity: WorktreeMaterializationIdentity, preparation: string, identity: WorktreeMaterializationIdentity) {
-  const parent = await open(preparation, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  let file: Awaited<ReturnType<typeof open>> | null = null;
-  try {
-    const captured = await parent.stat();
-    if (!captured.isDirectory() || captured.dev !== identity.device || captured.ino !== identity.inode
-      || (captured.mode & 0o077) !== 0 || (process.getuid && captured.uid !== process.getuid())) {
-      throw new Error('Private bundle capture lost its preparation directory owner.');
-    }
-    file = await open(path.join(descriptorPath(parent.fd), 'source.bundle'),
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-    const destination = file;
-    const invocation = guardedWorkspaceInvocation('git', gitArguments([
-      'bundle', 'create', '--version=3', '-', snapshot.recoveryRef,
-    ]), repositoryIdentity);
-    const child = spawn(invocation.command, invocation.args, {
-      cwd: repositoryPath, env: gitEnvironment(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
-    });
-    let bytes = 0;
-    let stderrBytes = 0;
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderrBytes += chunk.length;
-      if (stderrBytes > 1024 * 1024) child.kill();
-    });
-    const timer = setTimeout(() => child.kill(), 120_000);
-    const completed = new Promise<void>((resolve, reject) => {
-      child.once('error', reject);
-      child.once('close', (code) => code === 0 ? resolve() : reject(new Error('Portable Git bundle creation failed; the source remains retained.')));
-    });
-    const written = pipeline(child.stdout, new Writable({
-      write(chunk: Buffer, _encoding, callback) {
-        bytes += chunk.length;
-        if (bytes > MAX_BUNDLE_BYTES) callback(new Error('Portable Git source exceeds the bounded preservation budget.'));
-        else {
-          const writeChunk = async () => {
-            let offset = 0;
-            while (offset < chunk.length) {
-              const { bytesWritten } = await destination.write(chunk, offset, chunk.length - offset);
-              if (!bytesWritten) throw new Error('Portable Git bundle descriptor write was incomplete.');
-              offset += bytesWritten;
-            }
-          };
-          void writeChunk().then(() => callback(), (error: Error) => callback(error));
-        }
-      },
-    }));
-    try {
-      await Promise.all([completed, written]);
-      await destination.sync();
-    } catch (error) {
-      child.kill();
-      await Promise.allSettled([completed, written]);
-      throw error;
-    } finally {
-      clearTimeout(timer);
-    }
-  } finally {
-    try { await file?.close(); } finally { await parent.close(); }
-  }
+  const invocation = guardedWorkspaceInvocation('git', gitArguments([
+    'bundle', 'create', '--version=3', '-', snapshot.recoveryRef,
+  ]), repositoryIdentity);
+  await withWorktreeMaterializationExecution(preparation, identity, () => materializationAwareExecFile(
+    process.execPath, ['-e', CAPTURE_BUNDLE, JSON.stringify({ invocation, repositoryPath, maxBytes: MAX_BUNDLE_BYTES })],
+    { cwd: preparation, env: gitEnvironment(), timeout: 125_000, maxBuffer: 1024 * 1024 },
+  ));
 }
 
-// Both publication and disposal act from the OS-captured private bank cwd.
-// A replaced verifier directory is retained rather than recursively removed.
-const BANK_OPERATION = String.raw`
+const PUBLISH_FROM_DESCRIPTOR = String.raw`
 const fs = require('node:fs');
-const path = require('node:path');
+const { createHash, randomBytes } = require('node:crypto');
 const input = JSON.parse(process.argv[1]);
-function fdPath(fd) { return (process.platform === 'linux' ? '/proc/self/fd/' : '/dev/fd/') + fd; }
-function owned(stat, expected) {
-  return stat.isDirectory() && !stat.isSymbolicLink() && !(stat.mode & 0o077)
+const directory = fs.lstatSync('.');
+if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o077)
+  || (process.getuid && directory.uid !== process.getuid())
+  || directory.dev !== input.bankIdentity.device || directory.ino !== input.bankIdentity.inode
+  || fs.realpathSync('.') !== input.bankIdentity.canonicalPath) {
+  throw new Error('Captured publication bank ownership changed.');
+}
+function sameOwner(stat, expected) {
+  return stat.isFile() && !stat.isSymbolicLink() && !(stat.mode & 0o077)
     && (!process.getuid || stat.uid === process.getuid())
     && stat.dev === expected.device && stat.ino === expected.inode;
 }
-if (!/^\.prepare-[a-zA-Z0-9]+$/.test(input.leaf)) throw new Error('Verifier name is invalid.');
-const bankFd = fs.openSync('.', fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
-const tempStat = fs.lstatSync(input.leaf);
-if (!owned(tempStat, input.identity)) throw new Error('Private verifier ownership changed; inspect the retained directory.');
-const tempFd = fs.openSync(input.leaf, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+const source = fs.fstatSync(3);
+if (!sameOwner(source, input.file) || source.nlink !== 1 || source.size !== input.bytes
+  || input.bytes < 1 || input.bytes > input.maxBytes || !/^[a-f0-9]{64}$/.test(input.sha256)) {
+  throw new Error('Bundle publication descriptor changed.');
+}
+const staging = '.publish-' + randomBytes(16).toString('hex');
+const fd = fs.openSync(staging, fs.constants.O_WRONLY | fs.constants.O_CREAT
+  | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+const owner = fs.fstatSync(fd);
 try {
-  if (!owned(fs.fstatSync(tempFd), input.identity)) throw new Error('Private verifier ownership changed.');
-  if (input.operation === 'publish') {
-    if (!/^[a-f0-9]{64}$/.test(input.sha256)) throw new Error('Bundle hash is invalid.');
-    process.chdir(fdPath(tempFd));
-    const stat = fs.lstatSync('source.bundle');
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o077)
-      || stat.dev !== input.file.device || stat.ino !== input.file.inode) throw new Error('Bundle publication ownership changed.');
-    try {
-      fs.linkSync('source.bundle', path.join(fdPath(bankFd), input.sha256 + '.bundle'));
-      fs.unlinkSync('source.bundle');
-    } catch (error) { if (error.code !== 'EEXIST') throw error; }
-    fs.fsyncSync(bankFd);
-  } else if (input.operation === 'remove') {
-    process.chdir(fdPath(tempFd));
-    for (const name of fs.readdirSync('.')) fs.rmSync(name, { recursive: true, force: false });
-    process.chdir(fdPath(bankFd));
-    if (!owned(fs.lstatSync(input.leaf), input.identity)) throw new Error('Verifier name changed before final removal.');
-    fs.rmdirSync(input.leaf);
-    fs.fsyncSync(bankFd);
-  } else throw new Error('Private bank operation is invalid.');
-} finally { fs.closeSync(tempFd); fs.closeSync(bankFd); }
+  const hash = createHash('sha256');
+  const buffer = Buffer.alloc(64 * 1024);
+  let bytes = 0;
+  while (bytes < input.bytes) {
+    const count = fs.readSync(3, buffer, 0, Math.min(buffer.length, input.bytes - bytes), bytes);
+    if (!count) throw new Error('Bundle source changed during publication.');
+    hash.update(buffer.subarray(0, count));
+    let offset = 0;
+    while (offset < count) {
+      const written = fs.writeSync(fd, buffer, offset, count - offset);
+      if (!written) throw new Error('Bundle publication write was incomplete.');
+      offset += written;
+    }
+    bytes += count;
+  }
+  const after = fs.fstatSync(3);
+  if (hash.digest('hex') !== input.sha256 || after.size !== source.size
+    || after.mtimeMs !== source.mtimeMs || after.ctimeMs !== source.ctimeMs || after.nlink !== source.nlink
+    || after.mode !== source.mode || after.uid !== source.uid || !sameOwner(after, input.file)) {
+    throw new Error('Bundle publication failed the verified hash or source identity.');
+  }
+  fs.fsyncSync(fd);
+  const expected = { device: owner.dev, inode: owner.ino };
+  if (!sameOwner(fs.lstatSync(staging), expected)) throw new Error('Publication staging name changed.');
+  try { fs.linkSync(staging, input.sha256 + '.bundle'); }
+  catch (error) { if (error.code !== 'EEXIST') throw error; }
+} finally {
+  fs.closeSync(fd);
+  if (!sameOwner(fs.lstatSync(staging), { device: owner.dev, inode: owner.ino })) {
+    throw new Error('Unknown publication staging entry retained.');
+  }
+  fs.unlinkSync(staging);
+  const bankFd = fs.openSync('.', fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+  try { fs.fsyncSync(bankFd); } finally { fs.closeSync(bankFd); }
+}
 `;
 
-async function bankOperation(bank: Awaited<ReturnType<typeof bundleDirectory>>, input: Record<string, unknown>) {
+const BANK_OPERATION = String.raw`
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const input = JSON.parse(process.argv[1]);
+const directory = fs.lstatSync('.');
+if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o077)
+  || (process.getuid && directory.uid !== process.getuid())
+  || directory.dev !== input.identity.device || directory.ino !== input.identity.inode) {
+  throw new Error('Private verifier ownership changed.');
+}
+if (input.operation === 'publish') {
+  const fd = fs.openSync('source.bundle', fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const result = spawnSync(input.bankInvocation.command, input.bankInvocation.args, {
+      cwd: input.bankDirectory, env: process.env, stdio: ['ignore', 'pipe', 'pipe', fd],
+      timeout: 120000, maxBuffer: 1024 * 1024,
+    });
+    if (result.error || result.status !== 0) throw new Error('Captured-bank bundle publication failed.');
+    const named = fs.lstatSync('source.bundle');
+    if (!named.isFile() || named.isSymbolicLink() || named.dev !== input.file.device
+      || named.ino !== input.file.inode) throw new Error('Bundle source name changed; retained for inspection.');
+    fs.unlinkSync('source.bundle');
+  } finally { fs.closeSync(fd); }
+} else if (input.operation === 'remove') {
+  for (const name of fs.readdirSync('.')) fs.rmSync(name, { recursive: true, force: false });
+} else throw new Error('Private bank operation is invalid.');
+`;
+
+const REMOVE_DIRECTORY = String.raw`
+const fs = require('node:fs');
+const input = JSON.parse(process.argv[1]);
+if (!/^\.prepare-[a-zA-Z0-9]+$/.test(input.leaf)) throw new Error('Verifier name is invalid.');
+const stat = fs.lstatSync(input.leaf);
+if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077)
+  || (process.getuid && stat.uid !== process.getuid())
+  || stat.dev !== input.identity.device || stat.ino !== input.identity.inode) {
+  throw new Error('Unknown verifier entry retained.');
+}
+fs.rmdirSync(input.leaf);
+const fd = fs.openSync('.', fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+`;
+
+interface BankOperationInput {
+  operation: 'publish' | 'remove';
+  leaf: string;
+  identity: WorktreeMaterializationIdentity;
+  sha256?: string;
+  bytes?: number;
+  file?: { device: number; inode: number };
+}
+
+async function bankOperation(bank: Awaited<ReturnType<typeof bundleDirectory>>, input: BankOperationInput) {
   await assertBank(bank);
-  await withWorktreeMaterializationExecution(bank.directory, bank.identity, () => materializationAwareExecFile(
-    process.execPath, ['-e', BANK_OPERATION, JSON.stringify(input)],
-    { cwd: bank.directory, env: gitEnvironment(), timeout: 120_000, maxBuffer: 1024 * 1024 },
+  const preparation = path.join(bank.directory, input.leaf);
+  // execve closes descriptors beyond stdio. This child validates its captured
+  // bank cwd directly so the inherited regular-file descriptor remains open.
+  const bankInvocation = { command: process.execPath, args: ['-e', PUBLISH_FROM_DESCRIPTOR,
+    JSON.stringify({ bankIdentity: bank.identity, sha256: input.sha256, bytes: input.bytes,
+      file: input.file, maxBytes: MAX_BUNDLE_BYTES })] };
+  await withWorktreeMaterializationExecution(preparation, input.identity, () => materializationAwareExecFile(
+    process.execPath, ['-e', BANK_OPERATION, JSON.stringify({ ...input, bankInvocation, bankDirectory: bank.directory })],
+    { cwd: preparation, env: gitEnvironment(), timeout: 125_000, maxBuffer: 1024 * 1024 },
   ));
+  if (input.operation === 'remove') {
+    await withWorktreeMaterializationExecution(bank.directory, bank.identity, () => materializationAwareExecFile(
+      process.execPath, ['-e', REMOVE_DIRECTORY, JSON.stringify(input)],
+      { cwd: bank.directory, env: gitEnvironment(), timeout: 120_000, maxBuffer: 1024 * 1024 },
+    ));
+  }
   await assertBank(bank);
 }
 
@@ -268,18 +350,18 @@ export async function preserveWorkspaceGitBundle(snapshot: WorkspaceSnapshotReco
   const expected = await sourceValues();
   if (expected.objectFormat !== 'sha1' && expected.objectFormat !== 'sha256') throw new Error('Git object format is unsupported.');
   const bank = await bundleDirectory();
-  const bankFd = await open(bank.directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  let preparation: string;
-  try {
-    const captured = await bankFd.stat();
-    if (captured.dev !== bank.identity.device || captured.ino !== bank.identity.inode) {
-      throw new Error('Private bundle preparation lost its captured bank owner.');
-    }
-    const capturedName = await mkdtemp(path.join(descriptorPath(bankFd.fd), '.prepare-'));
-    preparation = path.join(bank.directory, path.basename(capturedName));
-    await assertBank(bank);
-  } finally { await bankFd.close(); }
+  const { stdout } = await withWorktreeMaterializationExecution(bank.directory, bank.identity,
+    () => materializationAwareExecFile(process.execPath, ['-e', PREPARE_DIRECTORY], {
+      cwd: bank.directory, env: gitEnvironment(), timeout: 120_000, maxBuffer: 1024 * 1024,
+    }));
+  const created = JSON.parse(stdout) as { leaf: string; device: number; inode: number };
+  if (!/^\.prepare-[a-zA-Z0-9]+$/.test(created.leaf)) throw new Error('Private verifier name is invalid.');
+  const preparation = path.join(bank.directory, created.leaf);
+  await assertBank(bank);
   const identity = await privateDirectory(preparation);
+  if (identity.device !== created.device || identity.inode !== created.inode) {
+    throw new Error('Private verifier changed during ownership capture.');
+  }
   const leaf = path.basename(preparation);
   try {
     await assertBank(bank);
@@ -312,7 +394,7 @@ export async function preserveWorkspaceGitBundle(snapshot: WorkspaceSnapshotReco
       headCommit: snapshot.headCommit, treeSha: snapshot.treeSha, recoveryRef: snapshot.recoveryRef,
       prerequisiteCount: 0, commitCount: expected.commitCount, objectCount: expected.objectCount,
     };
-    await bankOperation(bank, { operation: 'publish', leaf, identity, sha256: receipt.sha256,
+    await bankOperation(bank, { operation: 'publish', leaf, identity, sha256: receipt.sha256, bytes: receipt.bytes,
       file: { device: after.stat.dev, inode: after.stat.ino } });
     await readWorkspaceGitBundle(receipt);
     return receipt;
