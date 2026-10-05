@@ -673,6 +673,21 @@ compileServerBundle('operator-mcp-server', 'src/lib/mcp/operator-mcp-server-bund
 compilePureNodeBundle('operator-mcp-proxy', 'src/lib/mcp/operator-mcp-proxy.ts');
 compileServerBundle('cortex-mcp-server', 'src/lib/mcp/cortex-mcp-server.ts', NATIVE_EXTERNALS);
 
+// ── Bundle the Pi SDK worker (#3255) ──
+// The packaged server runs from Resources/server; piSdkScriptPath() looks for
+// the worker and the approved-write helper in pi-sdk/ there. One file each, so
+// the Pi packages' node_modules never ship. Loaded here, like esbuild above, so
+// the input guards run before any build tooling is resolved.
+try {
+  const { bundlePiSdk } = await import('./lib/pi-sdk-bundle.mjs');
+  bundlePiSdk({ root, outDir: join(server, 'pi-sdk') });
+  console.log('📦 Bundled pi-sdk/worker.mjs + approved-write.mjs');
+} catch (e) {
+  console.error('❌ Pi SDK bundle failed — refusing to ship a broken bundle');
+  console.error(`   ${e.message}`);
+  process.exit(1);
+}
+
 // ── Copy runtime-read prompt templates next to the bundles ──
 // orchestrator-session.ts resolves orchestrator.md via `import.meta.url`, so
 // the file has to sit next to the bundled ws-server.mjs at runtime. In dev it
