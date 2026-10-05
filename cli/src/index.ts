@@ -73,6 +73,8 @@ import { runPacketDiff } from './commands/packet/diff.js';
 import { runPacketCommit } from './commands/packet/commit.js';
 import { runPacketClose } from './commands/packet/close.js';
 import { runPacketWorkspace } from './commands/packet/workspace.js';
+import { runPacketRetention } from './commands/packet/retention.js';
+import { runPacketArtifactRecovery } from './commands/packet/artifact-recovery.js';
 import { runPacketStop } from './commands/packet/stop.js';
 import {
   OPERATOR_PACKET_COMMAND_LINES,
@@ -508,6 +510,10 @@ async function dispatch(args: ParsedArgs): Promise<number> {
       if (secondary === 'review') return runPacketReview(args.mode, args.rest);
       if (secondary === 'park' || secondary === 'restore') {
         return runPacketWorkspace(args.mode, secondary, args.rest);
+      }
+      if (secondary === 'restore-artifacts') return runPacketArtifactRecovery(args.mode, args.rest);
+      if (secondary === 'retain' || secondary === 'release-retention') {
+        return runPacketRetention(args.mode, secondary === 'retain' ? 'hold' : 'release', args.rest);
       }
       if (secondary === 'close' || secondary === 'discard') {
         return runPacketClose(args.mode, args.rest, secondary);
