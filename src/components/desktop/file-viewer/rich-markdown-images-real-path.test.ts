@@ -220,4 +220,112 @@ describe('Rich Markdown images through FileViewer and the workspace asset route'
     expect(image().getAttribute('src')).toBe(remote);
     expect(view.sourceChangeCount).toBe(0);
   });
+
+  // Synthetic error/load events exercise the real FileViewer and persisted
+  // source without contacting an image host. Native layout remains a separate
+  // acceptance check; jsdom does not measure image or fallback geometry.
+  it.each(['svg', 'png'])(
+    'keeps failed external %s badges accessible, linked, and unchanged across reopen', async (extension) => {
+      const remote = `https://example.invalid/release-badge.${extension}`;
+      const destination = 'https://example.invalid/releases';
+      const source = `[![Release](${remote} "Latest release")](${destination})\n\nUseful prose.\n`;
+      const location = window.location.href;
+      container.style.width = '700px';
+      const view = await renderFile(repos[0], 'README.md', source);
+      const doc = view.state.doc;
+      const img = image();
+      const anchor = img.closest('a')!;
+      const clicked = vi.fn();
+      anchor.addEventListener('click', clicked);
+
+      act(() => img.dispatchEvent(new Event('error')));
+      expect(img.hidden).toBe(true);
+      expect(img.style.display).toBe('none');
+      const fallback = container.querySelector<HTMLElement>('[role="img"][aria-label="Image unavailable: Release"]');
+      expect(fallback).not.toBeNull();
+      expect(fallback!.textContent).toContain('Image unavailable: Release');
+      expect(fallback!.closest('a')).toBe(anchor);
+      expect(anchor.getAttribute('href')).toBe(destination);
+      expect(clicked).not.toHaveBeenCalled();
+      expect(window.location.href).toBe(location);
+      const click = new Event('click', { bubbles: true, cancelable: true });
+      act(() => fallback!.dispatchEvent(click));
+      expect(clicked).toHaveBeenCalledOnce();
+      expect(click.defaultPrevented).toBe(false);
+      expect(view.state.doc).toBe(doc);
+      expect(view.sourceChangeCount).toBe(0);
+      expect(container.textContent).toContain('Useful prose.');
+
+      container.style.width = '260px';
+      act(() => window.dispatchEvent(new Event('resize')));
+      expect(img.hidden).toBe(true);
+      act(() => button('Source').click());
+      expect(container.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe(source);
+      act(() => root.render(null));
+      const reopened = await renderFile(repos[0], 'README.md', source);
+      expect(image().getAttribute('src')).toBe(remote);
+      act(() => image().dispatchEvent(new Event('error')));
+      expect(image().hidden).toBe(true);
+      expect(container.querySelector('[aria-label="Image unavailable: Release"]')?.closest('a')?.getAttribute('href')).toBe(destination);
+      expect(reopened.sourceChangeCount).toBe(0);
+      await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true })); });
+      expect(saves).toHaveLength(0);
+      act(() => root.render(null));
+      expect(readFileSync(join(repos[0], 'README.md'), 'utf8')).toBe(source);
+    },
+  );
+
+  it('bounds a long failed-image label while retaining its full accessible meaning', async () => {
+    const alt = `Release ${'details '.repeat(200)}`.trim();
+    await renderFile(repos[0], 'README.md', `![${alt}](https://example.invalid/badge.svg)\n`);
+    act(() => image().dispatchEvent(new Event('error')));
+    const fallback = container.querySelector<HTMLElement>('[role="img"]');
+    expect(fallback?.getAttribute('aria-label')).toBe(`Image unavailable: ${alt}`);
+    const label = fallback!.querySelector<HTMLElement>('span')!;
+    expect(label.textContent).toBe(`Image unavailable: ${alt}`);
+    expect(label.style.whiteSpace).toBe('nowrap');
+    expect(label.style.overflow).toBe('hidden');
+    expect(label.style.textOverflow).toBe('ellipsis');
+    expect(label.style.maxWidth).toBe('100%');
+  });
+
+  it('uses the raw URL as accessible feedback when an external image has no alt text', async () => {
+    const remote = 'https://example.invalid/badge.png';
+    await renderFile(repos[0], 'README.md', `![](${remote})\n`);
+    act(() => image().dispatchEvent(new Event('error')));
+    expect(container.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe(`Image unavailable: ${remote}`);
+  });
+
+  it.each(['https://example.invalid/illustration.svg', './assets/demo.gif'])(
+    'restores the image after a successful retry without changing source (%s)', async (src) => {
+      const source = `![Illustration](<${src}> "Example")\n`;
+      const view = await renderFile(repos[0], 'README.md', source);
+      const doc = view.state.doc;
+      const img = image();
+      const displaySrc = img.getAttribute('src');
+      act(() => img.dispatchEvent(new Event('error')));
+      expect(img.hidden).toBe(true);
+      act(() => {
+        img.setAttribute('src', displaySrc!);
+        img.dispatchEvent(new Event('load'));
+      });
+      expect(img.hidden).toBe(false);
+      expect(img.style.display).toBe('inline-block');
+      expect(img.style.height).toBe('auto');
+      expect(img.style.maxWidth).toBe('100%');
+      expect(img.style.width).toBe('');
+      expect(img.style.maxHeight).toBe('');
+      expect(img.hasAttribute('width')).toBe(false);
+      expect(img.hasAttribute('height')).toBe(false);
+      expect(img.alt).toBe('Illustration');
+      expect(img.title).toBe('Example');
+      expect(container.querySelector('[role="img"][aria-label^="Image unavailable"]')).toBeNull();
+      expect(img.nextElementSibling?.hasAttribute('hidden')).toBe(true);
+      expect(view.state.doc).toBe(doc);
+      expect(view.sourceChangeCount).toBe(0);
+      act(() => button('Source').click());
+      expect(container.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe(source);
+      expect(readFileSync(join(repos[0], 'README.md'), 'utf8')).toBe(source);
+    },
+  );
 });
