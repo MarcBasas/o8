@@ -12,13 +12,41 @@ export interface ManagedPiTransportOptions {
   observeRawUsage?: (usage: unknown) => void;
 }
 
+export const PI_ALLOWANCE_EXHAUSTED_MESSAGE = 'Your daily o8 model allowance is used up. It resets at midnight UTC.';
+
+/** The relay's over-cap reply is small JSON. Read at most 4 KiB, and stop reading when the run stops. */
+async function isDailyCapResponse(response: Response, signal: AbortSignal): Promise<boolean> {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  const stop = () => { void reader?.cancel().catch(() => {}); };
+  signal.addEventListener('abort', stop, { once: true });
+  try {
+    reader = response.body?.getReader();
+    if (!reader || signal.aborted) return false;
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 4096) return false;
+      chunks.push(value);
+    }
+    return (JSON.parse(Buffer.concat(chunks).toString('utf8')) as { error?: unknown }).error === 'daily cap reached';
+  } catch {
+    return false;
+  } finally {
+    signal.removeEventListener('abort', stop);
+    await reader?.cancel().catch(() => {});
+  }
+}
+
 /** Credentials never cross into the SDK worker. Re-resolve entitlement each call. */
 export function createManagedPiTransport(options: ManagedPiTransportOptions): PiModelTransport {
   return async function* (context, signal) {
     signal.throwIfAborted();
     const route = await (options.resolveRoute ?? (async () => {
-      const { resolveOpenRouterRoute } = await import('@/lib/cortex/qa/llm/inference-route');
-      return resolveOpenRouterRoute({ managedOnly: true });
+      const { resolvePiInferenceRoute } = await import('@/lib/cortex/qa/llm/inference-route');
+      return resolvePiInferenceRoute();
     }))();
     if (!route || route.via !== 'proxy') throw new Error('Managed inference entitlement is required');
     const url = new URL(route.url);
@@ -26,6 +54,7 @@ export function createManagedPiTransport(options: ManagedPiTransportOptions): Pi
     const timeout = AbortSignal.timeout(options.timeoutMs ?? 60_000);
     const requestSignal = AbortSignal.any([signal, timeout]);
     let responseStatus: number | undefined;
+    let allowanceExhausted = false;
     const guardedFetch: typeof fetch = async (_input, init) => {
       requestSignal.throwIfAborted();
       // Pi's OpenAI adapter constructs /chat/completions; only its body is reused.
@@ -36,7 +65,10 @@ export function createManagedPiTransport(options: ManagedPiTransportOptions): Pi
       });
       responseStatus = response.status;
       if (!response.ok) {
-        await response.body?.cancel();
+        // An exhausted allowance stays exhausted until the relay's daily reset; Pi
+        // retries are off, so this one failed call ends the run.
+        if (response.status === 402) allowanceExhausted = await isDailyCapResponse(response, requestSignal);
+        else await response.body?.cancel();
         throw new Error(`Managed inference rejected request (${response.status})`);
       }
       return response;
@@ -57,7 +89,7 @@ export function createManagedPiTransport(options: ManagedPiTransportOptions): Pi
       yield { type: 'error', reason: event.reason, error: {
         role: 'assistant', content: [], api: options.model.api, provider: options.model.provider,
         model: options.model.id, timestamp: Date.now(), stopReason: event.reason,
-        errorMessage: event.reason === 'aborted' ? 'Stopped' : responseStatus && responseStatus !== 200
+        errorMessage: event.reason === 'aborted' ? 'Stopped' : allowanceExhausted ? PI_ALLOWANCE_EXHAUSTED_MESSAGE : responseStatus && responseStatus !== 200
           ? `Managed inference rejected request (${responseStatus})` : 'Managed inference failed',
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },

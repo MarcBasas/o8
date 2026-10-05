@@ -35,9 +35,16 @@ cooperative-to-forced child shutdown ladder.
 
 ## Managed inference boundary
 
-`createManagedPiTransport` resolves `resolveOpenRouterRoute({ managedOnly: true })`
-for every model request. No entitlement means no request, and there is no local,
-BYOK or subscription fallback. Credentials remain in the host. Pi's full OpenAI
+`createManagedPiTransport` resolves `resolvePiInferenceRoute()` for every model
+request. A paid plan uses its plan token on the managed relay. A free install uses
+its free allowance token on the same relay, and requests that token on first use
+when it has none. The free route accepts only a token whose plan claim is free,
+so a paid install pinned to the free plan fails closed. No token means no
+request, and there is no local, BYOK or subscription fallback. Credentials
+remain in the host. When the relay reports that the daily allowance is used up,
+the run ends after that one call with a plain message in `errorMessage`; there
+is no retry. The run result passes on only o8's own failure messages; any other
+text, such as an SDK exception, becomes "Pi run failed". Pi's full OpenAI
 stream parser handles text and fragmented tool calls, but a host-owned fetch
 adapter fixes destination, credential headers, HTTP method and redirect policy.
 The desktop UI proxy stream is not used as a model endpoint.
@@ -54,7 +61,9 @@ persisted transcript receives them.
 
 Use Node 22.19 or newer for the SDK. The repository currently declares Node 22.x
 for its full application gates. The prototype never installs or changes Node.
-After the normal repository dependency setup, run:
+Approved writes need the native helper in `src-tauri/sidecars/pi-write`; the
+tests build it with cargo, so a Rust toolchain is required. After the normal
+repository dependency setup, run:
 
 ```sh
 npx vitest run tests/pi-sdk-worker-real-path.test.ts --maxWorkers=1
@@ -69,15 +78,44 @@ provider, consume credits, obtain credentials or claim model quality. Fixtures
 cover persistence/resume, Unicode text, approval denial and target drift,
 protected aliases, disabled ambient extensions, Stop, budgets, HTTP errors,
 SSE-error redaction and fragmented managed tool streaming.
+`tests/pi-sdk-free-route-real-path.test.ts` covers the free, paid, no-entitlement,
+view-as-free, pinned-plan and used-up allowance routes with signed synthetic
+tokens, plus oversized and stalled 402 bodies.
 
 ## Platform and concurrency limits
 
 macOS and Linux only: `createPiSdkSession` and the approved-write helper refuse
-Windows, which has no tested directory-descriptor write path. Approved writes
-hold against the model, which has no process or command tool. They do not yet
-hold against a separate process that renames, links or replaces workspace files
-during a write; #3243 tracks that hardening, which is required before any
-command or process tool is added and before the worker is offered to users.
+Windows, which has no tested directory-descriptor write path.
+
+Approved writes go through a native helper (#3289) that works relative to the
+verified parent directory descriptor, so it follows the directory if it moves.
+The host creates the stage file and holds it open across the commit and every
+recovery run, so an uncommitted stage is always wiped through a descriptor and
+a hard-link alias keeps no approved bytes. A new file is published with a
+no-replace rename. A replacement is one atomic exchange, so the name is never
+absent. The helper applies the target's mode, verifies the published inode, its
+link count, the parent location and the bytes, and only then reports its commit
+point. Rollback only takes the helper's own inode off the name. Other entries are
+removed or moved only after being captured under a random name and checked, and
+otherwise go back without overwriting. If a signal ends the helper, the host runs
+a recovery pass with the captured names and commit point it reported.
+`tests/pi-sdk-approved-write-races-real-path.test.ts` drives the real helper at
+named points with concurrent renames, links, edits, mode changes and kills.
+
+Known limit: the guarantees hold against ordinary concurrent saves, edits,
+renames and links, and against the helper being killed at any point. They do not
+hold against a process that deliberately races the helper's own steps:
+
+- rebinding one of its random hidden names between two system calls can misdirect
+  a removal, a restoration or a check, because POSIX has no rename or unlink
+  conditioned on an inode;
+- moving the parent or editing the published file back and forth between the
+  checks of the name, the parent and the bytes can make a publication that was
+  never whole pass them.
+
+An entry swapped in at the stage name just before publication is published, and
+the write is refused. A process with that access can already write the workspace
+directly.
 
 ## Remaining gates
 
