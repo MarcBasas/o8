@@ -12,6 +12,7 @@ import {
 } from '@/lib/auth/packet-worker-token';
 import { recordLaneEvent } from '@/lib/lane/events';
 import type { OrchestratorRuntime } from '@/lib/orchestrator/types';
+import { withPacketLifecycleSpawnLock } from '@/lib/orchestrator/lifecycle-mutation-lock';
 import { resolvePortInfo } from '@/lib/panel/api-port';
 import { spawnBridgeTerminalSession } from '@/lib/runtime/pty-bridge';
 import { ensureDispatchBackendReady } from '@/lib/runtimes/shared/dispatch-readiness';
@@ -451,6 +452,12 @@ export function createOwnedRunController({
   }
 
   async function spawnOwnedRun(session: OwnedSessionRecord, prompt: string, mode: OwnedRunMode) {
+    return withPacketLifecycleSpawnLock(session.packetId ?? session.workspaceBinding?.packetId ?? null, () => (
+      spawnOwnedRunInner(session, prompt, mode)
+    ));
+  }
+
+  async function spawnOwnedRunInner(session: OwnedSessionRecord, prompt: string, mode: OwnedRunMode) {
     await ensureDir(path.join(session.sessionDir, RUNS_DIR));
 
     const runId = `${Date.now()}-${randomUUID().slice(0, 8)}`;
