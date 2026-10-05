@@ -1,9 +1,9 @@
-// @vitest-environment jsdom
-
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { exportSPKI, generateKeyPair, SignJWT } from 'jose';
+// @ts-expect-error jsdom is a test dependency without bundled declarations
+import { JSDOM } from 'jsdom';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,6 +34,7 @@ vi.mock('@/components/desktop/dictation/SymonMachineControl', () => ({
 let dataDir: string;
 let container: HTMLDivElement;
 let root: Root;
+let closeDom: () => void;
 let signingKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey'];
 
 function founderPath() {
@@ -110,6 +111,16 @@ describe('lifetime seat through desktop entitlement sync and account rendering (
     const keys = await generateKeyPair('EdDSA');
     signingKey = keys.privateKey;
     vi.stubEnv('O8_LICENSE_PUBKEY', await exportSPKI(keys.publicKey));
+    // Keep signing and verification in Node's typed-array realm while mounting
+    // the real client components against an isolated browser document.
+    const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+      url: 'http://localhost/dashboard',
+    });
+    closeDom = () => dom.window.close();
+    vi.stubGlobal('window', dom.window);
+    vi.stubGlobal('document', dom.window.document);
+    vi.stubGlobal('HTMLElement', dom.window.HTMLElement);
+    vi.stubGlobal('Node', dom.window.Node);
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -119,6 +130,7 @@ describe('lifetime seat through desktop entitlement sync and account rendering (
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    closeDom();
     rmSync(dataDir, { recursive: true, force: true });
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
