@@ -37,6 +37,10 @@ expiry, revocation, permitted client, resource audience, and required scope.
 Connection access does not add a paid-plan gate. Features invoked by an
 existing task retain their ordinary entitlement and usage enforcement.
 
+See [usage routes and measurement](./chatgpt-plugin-usage.md) for the distinction
+between deterministic task reads, worker execution and host conversation usage.
+The connection does not establish a subscription capacity benefit.
+
 An enabled, signed-in desktop machine connection is required. The desktop
 advertises support for the plugin protocol before the hosted service can
 select it. Older app connections never receive a plugin stream. The new
