@@ -9,7 +9,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountBlock } from '@/components/desktop/account-block/AccountBlock';
-import { EntitlementProvider } from '@/lib/entitlement/context';
+import { EntitlementProvider, useEntitlement } from '@/lib/entitlement/context';
 import type { Plan } from '@/lib/entitlement/types';
 
 const SUBJECT = 'user_lifetime_fixture';
@@ -94,10 +94,19 @@ async function readEntitlement() {
   return (await GET(new Request(`http://localhost/api/panel/entitlement?subject=${SUBJECT}`))).json();
 }
 
+function EntitlementReady() {
+  const { loading } = useEntitlement();
+  return createElement('output', { 'data-entitlement-ready': !loading });
+}
+
 async function mountAccountBlock() {
   await act(async () => root.render(
-    createElement(EntitlementProvider, null, createElement(AccountBlock)),
+    createElement(EntitlementProvider, null, createElement(AccountBlock), createElement(EntitlementReady)),
   ));
+  await vi.waitFor(async () => {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-entitlement-ready="true"]')).not.toBeNull();
+  });
 }
 
 describe('lifetime seat through desktop entitlement sync and account rendering (#3269)', () => {
