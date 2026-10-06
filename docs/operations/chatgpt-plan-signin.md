@@ -68,3 +68,16 @@ not establish allowance savings or an API price.
 See the [account and consent contract](./openai-account-consent.md) for the
 identity, payer and recipient boundaries. Sign-in adds no subscription allowance
 and grants no access to ChatGPT conversations or memories.
+
+## Profile credential isolation
+
+The macOS broker binds each Keychain index and chunk to the stable local host ID
+and o8 account. Independently initialized profiles cannot read or replace each
+other's credentials. Profiles copied with the same host ID retain the same
+credential identity and share one OS-user rotation lock, even under different
+profile paths. Owner-only records from earlier unpublished development are not
+automatically adopted; the operator must authenticate again.
+
+The actual Keychain synthetic fixture verifies independent read/replacement,
+cold reopening, copied-host lock exclusion and cleanup. It grants no live OpenAI
+access and does not establish installed OAuth or provider inference acceptance.

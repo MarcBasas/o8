@@ -9,7 +9,8 @@ import { ChatGPTPlanError, emptyPlanRecord, type PlanRecord, type PlanStore } fr
 
 const SERVICE = 'ai.o8.chatgpt-plan';
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-const keyFor = (owner: string) => createHash('sha256').update(owner).digest('hex');
+const keyFor = (hostId: string, owner: string) => createHash('sha256')
+  .update(JSON.stringify(['v1', hostId, owner])).digest('hex');
 
 // Credential-bearing writes use bounded interactive commands over stdin.
 // Reads/deletes pass only opaque entry names in argv. Never capture diagnostics.
@@ -68,8 +69,11 @@ export class MacPlanStore implements PlanStore {
   }
 
   async locked<T>(owner: string, action: () => Promise<T>): Promise<T> {
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    const path = join(this.directory, `${keyFor(owner)}.lock`);
+    // Keychain is OS-user global. Copies retaining the same host ID must also
+    // share the same rotation lock, regardless of their profile directory.
+    const locks = join(getDataDir({}), 'chatgpt-plan-locks');
+    await mkdir(locks, { recursive: true, mode: 0o700 });
+    const path = join(locks, `${keyFor(await this.hostId(), owner)}.lock`);
     const until = Date.now() + 20_000;
     // Do not reclaim a lock on age alone: an interrupted rotating refresh is
     // uncertain. A stale lock requires explicit recovery, rather than replay.
@@ -86,7 +90,7 @@ export class MacPlanStore implements PlanStore {
   }
 
   async read(owner: string): Promise<PlanRecord> {
-    const account = keyFor(owner);
+    const account = keyFor(await this.hostId(), owner);
     const index = await readEntry(account);
     if (index === null) return emptyPlanRecord(owner);
     try {
@@ -110,7 +114,7 @@ export class MacPlanStore implements PlanStore {
 
   async write(owner: string, record: PlanRecord): Promise<void> {
     if (record.owner !== owner) throw new ChatGPTPlanError('account_mismatch', 'The connection belongs to another o8 account.', 403);
-    const account = keyFor(owner);
+    const account = keyFor(await this.hostId(), owner);
     const previous = await readEntry(account);
     const bytes = Buffer.from(JSON.stringify(record), 'utf8');
     const count = Math.ceil(bytes.length / 512);
