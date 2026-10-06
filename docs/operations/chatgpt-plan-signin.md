@@ -7,7 +7,7 @@ does not establish installed acceptance, OpenAI qualification, or publication.
 
 ## Behavior
 
-Onboarding and Settings > Models offer **Continue with ChatGPT** after the user
+Onboarding and Settings > Models & providers offer **Continue with ChatGPT** after the user
 signs in to o8. The local broker uses the open-source loopback OIDC flow with
 PKCE, state, nonce and an opaque installation identifier. It retains the issued
 client registration across retries and restarts. Identity and plan-use scope
@@ -20,19 +20,32 @@ processes, and an uncertain rotation is held rather than replayed. Disconnect
 clears local access before requesting issuer revocation and reports an
 unconfirmed remote result.
 
-Selecting a ChatGPT model uses the Responses transport with `stream: true` and
-`store: false`. It advertises only o8's local function tools, with a registered
-repository required for tools. Repository policy and exact operator approvals
-remain authoritative. A turn and its persisted approvals retain their original
-desktop session, selected registration and grant generation. Switching accounts
-away and back cannot resume the old turn.
+In the workspace **Add pane** menu, choose **ChatGPT plan chat** to open a
+dedicated tab. Its model selector lists only models available from the connected
+plan. This normal entry supports text requests and inherits no repository,
+worker runtime or lead defaults. Conversations remain while the tab is open,
+including during ordinary navigation. Closing it or changing the connected
+account clears its temporary conversation. Tab metadata restores after restart;
+conversation text is not persisted by this pane.
 
-The selected route stays visible in the composer. Saved conversations retain
-that route when discovery fails. Plan turns stop on caps, auth errors, incomplete
-streams or unsupported requests. They do not automatically retry or move to
-API billing. Automatic follow-up inference and compaction are disabled for this
-route. Successful messages retain subscription-route metadata; token counts do
+The dedicated text route uses Responses with `stream: true` and `store: false`,
+disables tools and accepts only user/assistant text. It includes a static text
+chat instruction and the explicitly supplied conversation, without gathering
+workspace rules, files, repository names or personalized account context. The
+request retains the discovered account, grant generation and desktop session.
+A changed selection is refused before provider access and clears the prior
+conversation before another send. Sign-out, disconnect and close abort pending
+work; old async replies cannot paint another account's view.
+
+Plan turns stop on caps, auth errors, incomplete streams or unsupported
+requests. Incomplete text stays visibly partial. They do not automatically
+retry, move to API billing, generate follow-up inference or compact via another
+model. Successful messages retain subscription-route metadata; token counts do
 not establish allowance savings or an API price.
+
+The separate underlying local-function route remains source-tested with a
+registered repository and exact operator approvals. This text chat does not
+expose that route or provide a ChatGPT API lead or Symon integration.
 
 ## Source evidence
 
@@ -43,8 +56,17 @@ not establish allowance savings or an API price.
   refresh uncertainty, issuer revocation refusal, approved edits and interrupted
   continuations. A separate-process fixture proves serialized rotating refresh.
 - [Mounted UI tests](../../src/components/desktop/settings/ChatGPTPlanConnection.test.ts)
-  cover retained registration retry, Disconnect visibility during provider
-  failure, and saved-model restoration without selecting another provider.
+  cover first-commit account privacy, stale action/reply refusal, retained
+  registration retry, Disconnect visibility during provider failure, and saved
+  model restoration without selecting another provider.
+- [Workspace pane tests](../../src/components/desktop/workspace-terminal/ChatGPTPlanChat.test.ts)
+  mount the normal launcher, text pane and shared streaming path. They cover
+  bound requests, sign-out/account privacy, disconnect, incomplete completion,
+  external selection changes and retention beyond the heavy-pane budget.
+- [Desktop state route tests](../../src/app/api/panel/terminal-state/route.test.ts)
+  persist and restore the explicit tab without adopting a repository or terminal.
+  The entry-point fixture also verifies the exact upstream input and refuses
+  stale selection, repository and tool context for text-only requests.
 - [Streaming tests](../../src/components/desktop/llm-chat/streaming-plan.test.ts)
   cover split frames, explicit completion, malformed data, usage metadata and
   absence of extra automatic inference.
