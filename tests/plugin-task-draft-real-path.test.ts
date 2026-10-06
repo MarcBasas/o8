@@ -17,6 +17,7 @@ import { POST } from '@/app/api/plugins/mcp/route';
 import { GET as inspectDrafts } from '@/app/api/plugins/task-drafts/route';
 import { mintPluginToken, PLUGIN_PREPARE_TASK_SCOPE, resolvePluginToken } from '@/lib/auth/plugin-token';
 import { parsePluginRelayGrant, pluginReplayAuthorization } from '@/lib/connect/plugin-relay';
+import { publishReadyAccountState, withAccountStateLease } from '@/lib/auth/account-state';
 import { getDataDir } from '@/lib/data-dir-migration';
 import { bumpSignInEpoch, readSignInEpoch, writeActiveIdentity } from '@/lib/github-broker/managed';
 import { readPluginAudit } from '@/lib/mcp/plugin-audit';
@@ -39,7 +40,8 @@ let repoId: string;
 const accountId = 'user_fixture_task_draft';
 const execAsync = promisify(execFile);
 
-function account(subject = accountId, expiry = 3600) {
+async function account(subject = accountId, expiry = 3600) {
+  await withAccountStateLease(() => {
   writeActiveIdentity(subject);
   bumpSignInEpoch();
   const header = Buffer.from(JSON.stringify({ alg: 'EdDSA' })).toString('base64url');
@@ -48,6 +50,8 @@ function account(subject = accountId, expiry = 3600) {
   const licenseKey = `${unsigned}.${sign(null, Buffer.from(unsigned), keys.privateKey).toString('base64url')}`;
   writeFileSync(join(getDataDir(), 'entitlement.json'), JSON.stringify({ plan: 'free', licenseKey }));
   rmSync(join(getDataDir(), 'auth-signed-out-at'), { force: true });
+  publishReadyAccountState(subject, readSignInEpoch()!, licenseKey);
+  });
 }
 function token(subject = accountId, scopes = [PLUGIN_PREPARE_TASK_SCOPE]) {
   return mintPluginToken({ machineId: 'draft-machine', clientId: 'draft-client', accountId: subject, scopes });
@@ -95,7 +99,7 @@ beforeEach(async () => {
   launches.mockClear();
   process.env.O8_LICENSE_PUBKEY = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
   rmSync(taskDraftRoot(), { recursive: true, force: true });
-  account();
+  await account();
   repo = realpathSync(mkdtempSync(join(tmpdir(), 'o8-plugin-draft-fixture-')));
   dirs.push(repo);
   git('init', '--initial-branch=main');
@@ -210,15 +214,15 @@ describe('plugin task drafts through the actual authenticated route and persiste
     rmSync(join(getDataDir(), 'github-signin-epoch'));
     expect((await call('o8_prepare_task', args)).status).toBe(403);
     writeFileSync(join(getDataDir(), 'github-signin-epoch'), epoch);
-    account(accountId, -60);
+    await account(accountId, -60);
     expect((await call('o8_prepare_task', args)).status).toBe(403);
-    account();
+    await account();
     const cache = JSON.parse(readFileSync(join(getDataDir(), 'entitlement.json'), 'utf8'));
     const pieces = cache.licenseKey.split('.');
     pieces[2] = (pieces[2][0] === 'A' ? 'B' : 'A') + pieces[2].slice(1);
     writeFileSync(join(getDataDir(), 'entitlement.json'), JSON.stringify({ ...cache, licenseKey: pieces.join('.') }));
     expect((await call('o8_prepare_task', args)).status).toBe(403);
-    account();
+    await account();
     writeFileSync(join(getDataDir(), 'auth-signed-out-at'), 'unreadable marker');
     expect((await call('o8_prepare_task', args)).status).toBe(403);
     expect(intents()).toHaveLength(0);
@@ -229,18 +233,18 @@ describe('plugin task drafts through the actual authenticated route and persiste
     const capture = workspace.captureTaskDraftWorkspace;
     vi.spyOn(workspace, 'captureTaskDraftWorkspace').mockImplementationOnce(async (...params) => {
       const value = await capture(...params);
-      account('user_other_account');
+      await account('user_other_account');
       return value;
     });
     expect((await call('o8_prepare_task', args)).status).toBe(403);
     expect(intents()).toHaveLength(0);
     vi.restoreAllMocks();
-    account();
+    await account();
     const fresh = contract((await options()).snapshotId);
     expect((await call('o8_prepare_task', fresh)).result.ok).toBe(true);
-    account('user_other_account');
+    await account('user_other_account');
     expect((await call('o8_prepare_task', fresh, token('user_other_account'))).result.code).toBe('snapshot_unavailable');
-    account();
+    await account();
     expect((await call('o8_prepare_task', fresh)).status).toBe(403);
     expect(intents()).toHaveLength(1);
   });
