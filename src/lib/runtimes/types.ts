@@ -270,6 +270,8 @@ export interface RuntimeSessionTransformProviderResult {
  */
 export interface LaunchOptions {
   cwd: string;
+  controlledTask?: import('@/lib/mcp/task-execution-store').ControlledTaskBinding;
+  executionPolicy?: 'single-attempt';
   prompt: string;
   /** Coordinator-side registered repository root; never sent to an external worker. */
   sourceRepoPath?: string;
