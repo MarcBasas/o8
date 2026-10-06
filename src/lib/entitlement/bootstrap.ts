@@ -62,7 +62,8 @@ export async function ensureFreeEntitlement(options: { allowPinnedPlan?: boolean
   // operation such as private feedback may still request an install credential
   // solely for server authentication; the env pin continues to own the local
   // plan resolution.
-  if (process.env.O8_PLAN && !options.allowPinnedPlan) return;
+  const pinnedPlan = process.env.O8_PLAN;
+  if (pinnedPlan && !options.allowPinnedPlan) return;
   const licenseServerBaseUrl = configuredLicenseServerBaseUrl();
   if (!licenseServerBaseUrl) {
     console.debug('[entitlement] License server not configured; using free plan.');
@@ -102,6 +103,15 @@ export async function ensureFreeEntitlement(options: { allowPinnedPlan?: boolean
         console.debug('[entitlement] License server returned an invalid license; using free plan.');
         return;
       }
+
+      // Issuance and verification yield to other entitlement writers. Recheck
+      // immediately before the synchronous write so a late free response cannot
+      // replace a newly saved license or commit after a pin or opt-out change.
+      if (
+        readCachedEntitlement()?.licenseKey
+        || process.env.O8_PLAN !== pinnedPlan
+        || !configuredLicenseServerBaseUrl()
+      ) return;
 
       writeCachedEntitlement({
         plan: verified.plan,
