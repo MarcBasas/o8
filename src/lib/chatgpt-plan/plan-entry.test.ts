@@ -85,6 +85,41 @@ describe('ChatGPT plan route and persisted lifecycle', () => {
     expect(fixture.calls).toHaveLength(0);
   });
 
+  it('binds a discovered plan selection to proxy admission and refuses a switch before sending the old transcript', async () => {
+    await connect();
+    const before = await (await call('GET')).json();
+    expect(before.selection).toMatchObject({ accountId: before.activeId, generation: expect.any(Number), desktopEpoch: expect.any(String) });
+    await fixture.service.select(owner, before.activeId);
+    const response = await infer({ planAccountId: before.selection.accountId, planGeneration: before.selection.generation, planDesktopEpoch: before.selection.desktopEpoch });
+    expect(response.status).toBe(409);
+    expect(fixture.calls.filter((entry) => entry.path === '/v1/responses')).toHaveLength(0);
+    const after = await (await call('GET')).json();
+    const fresh = await infer({ planAccountId: after.selection.accountId, planGeneration: after.selection.generation, planDesktopEpoch: after.selection.desktopEpoch });
+    expect(fresh.status).toBe(200);
+    expect(await fresh.text()).toContain('[DONE]');
+  });
+
+  it('sends only explicit conversation text from a plan text chat and never gathers workspace or personalized context', async () => {
+    await connect();
+    const snapshot = await (await call('GET')).json();
+    const context = await import('@/lib/llm/context');
+    const personalized = await import('@/lib/llm/personalized-chat-ftux');
+    const workspace = vi.spyOn(context, 'getWorkspaceContext');
+    const prompt = vi.spyOn(context, 'buildSystemPrompt').mockReturnValue('PRIVATE_WORKSPACE_SENTINEL');
+    const ftux = vi.spyOn(personalized, 'getPersonalizedChatFtuxPayload').mockImplementation(async () => { throw new Error('PRIVATE_ACCOUNT_SENTINEL'); });
+    try {
+      const response = await infer({ planTextOnly: true, planAccountId: snapshot.selection.accountId, planGeneration: snapshot.selection.generation, planDesktopEpoch: snapshot.selection.desktopEpoch, messages: [{ role: 'user', content: 'Add 17 and 23' }] });
+      expect(response.status).toBe(200); expect(await response.text()).toContain('[DONE]');
+      expect(workspace).not.toHaveBeenCalled(); expect(prompt).not.toHaveBeenCalled(); expect(ftux).not.toHaveBeenCalled();
+      const request = fixture.calls.find((entry) => entry.path === '/v1/responses')!;
+      expect(request.body).toMatchObject({ input: [{ role: 'developer', content: 'You are ChatGPT in o8. Answer using only the conversation supplied by the user. This is a text-only chat without tools or workspace context.' }, { role: 'user', content: 'Add 17 and 23' }] });
+      expect(request.body).not.toHaveProperty('tools');
+      expect(JSON.stringify(request.body)).not.toMatch(/PRIVATE_WORKSPACE_SENTINEL|PRIVATE_ACCOUNT_SENTINEL/);
+      expect((await infer({ planTextOnly: true, disableTools: false })).status).toBe(400);
+      expect((await infer({ planTextOnly: true, planAccountId: snapshot.selection.accountId, planGeneration: snapshot.selection.generation, planDesktopEpoch: snapshot.selection.desktopEpoch, repoPath: directory })).status).toBe(400);
+    } finally { workspace.mockRestore(); prompt.mockRestore(); ftux.mockRestore(); }
+  });
+
   it('refuses malformed loopback targets and keeps the real sign-in callback usable', async () => {
     const start = await (await call('POST', { action: 'start' })).json();
     const redirect = new URL(new URL(start.authorizationUrl).searchParams.get('redirect_uri')!);

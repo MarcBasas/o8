@@ -195,6 +195,12 @@
       ]
     },
     {
+      "path": "src/components/desktop/workspace-terminal/ChatGPTPlanChat.test.ts",
+      "reasons": [
+        "terminal-tool"
+      ]
+    },
+    {
       "path": "src/components/desktop/workspace-terminal/WorkspaceTerminalPanels.test.ts",
       "reasons": [
         "terminal-tool"

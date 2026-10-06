@@ -52,6 +52,7 @@ export interface PlanStatus {
   welcomed: boolean;
   accounts: Array<{ id: string; label: string; connected: boolean }>;
   models: PlanModel[];
+  selection?: PlanSelection;
   usageUrl: string;
   modelLoadError?: string;
 }
