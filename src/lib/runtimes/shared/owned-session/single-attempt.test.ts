@@ -63,7 +63,8 @@ describe('durable single-attempt owned workers', () => {
       humanLabel: 'Fixture worker', squadShortName: 'Fixture', retryDelayMs: 5,
       launchArgs: ({ model, effort }) => ['-e',
         `require('node:fs').appendFileSync(${JSON.stringify(counter)}, ${JSON.stringify(`${model}:${effort}\n`)}); process.stderr.write('model unavailable'); process.exit(1);`],
-      resumeArgs: () => ['-e', 'process.exit(1)'],
+      resumeArgs: ({ model, effort }) => ['-e',
+        `require('node:fs').appendFileSync(${JSON.stringify(counter)}, ${JSON.stringify(`${model}:${effort}\n`)}); process.exit(1);`],
       parseRunLog: () => ({ entries: [], outcome: 'failed', completedTurn: false, threadId: 'fixture-thread' }),
       modelCompatibilityFallback: vi.fn(() => ({ nextModel: 'fallback-model', notice: 'fallback' })),
       chooseRetryModel: vi.fn(() => ({ nextModel: 'quota-model', reason: 'quota' })),
@@ -169,9 +170,11 @@ describe('durable single-attempt owned workers', () => {
     const store = createOwnedSessionStore(runtime);
     const result = await store.launch({ ...request(), executionPolicy: undefined });
     await settled();
-    await store.getRuntimeTail(result.surfaceId);
+    await vi.waitFor(async () => {
+      await store.getRuntimeTail(result.surfaceId);
+      expect(bridge).toHaveBeenCalledTimes(2);
+    });
     await settled();
-    expect(bridge).toHaveBeenCalledTimes(2);
     expect(runtime.modelCompatibilityFallback).toHaveBeenCalled();
     expect(readFileSync(counter, 'utf8')).toBe('gpt-6.1-sol:high\nfallback-model:high\n');
     expect(saved().executionPolicy).toBeUndefined();
