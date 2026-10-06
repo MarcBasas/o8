@@ -3,7 +3,7 @@ import type { PluginPrincipal } from '@/lib/auth/plugin-token';
 import { CODEX_MODEL_IDS, SUPPORTED_MODEL_IDS } from '@/lib/models';
 import { THINKING_EFFORTS } from '@/lib/orchestrator/thinking-effort';
 import { resolveEffortPin } from '@/lib/orchestrator/effort-pin';
-import { requireTaskDraftAccount } from './task-draft-account';
+import { requireTaskDraftAccount, withTaskDraftAccountAdmission } from './task-draft-account';
 import { canonical, exactKeys, normalizedText, object, parseTaskDraftContract, TaskDraftError } from './task-draft-contract';
 import { contractHash, readTaskDraft, readTaskDraftSnapshot, taskDraftKey, withTaskDraftLock,
   writeTaskDraft, writeTaskDraftSnapshot, type TaskDraftRecord } from './task-draft-store';
@@ -48,8 +48,7 @@ export async function callTaskDraftTool(principal: PluginPrincipal, tool: string
     await requireTaskDraftAccount(principal, account);
     const snapshot = { ...workspace, ...account, snapshotId: randomUUID(),
       machineId: principal.machineId, clientId: principal.clientId, expiresAt: Date.now() + 300_000 };
-    writeTaskDraftSnapshot(snapshot);
-    await requireTaskDraftAccount(principal, account);
+    await withTaskDraftAccountAdmission(principal, account, () => writeTaskDraftSnapshot(snapshot));
     return { ok: true, repoId, projectId, snapshotId: snapshot.snapshotId, revision: snapshot.revision,
       rulesDigest: snapshot.rulesDigest, expiresAt: snapshot.expiresAt,
       workMode: 'read-only', executionEnabled: false, runtimes: catalog() };
@@ -92,9 +91,7 @@ export async function callTaskDraftTool(principal: PluginPrincipal, tool: string
       contract, contractHash: contractHash(contract),
       policy: { automaticDispatch: false, workMode: 'read-only', packetCount: 1, maxAttempts: 1, fallback: false, executionCarrier: null },
     };
-    writeTaskDraft(key, draft);
-    // A late account switch can leave a held draft, never an executable packet.
-    await requireTaskDraftAccount(principal, account);
+    await withTaskDraftAccountAdmission(principal, account, () => writeTaskDraft(key, draft));
     return receipt(draft, false);
   });
 }

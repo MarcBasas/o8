@@ -141,12 +141,9 @@ provider requests; this policy is not a provider-request or allowance cap.
 
 ### Dispatch admission and live acceptance
 
-The existing desktop sign-in epoch writers do not provide an atomic
-cross-process account-transition transaction. Checks here reduce stale
-admission, but a transition after a check can leave a held draft. It cannot
-authorize execution because drafts have no dispatch consumer. Future dispatch
-must introduce an atomic admission boundary and revalidate the account,
-snapshot, workspace and current rules.
+Account transitions and held-draft admission now share the lease described below.
+Future dispatch must use that boundary through permanent attempt reservation and
+process creation, and revalidate the snapshot, workspace and current rules.
 
 Worker creation must preserve existing missions, create an isolated workspace,
 resolve the execution carrier explicitly and bind the runtime execution limit
@@ -162,3 +159,45 @@ ChatGPT web/phone-to-desktop worker run be reviewed. Hosted refresh/revocation,
 account isolation, reviewer walkthrough and allowance measurement remain separate
 acceptance items. Neither preparation nor provider token counts prove an
 allowance-saving benefit.
+
+
+## Account transition and admission source
+
+The desktop account boundary now uses one installation-wide cross-process lease
+and a durable generation journal. Every identity, sign-in epoch, sign-out marker,
+license, founder record, managed token and device grant mutation commits a blocked
+journal before changing legacy files. Exact process identity governs abandoned
+lease recovery; elapsed time never permits stealing a live or unknown owner.
+Synchronous callers refuse contention instead of blocking the event loop.
+Release retries database contention asynchronously; only this process can recover
+its own logically inactive exact reservation, without stealing an active lease.
+
+Only a complete verified account-license sync publishes ready state, bound to
+identity, epoch and the exact license fingerprint. Admission still verifies the
+license signature, expiry and account subject without offline grace. Existing
+legacy files alone are insufficient; missing, corrupt and interrupted journals
+hold admission. Explicit sign-out survives marker aging and token timestamps;
+only a completed fresh-sign-in transition allows ordinary refresh again.
+
+License responses, managed refreshes, manual license verification, free-token
+issuance, subject-based GET eviction and returned device grants compare their
+captured generation inside the lease before writing or clearing state. Device
+cleanup checks token ownership under that same lease. Managed refresh cannot
+anchor an absent identity or adopt a generation newer than its originating sync.
+
+Held draft persistence and local inspection use `withTaskDraftAccountAdmission`.
+The awaited callback retains the lease through its operation, and cannot mutate
+account state. Future worker dispatch must perform final workspace validation,
+permanent attempt reservation and actual process creation inside this callback.
+No dispatch tool is enabled by this change.
+
+Real-route tests cover late license success and no-license cleanup, stale subject
+reads, managed success/rejection responses, explicit sign-out, persistence failure
+and safe verified recovery. Independent-process fixtures prove exclusion through
+actual child creation and recovery after transition/ready-publication crashes.
+The child is a local fixture, not a provider CLI or hosted ChatGPT worker. Tests
+do not prove power-loss durability, live OAuth refresh/revocation, older processes
+that bypass this protocol, installed acceptance or production activation.
+
+Tracked in [#3308](https://github.com/hurttlocker/o8/issues/3308), as a prerequisite
+for controlled worker dispatch in [#3249](https://github.com/hurttlocker/o8/issues/3249).

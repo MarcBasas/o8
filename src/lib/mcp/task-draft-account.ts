@@ -1,3 +1,4 @@
+import { accountStateMatches, readAccountState, requireAccountGeneration, withAccountStateAdmission } from '@/lib/auth/account-state';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PluginPrincipal } from '@/lib/auth/plugin-token';
@@ -21,16 +22,33 @@ function sameIdentity(principal: AccountAdmission, expected?: TaskDraftAccount):
   return { accountId, epoch };
 }
 
-/** No offline grace or decoded client identity can admit a task draft. */
-export async function requireTaskDraftAccount(principal: AccountAdmission, expected?: TaskDraftAccount): Promise<TaskDraftAccount> {
-  const captured = sameIdentity(principal, expected);
-  const token = readCachedEntitlement()?.licenseKey;
-  if (!token) throw new TaskDraftError('account_changed_or_unavailable', 403);
-  const verified = await verifyLicense(token, { offlineGrace: false });
-  sameIdentity(principal, captured);
-  if (!verified.valid || verified.subject !== captured.accountId
-    || readCachedEntitlement()?.licenseKey !== token) {
+/** Hold the installation lease through verification and the awaited reserve/spawn operation. */
+export async function withTaskDraftAccountAdmission<T>(principal: AccountAdmission, expected: TaskDraftAccount | undefined,
+  action: (account: TaskDraftAccount) => Promise<T> | T): Promise<T> {
+  try {
+    return await withAccountStateAdmission(async () => {
+      const state = readAccountState();
+      if (!state || !accountStateMatches(state)) throw new TaskDraftError('account_changed_or_unavailable', 403);
+      const captured = sameIdentity(principal, expected);
+      const token = readCachedEntitlement()?.licenseKey;
+      if (!token) throw new TaskDraftError('account_changed_or_unavailable', 403);
+      const verified = await verifyLicense(token, { offlineGrace: false });
+      sameIdentity(principal, captured);
+      requireAccountGeneration(state.generation);
+      if (!verified.valid || verified.subject !== captured.accountId || readCachedEntitlement()?.licenseKey !== token) {
+        throw new TaskDraftError('account_changed_or_unavailable', 403);
+      }
+      const result = await action(captured);
+      requireAccountGeneration(state.generation);
+      return result;
+    });
+  } catch (error) {
+    if (error instanceof TaskDraftError) throw error;
     throw new TaskDraftError('account_changed_or_unavailable', 403);
   }
-  return captured;
+}
+
+/** No offline grace or decoded client identity can admit a task draft. */
+export function requireTaskDraftAccount(principal: AccountAdmission, expected?: TaskDraftAccount): Promise<TaskDraftAccount> {
+  return withTaskDraftAccountAdmission(principal, expected, (account) => account);
 }

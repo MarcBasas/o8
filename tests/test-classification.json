@@ -3087,6 +3087,14 @@
       ]
     },
     {
+      "path": "tests/plugin-account-transition-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "process-signal",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/plugin-principal-real-path.test.ts",
       "reasons": [
         "real-path"
