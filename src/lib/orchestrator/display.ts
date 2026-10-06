@@ -195,18 +195,19 @@ export function orchestratorStatusTone(status?: OrchestratorPacketStatus | null)
   }
 }
 
-export function adHocLaneTitle(kind?: 'chat' | 'llm-chat' | 'terminal' | 'canvas' | 'orchestrator' | 'fleet-canvas') {
+export function adHocLaneTitle(kind?: 'chat' | 'llm-chat' | 'chatgpt-plan' | 'terminal' | 'canvas' | 'orchestrator' | 'fleet-canvas') {
   if (kind === 'terminal') return 'Terminal';
   if (kind === 'canvas') return 'Inspector';
   if (kind === 'fleet-canvas') return 'Canvas';
   if (kind === 'orchestrator') return 'Orchestrator';
   if (kind === 'chat') return 'Agent';
+  if (kind === 'chatgpt-plan') return 'ChatGPT plan';
   return 'Assistant';
 }
 
 export function laneDisplayTitle(
   packet?: Pick<WorkspaceOrchestrationPacketBadge, 'title'> | null,
-  kind?: 'chat' | 'llm-chat' | 'terminal' | 'canvas' | 'orchestrator' | 'fleet-canvas',
+  kind?: 'chat' | 'llm-chat' | 'chatgpt-plan' | 'terminal' | 'canvas' | 'orchestrator' | 'fleet-canvas',
 ) {
   const title = packet?.title?.trim();
   return title || adHocLaneTitle(kind);

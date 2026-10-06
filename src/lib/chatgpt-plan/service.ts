@@ -218,6 +218,7 @@ export class ChatGPTPlanService {
   }
 
   async status(owner: string): Promise<PlanStatus> {
+    const desktopEpoch = readDesktopAccountEpoch(owner);
     return this.store.locked(owner, async () => {
       const record = await this.store.read(owner);
       let account = record.registrations.find((entry) => entry.id === record.activeId);
@@ -225,7 +226,9 @@ export class ChatGPTPlanService {
       let models: PlanModel[] = [];
       let modelLoadError: string | undefined;
       if (enabled) { try { account = await this.active(owner, record); models = await this.modelsFor(account); } catch (error) { modelLoadError = error instanceof ChatGPTPlanError ? error.message : 'ChatGPT models could not be loaded.'; } }
-      return { connected: Boolean(account?.tokens), planEnabled: Boolean(account?.tokens?.scopes.includes(PLAN_SCOPE)) && !account?.tokens?.refreshUncertain, activeId: record.activeId, welcomed: record.welcomed, accounts: record.registrations.map((entry) => ({ id: entry.id, label: entry.label, connected: Boolean(entry.tokens) })), models, usageUrl: PLAN_USAGE_URL, ...(modelLoadError ? { modelLoadError } : {}) };
+      if (readDesktopAccountEpoch(owner) !== desktopEpoch) throw new ChatGPTPlanError('o8_session_changed', 'The o8 account changed while loading the connection.', 409);
+      const planEnabled = Boolean(account?.tokens?.scopes.includes(PLAN_SCOPE)) && !account?.tokens?.refreshUncertain;
+      return { connected: Boolean(account?.tokens), planEnabled, activeId: record.activeId, welcomed: record.welcomed, accounts: record.registrations.map((entry) => ({ id: entry.id, label: entry.label, connected: Boolean(entry.tokens) })), models, usageUrl: PLAN_USAGE_URL, ...(planEnabled && account ? { selection: { accountId: account.id, generation: record.generation, desktopEpoch } } : {}), ...(modelLoadError ? { modelLoadError } : {}) };
     });
   }
 

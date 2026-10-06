@@ -769,7 +769,7 @@ export type WorkspaceLaneTranscriptState =
 export interface WorkspaceLaneState {
   tileId: string;
   tabId: string | null;
-  kind: 'chat' | 'llm-chat' | 'terminal' | 'canvas' | 'orchestrator' | 'fleet-canvas' | null;
+  kind: 'chat' | 'llm-chat' | 'chatgpt-plan' | 'terminal' | 'canvas' | 'orchestrator' | 'fleet-canvas' | null;
   title: string;
   subtitle: string | null;
   repoPath: string | null;

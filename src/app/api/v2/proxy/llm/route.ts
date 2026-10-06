@@ -310,6 +310,12 @@ export const POST = withOptionalAuth(async (request: NextRequest, auth: AuthCont
     thinkingEffort?: ThinkingEffort;
   };
   const requestedThinkingEffort = parseRequestedThinkingEffort(rawThinkingEffort);
+  const planTextOnly = body.planTextOnly === true;
+  if (body.planTextOnly !== undefined && (!planTextOnly || provider !== 'chatgpt' || disableTools !== true || rawApprovalGrant != null
+    || typeof body.planAccountId !== 'string' || !Number.isSafeInteger(body.planGeneration) || typeof body.planDesktopEpoch !== 'string'
+    || rawMessages.some((message) => !message || !['user', 'assistant'].includes(message.role)))) {
+    return jsonError('Plan text chats require a bound ChatGPT connection, user/assistant text, and disabled tools.', 400);
+  }
 
   if (!isSupportedProvider(provider)) {
     return jsonError(`Unsupported provider: ${provider}`, 400);
@@ -344,6 +350,7 @@ export const POST = withOptionalAuth(async (request: NextRequest, auth: AuthCont
   }
   const headerRepoPath = request.headers.get(LLM_REPO_PATH_HEADER)?.trim() || '';
   const requestedRepoPath = bodyRepoPath || headerRepoPath;
+  if (planTextOnly && requestedRepoPath) return jsonError('Plan text chats do not accept repository context.', 400);
   let effectiveRepoRoot = process.cwd();
   // Whether effectiveRepoRoot is a REAL registered repo vs the process.cwd()
   // fallback. Tool writes must never target cwd (the app's own dir) — gate on
@@ -366,11 +373,13 @@ export const POST = withOptionalAuth(async (request: NextRequest, auth: AuthCont
   const userMessageCount = nonSystemMessages.filter((message) => message.role === 'user').length;
   const isFreshChatTurn = assistantMessageCount === 0 && userMessageCount <= 1;
 
-  let systemPrompt = buildSystemPrompt(getWorkspaceContext(effectiveRepoRoot));
+  let systemPrompt = planTextOnly
+    ? 'You are ChatGPT in o8. Answer using only the conversation supplied by the user. This is a text-only chat without tools or workspace context.'
+    : buildSystemPrompt(getWorkspaceContext(effectiveRepoRoot));
 
   const lastUserMsg = [...nonSystemMessages].reverse().find((message) => message.role === 'user');
 
-  if (isFreshChatTurn) {
+  if (isFreshChatTurn && !planTextOnly) {
     try {
       const ftux = await getPersonalizedChatFtuxPayload({
         userName: auth?.user.name,

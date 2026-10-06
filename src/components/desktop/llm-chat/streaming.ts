@@ -2,6 +2,7 @@ import { buildLinkedIssueContext, type LinkedIssueRef } from '../IssueLinkPicker
 
 import { buildRepoRequestHeaders, type ActiveThinkingState, type LLMMessage, MODELS, type ModelOption, type PendingApprovalState, type PreferredRepoContext, type SourceInfo, type ThinkingStep, type ToolCallInfo } from './shared';
 import { planAccountHeaders } from '@/lib/chatgpt-plan/client';
+import type { PlanSelection } from '@/lib/chatgpt-plan/types';
 import { fetchWithLongLivedBudget } from '@/lib/connection-budget';
 
 function normalizeFetchFailure(error: unknown) {
@@ -61,6 +62,8 @@ export async function streamAssistantResponse({
   messages,
   model,
   preferredRepo,
+  planSelection,
+  planTextOnly,
   showTypingIndicator,
   tabId,
   onFallback,
@@ -78,6 +81,8 @@ export async function streamAssistantResponse({
   messages: LLMMessage[];
   model: ModelOption;
   preferredRepo?: PreferredRepoContext | null;
+  planSelection?: PlanSelection;
+  planTextOnly?: boolean;
   showTypingIndicator: boolean;
   tabId: string;
   onFallback?: (notice: string) => void;
@@ -108,6 +113,8 @@ export async function streamAssistantResponse({
         messages: [...recentMessages, { role: 'user', content: [buildLinkedIssueContext(linkedIssue), messageForModel].filter(Boolean).join('\n\n') }],
         approvedTools: [...approvedToolsSet],
         ...(disableTools ? { disableTools: true } : {}),
+        ...(model.provider === 'chatgpt' && planSelection ? { planAccountId: planSelection.accountId, planGeneration: planSelection.generation, planDesktopEpoch: planSelection.desktopEpoch } : {}),
+        ...(model.provider === 'chatgpt' && planTextOnly ? { planTextOnly: true } : {}),
       });
 
   let response: Response | null = null;
