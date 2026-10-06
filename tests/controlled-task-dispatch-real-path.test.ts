@@ -23,6 +23,7 @@ vi.mock('@/lib/runtimes/shared/owned-session/sandbox', async (original) => ({
 }));
 
 import { POST } from '@/app/api/plugins/mcp/route';
+import { GET as inspectDrafts } from '@/app/api/plugins/task-drafts/route';
 import { POST as control } from '@/app/api/plugins/task-drafts/control/route';
 import { createOwnedSessionStore, type OwnedRuntimeAdapter, type OwnedSessionRecord } from '@/lib/runtimes/shared/owned-session';
 import { getRuntime, registerRuntime } from '@/lib/runtimes';
@@ -202,6 +203,28 @@ function cold(draft: Awaited<ReturnType<typeof prepare>>) {
 }
 
 describe('controlled tasks through the operator route, durable intent and owned child', () => {
+  it('lists exact operator contract bindings and safe permanent receipts without workspace paths', async () => {
+    const draft = await prepare();
+    const request = () => new NextRequest('http://localhost/api/plugins/task-drafts', {
+      headers: { authorization: `Bearer ${getOrCreateWsToken()}` },
+    });
+    let response = await inspectDrafts(request());
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    let body = await response.json();
+    expect(body.accountId).toBe(accountId);
+    expect(body.drafts[0]).toMatchObject({ contractHash: draft.contractHash, execution: null, executionError: null });
+    await decision(draft);
+    response = await inspectDrafts(request());
+    body = await response.json();
+    expect(body.drafts[0].execution).toMatchObject({ contractHash: draft.contractHash, state: 'running', retryAllowed: false });
+    expect(JSON.stringify(body)).not.toContain('workspacePath');
+    const denied = await inspectDrafts(new NextRequest('http://localhost/api/plugins/task-drafts'));
+    expect(denied.status).toBe(401);
+    await account();
+    body = await (await inspectDrafts(request())).json();
+    expect(body.drafts[0].sessionCurrent).toBe(false);
+  });
+
   it('starts one isolated child for concurrent decisions and recovers a cold/lost-reply receipt without a new attempt', async () => {
     const draft = await prepare();
     const mission = readOrchestratorMissionState();

@@ -190,6 +190,20 @@ consent/relay admission and the installed reviewer trial remain separate gates.
 
 ## Source and follow-on work
 
+Desktop Settings > MCP exposes held tasks for the current signed-in account.
+The operator reviews the exact contract hash, revision, rules, file scope and
+native runtime/model/effort before selecting Launch reviewed task. Inspect reads
+the existing permanent attempt; a lost launch reply keeps launch disabled. Stop
+names the exact task and requires confirmation. Account changes clear private
+details and invalidate delayed responses. A previously viewed running attempt
+retains only its exact Stop handle after sign-out. This screen grants no hosted
+execution authority, automatic retry, approval, merge or release permission.
+
+The mounted interaction tests cover delayed account-switch responses, uncertain
+launch receipts, exact Stop binding and sign-out. The real operator-route test
+checks contract/attempt projection and non-operator rejection against persisted
+state. These fixtures do not establish installed or live-provider acceptance.
+
 - [Device grant persistence](../../src/lib/auth/device-session-store.ts)
 - [Device renewal and revocation service](../../src/lib/auth/device-session-service.ts)
 - [Local plugin capability](../../src/lib/auth/plugin-token.ts)
