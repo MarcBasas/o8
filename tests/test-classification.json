@@ -195,6 +195,12 @@
       ]
     },
     {
+      "path": "src/components/desktop/workspace-terminal/ChatGPTPlanChat.test.ts",
+      "reasons": [
+        "terminal-tool"
+      ]
+    },
+    {
       "path": "src/components/desktop/workspace-terminal/WorkspaceTerminalPanels.test.ts",
       "reasons": [
         "terminal-tool"
@@ -217,6 +223,18 @@
       "reasons": [
         "child-process",
         "process-signal"
+      ]
+    },
+    {
+      "path": "src/lib/chatgpt-plan/native-keychain.test.ts",
+      "reasons": [
+        "child-process"
+      ]
+    },
+    {
+      "path": "src/lib/chatgpt-plan/plan-entry.test.ts",
+      "reasons": [
+        "child-process"
       ]
     },
     {
