@@ -3093,6 +3093,14 @@
       ]
     },
     {
+      "path": "tests/plugin-task-draft-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/plugin-terminal-recovery.test.ts",
       "reasons": [
         "child-process",
