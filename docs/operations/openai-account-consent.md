@@ -128,6 +128,23 @@ active grants merely to make a test possible.
 Record actual grant expiry through supported metadata before scheduling an
 expiry test. A successful read inside that lifetime does not prove refresh.
 
+## Controlled worker credential preparation
+
+Controlled worker credential source under [#3310](https://github.com/hurttlocker/o8/issues/3310)
+uses a per-run bearer with zero API capability, filters ambient service secrets and
+shell preload variables, and supplies no operator MCP attachments. Config-file
+adapters receive an explicit empty MCP configuration. Middleware refuses the bearer
+before public/self-authenticated exceptions; worker protocol handlers also refuse it.
+Stop, terminal persistence and launch failure revoke the identity. Ordinary packet
+workers retain their existing credential and attachment behavior.
+
+Actual owned Node children, HTTP middleware/worker-event routes, SQLite, stop and a
+cold resolver exercise the source boundary. Provider inference and the mandatory OS
+sandbox are substituted, so installed isolation and native login acceptance remain
+unproved. This grants no hosted execution scope. Permanent account/task/attempt
+admission through spawn, review/stop reconciliation, consent and installed qualification
+remain open under #3249.
+
 ## Source and follow-on work
 
 - [Device grant persistence](../../src/lib/auth/device-session-store.ts)

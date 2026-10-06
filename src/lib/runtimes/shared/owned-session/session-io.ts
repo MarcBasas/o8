@@ -1,3 +1,4 @@
+import { revokeReadOnlyWorkerToken } from '@/lib/auth/read-only-worker-token';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { saveRestrictedOwnedSession } from './restricted-session-persistence';
@@ -57,6 +58,9 @@ export function createOwnedSessionIo({
   async function saveSession(session: OwnedSessionRecord) {
     session.updatedAt = nowIso();
     if (session.executionPolicy !== undefined) {
+      for (const run of session.recentRuns) {
+        if (run.outcome !== 'running' || run.interruptRequestedAt) revokeReadOnlyWorkerToken(run.id);
+      }
       saveRestrictedOwnedSession(metadataPath(session.sessionDir), session);
       return;
     }
