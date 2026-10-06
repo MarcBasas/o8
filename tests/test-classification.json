@@ -220,6 +220,18 @@
       ]
     },
     {
+      "path": "src/lib/chatgpt-plan/native-keychain.test.ts",
+      "reasons": [
+        "child-process"
+      ]
+    },
+    {
+      "path": "src/lib/chatgpt-plan/plan-entry.test.ts",
+      "reasons": [
+        "child-process"
+      ]
+    },
+    {
       "path": "src/lib/claude-code/read-only-worker-launch.test.ts",
       "reasons": [
         "child-process",
