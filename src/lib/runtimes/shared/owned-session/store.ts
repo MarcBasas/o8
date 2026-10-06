@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 
 import { signalBridgeTerminalSession } from '@/lib/runtime/pty-bridge';
 import { chainOnKey } from '@/lib/util/keyed-promise-chain';
+import { bindControlledTaskSession } from '@/lib/mcp/task-execution-admission';
 import {
   getOrPinPacketRuntimeIdentity,
   getSelectedRuntimeIdentity,
@@ -153,6 +154,7 @@ export function createOwnedSessionStore(
     const repoPath = await validateWorkspace(request.cwd);
     const repo = await resolveRepoContext(repoPath);
     const id = `${sessionIdPrefix}${Date.now()}-${randomUUID().slice(0, 8)}`;
+    await bindControlledTaskSession(request, runtimeId, `${surfacePrefix}${id}`);
     const sessionDir = path.join(await io.ensureRoot(), id);
     await ensureDir(sessionDir);
     let selectedIdentity: Awaited<ReturnType<typeof getSelectedRuntimeIdentity>> = null;
@@ -191,6 +193,7 @@ export function createOwnedSessionStore(
       surfaceId: `${surfacePrefix}${id}`,
       ...(executionPolicy ? { executionPolicy, autoRetry: false } : {}),
       launchMutationId: request.clientMutationId?.trim() || undefined,
+      controlledTask: request.controlledTask ? { ...request.controlledTask } : undefined,
       laneId: request.laneId?.trim() || undefined,
       packetId: request.packetId?.trim() || undefined,
       sessionDir,
@@ -682,7 +685,7 @@ export function createOwnedSessionStore(
     getReviewPacket: (surfaceId) => withSurfaceLock(surfaceId, () => reviewTailController.getReviewPacket(surfaceId)),
     getFleetAdditions,
     sessionState: (surfaceId) => readOwnedSessionState(root, surfaceId, surfacePrefix),
-    archiveSession: io.archiveSession,
+    archiveSession: (surfaceId) => withSurfaceLock(surfaceId, () => io.archiveSession(surfaceId)),
     setDetachedSession,
     sweepOrphanedSessions: fleetComputer.sweepOrphanedSessions,
     getTelemetrySources: reviewTailController.getTelemetrySources,

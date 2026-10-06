@@ -342,6 +342,7 @@ export async function getOwnedClaudeCodeTelemetrySources(surfaceId: string) {
 
 export async function launchOwnedClaudeCodeSession(request: {
   cwd: string;
+  controlledTask?: import('@/lib/mcp/task-execution-store').ControlledTaskBinding;
   executionPolicy?: 'single-attempt';
   prompt: string;
   clientMutationId?: string;

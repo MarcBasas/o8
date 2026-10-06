@@ -1,4 +1,5 @@
 import { revokeReadOnlyWorkerToken } from '@/lib/auth/read-only-worker-token';
+import { executionRunIsClear } from '@/lib/mcp/task-execution-admission';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { saveRestrictedOwnedSession } from './restricted-session-persistence';
@@ -108,6 +109,10 @@ export function createOwnedSessionIo({
       return { archived: false, note: 'Session was not found.' };
     }
 
+    if (session.controlledTask && (!session.recentRuns.length
+      || !(await Promise.all(session.recentRuns.map(executionRunIsClear))).every(Boolean))) {
+      return { archived: false, note: 'Controlled task process evidence is not clear. Stop and verify it before archive.' };
+    }
     const result = await archiveOwnedSessionDir(root, session);
     if (result.archived) {
       invalidateFleetCache();

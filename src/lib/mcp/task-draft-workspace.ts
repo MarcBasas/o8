@@ -1,22 +1,20 @@
-import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
-import { promisify } from 'node:util';
+import { taskDraftGit } from './task-draft-git';
 import { captureMissionProject } from '@/lib/orchestrator/mission-project-context';
 import { getProjectsLedger } from '@/lib/repos/projects';
 import { listReposFresh } from '@/lib/repos/registry';
 import { TaskDraftError, relativeFile } from './task-draft-contract';
 
-const exec = promisify(execFile);
 export interface TaskDraftWorkspace {
   repoId: string; projectId: string; repoPath: string; revision: string; rulesDigest: string;
 }
 
 async function git(repo: string, args: string[]): Promise<string> {
   try {
-    return (await exec('git', ['-C', repo, ...args], { timeout: 5000, maxBuffer: 512_000 })).stdout;
+    return await taskDraftGit(repo, args);
   } catch { throw new TaskDraftError('workspace_unavailable', 409); }
 }
 
@@ -66,10 +64,17 @@ export async function captureTaskDraftWorkspace(repoId: string, projectId: strin
   if (!context || context.id !== projectId) throw new TaskDraftError('project_scope_unavailable', 409);
   const root = (await git(repoPath, ['rev-parse', '--show-toplevel'])).trim();
   if (realpathSync(root) !== repoPath) throw new TaskDraftError('workspace_unavailable', 409);
+  return { repoId, projectId, repoPath, ...await captureTaskWorkspacePath(repoPath) };
+}
+
+export async function captureTaskWorkspacePath(repoPath: string): Promise<Pick<TaskDraftWorkspace, 'revision' | 'rulesDigest'>> {
+  if ((await git(repoPath, ['ls-files', '--stage'])).split('\n').some((line) => line.startsWith('160000 '))) {
+    throw new TaskDraftError('submodule_workspace_requires_review', 409);
+  }
   const revision = (await git(repoPath, ['rev-parse', 'HEAD'])).trim();
   if (!/^[a-f0-9]{40,64}$/.test(revision)) throw new TaskDraftError('workspace_unavailable', 409);
   if (await git(repoPath, ['status', '--porcelain=v1', '--untracked-files=all'])) throw new TaskDraftError('workspace_not_clean', 409);
-  return { repoId, projectId, repoPath, revision, rulesDigest: await rulesDigest(repoPath) };
+  return { revision, rulesDigest: await rulesDigest(repoPath) };
 }
 
 export async function taskDraftChoices(): Promise<Array<{ repoId: string; repository: string; projectId: string }>> {

@@ -35,12 +35,23 @@ export function contractHash(contract: TaskDraftContract): string {
 
 function directory(name: string): string {
   const dir = join(taskDraftRoot(), name);
+  const created = !existsSync(dir);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (created) syncTaskDirectories(dir);
   return dir;
 }
 
+export function syncTaskDirectories(dir: string): void {
+  try {
+    for (const path of new Set([dir, taskDraftRoot(), dirname(taskDraftRoot())])) {
+      const fd = openSync(path, 'r');
+      try { fsyncSync(fd); } finally { closeSync(fd); }
+    }
+  } catch { throw new TaskDraftError('draft_persistence_uncertain', 503); }
+}
+
 /** Publish one durable record, containing both intent binding and receipt. */
-function atomicWrite(file: string, value: unknown): void {
+export function atomicWriteTaskState(file: string, value: unknown): void {
   const temporary = `${file}.${randomUUID()}.tmp`;
   let published = false;
   try {
@@ -56,7 +67,7 @@ function atomicWrite(file: string, value: unknown): void {
 }
 
 export function writeTaskDraftSnapshot(value: TaskDraftSnapshot): void {
-  atomicWrite(join(directory('snapshots'), `${value.snapshotId}.json`), value);
+  atomicWriteTaskState(join(directory('snapshots'), `${value.snapshotId}.json`), value);
 }
 export function readTaskDraftSnapshot(id: string): TaskDraftSnapshot {
   if (!/^[a-f0-9-]{36}$/.test(id)) throw new TaskDraftError('snapshot_unavailable', 409);
@@ -76,7 +87,16 @@ export function readTaskDraft(key: string): TaskDraftRecord | null {
 export function writeTaskDraft(key: string, record: TaskDraftRecord): void {
   // Caller holds the key lock. Existing records are immutable and never expire.
   if (readTaskDraft(key)) throw new TaskDraftError('draft_store_unavailable', 503);
-  atomicWrite(join(directory('intents'), `${key}.json`), record);
+  atomicWriteTaskState(join(directory('intents'), `${key}.json`), record);
+}
+
+export function findTaskDraft(taskId: string, accountId?: string): TaskDraftRecord {
+  if (!/^[a-f0-9-]{36}$/.test(taskId)) throw new TaskDraftError('task_unavailable', 404);
+  const records = readdirSync(directory('intents')).filter((file) => /^[a-f0-9]{64}\.json$/.test(file))
+    .map((file) => readTaskDraft(file.slice(0, -5)))
+    .filter((value) => value?.taskId === taskId && (accountId === undefined || value.account.accountId === accountId));
+  if (records.length !== 1) throw new TaskDraftError('task_unavailable', 404);
+  return records[0]!;
 }
 
 export function listTaskDrafts(accountId: string): TaskDraftRecord[] {
