@@ -29,6 +29,7 @@ import {
   createOwnedSessionStore,
   previewText,
   type OwnedRunEvidence,
+  type OwnedLaunchRequest,
   type OwnedRunOutcome,
   type OwnedRunRecord,
   type OwnedRuntimeAdapter,
@@ -52,15 +53,7 @@ import { executionCarrierRuntimeConfig, type ExecutionCarrierId } from '@/lib/ru
 export type { OwnedCodexFleetAdditions } from '@/lib/runtimes/shared/owned-session';
 // ── Codex-specific types (preserved signatures) ──────────────────────────────
 
-export type OwnedCodexLaunchRequest = {
-  cwd: string;
-  prompt: string;
-  taskName?: string;
-  clientMutationId?: string;
-  model?: string;
-  effort?: ThinkingEffort;
-  laneId?: string;
-  packetId?: string;
+export type OwnedCodexLaunchRequest = Omit<OwnedLaunchRequest, 'runtimeConfig'> & {
   /** Durable packet work mode; 'read-only' hardens argv and the OS sandbox. */
   workMode?: WorkerWorkMode;
   executionCarrier?: ExecutionCarrierId;

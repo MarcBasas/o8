@@ -34,6 +34,7 @@ import {
 import type { WorktreeInfo } from '@/lib/worktree/types';
 import { confirmDiscoveredInterrupt } from '@/lib/runtime/confirmed-interrupt';
 import { settleRuntimeLaunchGovernance } from '@/lib/runtime/launch-governance';
+import { assertSingleAttemptLaunch } from '@/lib/runtime/single-attempt-launch';
 
 export type RuntimeActionKind = 'steer' | 'stop' | 'send_input' | 'interrupt' | 'watch' | 'resolve' | 'launch';
 
@@ -74,6 +75,7 @@ export interface RuntimeActionResult {
 }
 
 export interface RuntimeLaunchRequest {
+  executionPolicy?: 'single-attempt';
   automaticRecoverySurfaceId?: string;
   automaticRecoveryRunId?: string;
   runtime: RuntimeId;
@@ -218,6 +220,7 @@ async function launchRuntimeSurfaceInner(payload: RuntimeLaunchRequest): Promise
     };
   }
 
+  assertSingleAttemptLaunch(payload, workModeResolution.workMode);
   const { prompt: launchPrompt, projectContext } = await buildLaunchPromptWithProjectBrief(payload, prompt, repoPath);
   const remoteManagedWorktree = runtimeId === 'cloud';
   const supportsWorktrees = remoteManagedWorktree || ['codex', 'claude-code', 'gemini', 'opencode', 'pi', 'deepseek-harness'].includes(runtimeId)
@@ -426,6 +429,7 @@ async function launchRuntimeSurfaceInner(payload: RuntimeLaunchRequest): Promise
     packetId: payload.packetId,
     spendCap: payload.spendCap,
     workMode: workModeResolution.workMode,
+    executionPolicy: payload.executionPolicy,
   });
 
   return settleRuntimeLaunchGovernance({

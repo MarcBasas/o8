@@ -1,5 +1,6 @@
 import { currentRecoveryRun, recoveryInterrupted } from './automatic-recovery';
 import { createFailureRetry } from './failure-retry';
+import { assertOwnedSingleAttemptSpawn } from './execution-policy';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { closeSync, openSync } from 'node:fs';
 import { readFile, stat, writeFile } from 'node:fs/promises';
@@ -291,7 +292,7 @@ export function createOwnedRunController({
           const { handleWorkerRuntimeFailure } = await import('@/lib/dispatch/worker-quota-fallback');
           await withSurfaceLock(surfaceId, async () => {
             const current = await io.findSession(surfaceId);
-            if (!current || currentRecoveryRun(current)?.id !== runId || recoveryInterrupted(current)) return;
+            if (!current || current.executionPolicy !== undefined || currentRecoveryRun(current)?.id !== runId || recoveryInterrupted(current)) return;
             await handleWorkerRuntimeFailure({
               laneId: failedLaneId,
               runtime: runtimeId,
@@ -458,6 +459,7 @@ export function createOwnedRunController({
   }
 
   async function spawnOwnedRunInner(session: OwnedSessionRecord, prompt: string, mode: OwnedRunMode) {
+    assertOwnedSingleAttemptSpawn(session, runtimeId, mode);
     await ensureDir(path.join(session.sessionDir, RUNS_DIR));
 
     const runId = `${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -474,6 +476,7 @@ export function createOwnedRunController({
       })).path;
     } catch (error) {
       if (!(error instanceof CliNotFoundError)) {
+        if (session.executionPolicy !== undefined) throw error;
         console.error(`[owned-session] ${runtimeId} CLI resolution failed, falling back to bare "${adapter.binaryName}":`, error);
         binary = adapter.binaryName;
       } else {
@@ -610,6 +613,10 @@ export function createOwnedRunController({
     await ensureDispatchBackendReady(runtimeId, mode);
     const durableSession = await io.findSession(session.surfaceId);
     if (!durableSession) throw new Error('Owned session disappeared before its run could start.');
+    if (JSON.stringify(durableSession.executionPolicy) !== JSON.stringify(session.executionPolicy)) {
+      throw new Error('Single-attempt worker policy changed before spawn.');
+    }
+    assertOwnedSingleAttemptSpawn(durableSession, runtimeId, mode);
     Object.assign(session, durableSession);
     const spawnDecision = await assertOwnedWorkspaceSpawnAvailable({
       surfaceId: session.surfaceId, sessionPacketId: session.packetId ?? null, laneId: session.laneId ?? null,
@@ -643,7 +650,7 @@ export function createOwnedRunController({
     await io.saveSession(session);
 
     try {
-      if (!carrierLaunch.carried && !crashSurvivableWorkersEnabled()) {
+      if (session.executionPolicy === undefined && !carrierLaunch.carried && !crashSurvivableWorkersEnabled()) {
         try {
           const result = await spawnBridgeTerminalSession({
             sessionName: bridgeSessionName,

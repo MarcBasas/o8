@@ -106,6 +106,41 @@ Required coverage:
 
 ## Remaining before a ChatGPT worker run
 
+### Owned runtime execution limit
+
+The runtime launch path now accepts a separate `executionPolicy: single-attempt`
+limit. It requires explicit native catalog model and concrete effort pins plus
+the existing enforced read-only work mode. Claude Code also requires an explicit
+native carrier. Defaults, local/provider model prefixes, incompatible efforts
+and alternate execution carriers cannot fill or change these selections.
+
+The policy and pins are saved on the owned session. Before spawn, the runner
+re-reads them and requires a complete zero-run ledger. The prepared run consumes
+the attempt before process creation; reconciliation never refunds it. Restricted
+session writes sync the file, session directory and parent directory. A failed
+sync holds launch. This improves crash resistance; it is not a power-loss test.
+
+Restricted workers select direct detached spawn once. They cannot try the bridge
+and then spawn another process after an ambiguous bridge response. General retry,
+compatibility model recovery, cross-provider quota fallback, supervisor relaunch
+and explicit/archived resume refuse the persisted policy. Stop remains available.
+Ordinary sessions retain their existing recovery behavior.
+
+Real Node child fixtures exercise failed and quota exits, cold store reload,
+post-publication sync failure, pin changes during readiness and the supervisor
+callback. Separate real-route tests bind the policy into persisted idempotency
+requests. These tests mock sandbox preparation; native sandbox enforcement is
+covered by the existing read-only worker tests. They do not prove live provider
+execution, OAuth consent or ChatGPT-to-desktop launch.
+
+This is an owned-session limit. It does not bind a permanent task intent or
+authorize execution. Held drafts have no dispatch consumer and remain held.
+The ordinary runtime launch route's expiring idempotency is not the permanent
+draft/dispatch receipt store. A single owned process can also make multiple
+provider requests; this policy is not a provider-request or allowance cap.
+
+### Dispatch admission and live acceptance
+
 The existing desktop sign-in epoch writers do not provide an atomic
 cross-process account-transition transaction. Checks here reduce stale
 admission, but a transition after a check can leave a held draft. It cannot
@@ -114,8 +149,10 @@ must introduce an atomic admission boundary and revalidate the account,
 snapshot, workspace and current rules.
 
 Worker creation must preserve existing missions, create an isolated workspace,
-resolve the execution carrier explicitly and enforce the immutable attempt and
-fallback policy at every retry/recovery seam. It also needs an operator review
+resolve the execution carrier explicitly and bind the runtime execution limit
+to a permanent task intent. The worker's local API credentials and injected tools
+must obey the read-only grant as well; an OS file-write sandbox alone is not API
+authorization. It also needs an operator review
 surface, stop behavior, audit reconciliation, installed acceptance and independent
 security review. Actual dispatch needs its own permission and consent; a
 preparation grant must never silently become execution authority.

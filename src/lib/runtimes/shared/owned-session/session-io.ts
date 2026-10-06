@@ -1,5 +1,6 @@
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { saveRestrictedOwnedSession } from './restricted-session-persistence';
 
 import {
   archiveOwnedSessionDir,
@@ -55,6 +56,10 @@ export function createOwnedSessionIo({
 
   async function saveSession(session: OwnedSessionRecord) {
     session.updatedAt = nowIso();
+    if (session.executionPolicy !== undefined) {
+      saveRestrictedOwnedSession(metadataPath(session.sessionDir), session);
+      return;
+    }
     await writeJsonFile(metadataPath(session.sessionDir), session, { mode: 0o600 });
   }
 

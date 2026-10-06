@@ -16,6 +16,7 @@ import type { ThinkingEffort } from '@/lib/orchestrator/thinking-effort';
 import type { LaneTurnContextUsage } from '@/lib/lane/types';
 import type { ResolvedWorkerMcpServer } from '@/lib/mcp/worker-injection';
 import type { SandboxDenial } from './sandbox-denial';
+import type { OwnedExecutionPolicy } from './execution-policy';
 
 // ── Run / session primitives ─────────────────────────────────────────────────
 
@@ -78,6 +79,8 @@ export interface OwnedRunRecord {
 
 export interface OwnedSessionRecord {
   surfaceId: string;
+  /** Durable limits checked by every spawn and recovery entry point. */
+  executionPolicy?: OwnedExecutionPolicy;
   /** Launch receipt correlation, persisted before the external process starts. */
   launchMutationId?: string;
   /** Lane known at spawn time, so an immediate child exit can reach its audit stream. */
@@ -250,6 +253,7 @@ export type OwnedCodexFleetAdditions = OwnedFleetAdditions;
 
 export interface OwnedLaunchRequest {
   cwd: string;
+  executionPolicy?: 'single-attempt';
   prompt: string;
   taskName?: string;
   clientMutationId?: string;
