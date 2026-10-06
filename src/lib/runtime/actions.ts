@@ -75,6 +75,7 @@ export interface RuntimeActionResult {
 }
 
 export interface RuntimeLaunchRequest {
+  controlledTask?: import('@/lib/mcp/task-execution-store').ControlledTaskBinding;
   executionPolicy?: 'single-attempt';
   automaticRecoverySurfaceId?: string;
   automaticRecoveryRunId?: string;
@@ -221,6 +222,10 @@ async function launchRuntimeSurfaceInner(payload: RuntimeLaunchRequest): Promise
   }
 
   assertSingleAttemptLaunch(payload, workModeResolution.workMode);
+  if (payload.controlledTask && (payload.executionPolicy !== 'single-attempt' || payload.isolate !== false
+    || payload.skipSetup !== true || payload.automaticRecoverySurfaceId || payload.automaticRecoveryRunId)) {
+    throw new Error('Controlled task launch requires its pre-admitted isolated workspace and no recovery.');
+  }
   const { prompt: launchPrompt, projectContext } = await buildLaunchPromptWithProjectBrief(payload, prompt, repoPath);
   const remoteManagedWorktree = runtimeId === 'cloud';
   const supportsWorktrees = remoteManagedWorktree || ['codex', 'claude-code', 'gemini', 'opencode', 'pi', 'deepseek-harness'].includes(runtimeId)
@@ -430,6 +435,7 @@ async function launchRuntimeSurfaceInner(payload: RuntimeLaunchRequest): Promise
     spendCap: payload.spendCap,
     workMode: workModeResolution.workMode,
     executionPolicy: payload.executionPolicy,
+    controlledTask: payload.controlledTask,
   });
 
   return settleRuntimeLaunchGovernance({

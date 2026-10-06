@@ -355,6 +355,7 @@ export const codexRuntime: AgentRuntime = {
       taskName: opts.taskName,
       clientMutationId: opts.clientMutationId,
       executionPolicy: opts.executionPolicy,
+      controlledTask: opts.controlledTask,
       model,
       effort,
       laneId: opts.laneId,
