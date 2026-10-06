@@ -1,4 +1,5 @@
 import { mkdir } from 'node:fs/promises';
+import { createOwnedExecutionPolicy } from '@/lib/runtimes/shared/owned-session/execution-policy';
 import path from 'node:path';
 
 import {
@@ -341,6 +342,7 @@ export async function getOwnedClaudeCodeTelemetrySources(surfaceId: string) {
 
 export async function launchOwnedClaudeCodeSession(request: {
   cwd: string;
+  executionPolicy?: 'single-attempt';
   prompt: string;
   clientMutationId?: string;
   model?: string;
@@ -353,6 +355,12 @@ export async function launchOwnedClaudeCodeSession(request: {
   /** Durable packet work mode; 'read-only' hardens argv and the OS sandbox. */
   workMode?: WorkerWorkMode;
 }) {
+  createOwnedExecutionPolicy({ ...request, runtimeConfig: { ...(request.workMode ? { workMode: request.workMode } : {}),
+    ...(request.claudeCodeCarrier ? { modelSource: request.claudeCodeCarrier } : {}) } }, 'claude-code');
+  if (request.executionPolicy !== undefined && (request.claudeCodeCarrier !== 'native'
+    || (request.claudeCodeModel !== undefined && request.claudeCodeModel !== request.model))) {
+    throw new Error('Single-attempt Claude Code workers require explicit matching native pins.');
+  }
   const selection = resolveClaudeCodeWorkerSelection({
     carrier: request.claudeCodeCarrier,
     model: request.claudeCodeModel,

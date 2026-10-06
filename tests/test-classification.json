@@ -744,6 +744,13 @@
       ]
     },
     {
+      "path": "src/lib/runtimes/shared/owned-session/single-attempt.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli"
+      ]
+    },
+    {
       "path": "src/lib/runtimes/shared/owned-session/stop-outcome.test.ts",
       "reasons": [
         "process-signal"
@@ -3089,6 +3096,14 @@
       "path": "tests/plugin-relay-real-path.test.ts",
       "reasons": [
         "network-listener",
+        "real-path"
+      ]
+    },
+    {
+      "path": "tests/plugin-task-draft-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
         "real-path"
       ]
     },

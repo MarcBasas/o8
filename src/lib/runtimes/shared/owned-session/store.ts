@@ -44,6 +44,7 @@ import {
   OwnedWorkspaceUnavailableError,
   type OwnedWorkspaceSpawnGuard,
 } from './workspace-spawn-guard';
+import { createOwnedExecutionPolicy, refuseOwnedSingleAttemptResume } from './execution-policy';
 import type {
   OwnedFleetAdditions,
   OwnedLaunchRequest,
@@ -143,6 +144,7 @@ export function createOwnedSessionStore(
   });
 
   async function launch(request: OwnedLaunchRequest): Promise<OwnedLaunchResponse> {
+    const executionPolicy = createOwnedExecutionPolicy(request, runtimeId);
     const prompt = request.prompt.trim();
     if (!prompt) {
       throw new Error('prompt is required');
@@ -187,6 +189,7 @@ export function createOwnedSessionStore(
     const createdAt = nowIso();
     const session = {
       surfaceId: `${surfacePrefix}${id}`,
+      ...(executionPolicy ? { executionPolicy, autoRetry: false } : {}),
       launchMutationId: request.clientMutationId?.trim() || undefined,
       laneId: request.laneId?.trim() || undefined,
       packetId: request.packetId?.trim() || undefined,
@@ -260,12 +263,14 @@ export function createOwnedSessionStore(
 
   async function resumeInner(surfaceId: string, prompt: string) {
     let session = await io.findSession(surfaceId);
+    refuseOwnedSingleAttemptResume(session);
     const automaticRunId = requestedAutomaticRecoveryRun(surfaceId);
     if (automaticRunId) assertAutomaticRecoveryGeneration(session, automaticRunId);
     let coldRestored = false;
 
     if (!session) {
       const archived = await io.findArchivedSession(surfaceId);
+      refuseOwnedSingleAttemptResume(archived);
       if (archived?.threadId) {
         const restore = await restoreArchivedOwnedSessionDir(root, surfaceId, surfacePrefix);
         if (restore.restored) {
