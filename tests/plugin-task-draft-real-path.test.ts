@@ -191,6 +191,24 @@ describe('plugin task drafts through the actual authenticated route and persiste
     expect(intents()).toHaveLength(2);
   });
 
+  it('returns safe field guidance for rejected sealed metadata without persisting or launching', async () => {
+    const args = contract((await options()).snapshotId);
+    args.sealedTaskContract.requirements[0].productionPath = 'private-unrequested-file.txt';
+    const refused = await call('o8_prepare_task', args);
+    expect(refused.status).toBe(400);
+    expect(refused.result).toMatchObject({ ok: false, code: 'contract_file_scope_mismatch' });
+    expect(refused.result.message).toContain('requirements[].productionPath');
+    expect(refused.result.message).toContain('smallestRoute[].path');
+    expect(refused.result.message).toContain('new idempotency key');
+    expect(JSON.stringify(refused.result)).not.toContain('private-unrequested-file');
+    expect(intents()).toHaveLength(0);
+    expect(launches).not.toHaveBeenCalled();
+    const malformed = await call('o8_prepare_task', { ...args, sealedTaskContract: { version: 2 } });
+    expect(malformed.result).toMatchObject({ ok: false, code: 'invalid_task_contract' });
+    expect(malformed.result.message).toContain('sealedTaskContract');
+    expect(intents()).toHaveLength(0);
+  });
+
   it('recovers the same receipt after persistence succeeds but the final audit fails', async () => {
     const args = contract((await options()).snapshotId);
     const auditModule = await import('@/lib/mcp/plugin-audit');
