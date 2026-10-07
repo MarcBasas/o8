@@ -272,6 +272,8 @@ describe('retained worker completion through the production supervisor callback'
     passed = true;
   });
 
+  // Retirement, two separately bounded cold reads and Git recovery share this
+  // outer budget. Keep each operation's deadline and recovery assertions intact.
   it('keeps unheld completion on the established automatic retirement and private Git banking path', async () => {
     const f = await fixture(false);
     expect(await handleAgentCompletion(f.sessionKey, 'completed', f.dependencies)).toMatchObject({ detail: expect.stringContaining('completed its read-only inspection') });
@@ -307,7 +309,7 @@ describe('retained worker completion through the production supervisor callback'
       expect(missing.recovery!.instructions).not.toMatch(/git (clone|init|fetch)/);
     } finally { renameSync(bundle + '.unavailable', bundle); }
     expect(JSON.stringify(readCompletionHandoff(f.repo.id, f.packet.id))).toBe(historical);
-  });
+  }, 60_000);
 
   it('does not republish an older run when a newer turn completes during transcript capture', async () => {
     const f = await fixture();
