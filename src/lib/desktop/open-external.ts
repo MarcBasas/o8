@@ -1,5 +1,3 @@
-import { toast } from '@/components/shared/ConfirmToastHost';
-
 /**
  * Open an external URL from the desktop app.
  *
@@ -7,7 +5,6 @@ import { toast } from '@/components/shared/ConfirmToastHost';
  * and never navigates), so anything wired to `window.open(url, '_blank')`
  * silently does nothing in the packaged app. Use the shell plugin when running
  * in Tauri and fall back to `window.open` in the browser (dev / web preview).
- * Report native opener failures instead of retrying the webview no-op.
  *
  * Returns void (fires the async work internally) so call sites stay simple and
  * don't trip floating-promise / misused-promise lint in JSX event handlers.
@@ -18,16 +15,8 @@ export function openExternalUrl(url: string | null | undefined): void {
   if ('__TAURI_INTERNALS__' in window) {
     void import('@tauri-apps/plugin-shell')
       .then(({ open }) => open(url))
-      .catch(reportOpenError);
+      .catch(() => { window.open(url, '_blank', 'noopener,noreferrer'); });
     return;
   }
-  try {
-    window.open(url, '_blank', 'noopener,noreferrer');
-  } catch {
-    reportOpenError();
-  }
-}
-
-function reportOpenError(): void {
-  toast('Could not open this link. Please try again.', 'error');
+  window.open(url, '_blank', 'noopener,noreferrer');
 }

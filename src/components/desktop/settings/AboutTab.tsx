@@ -2,7 +2,6 @@
 
 import packageJson from '../../../../package.json';
 import { toast } from '@/components/shared/ConfirmToastHost';
-import { openExternalUrl } from '@/lib/desktop/open-external';
 import {
   APP_FONT_STACK,
   GitHubIcon,
@@ -122,7 +121,7 @@ export function AboutTab() {
             icon={<GitHubIcon size={16} />}
             label="GitHub"
             subtitle="hurttlocker/o8"
-            onPress={() => openExternalUrl('https://github.com/hurttlocker/o8')}
+            onPress={() => window.open('https://github.com/hurttlocker/o8', '_blank', 'noopener,noreferrer')}
             chevron
             divider
           />
@@ -130,7 +129,7 @@ export function AboutTab() {
             icon={<BookIcon />}
             label="Documentation"
             subtitle="Architecture, workflows, and guides"
-            onPress={() => openExternalUrl('https://github.com/hurttlocker/o8/tree/main/docs')}
+            onPress={() => window.open('https://github.com/hurttlocker/o8/tree/main/docs', '_blank', 'noopener,noreferrer')}
             chevron
             divider
           />
@@ -138,7 +137,7 @@ export function AboutTab() {
             icon={<TagIcon />}
             label="Releases"
             subtitle="Changelog and downloads"
-            onPress={() => openExternalUrl('https://github.com/hurttlocker/o8/releases/latest')}
+            onPress={() => window.open('https://github.com/hurttlocker/o8/releases/latest', '_blank', 'noopener,noreferrer')}
             chevron
           />
         </SettingsGroup>
