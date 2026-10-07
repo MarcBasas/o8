@@ -10,6 +10,7 @@ import {
   verifyLicense,
   writeCachedEntitlement,
 } from './license';
+import { captureAccountGeneration, requireAccountGeneration, withAccountStateLease } from '@/lib/auth/account-state';
 import { getDataDir } from '@/lib/data-dir-migration';
 
 /**
@@ -62,8 +63,7 @@ export async function ensureFreeEntitlement(options: { allowPinnedPlan?: boolean
   // operation such as private feedback may still request an install credential
   // solely for server authentication; the env pin continues to own the local
   // plan resolution.
-  const pinnedPlan = process.env.O8_PLAN;
-  if (pinnedPlan && !options.allowPinnedPlan) return;
+  if (process.env.O8_PLAN && !options.allowPinnedPlan) return;
   const licenseServerBaseUrl = configuredLicenseServerBaseUrl();
   if (!licenseServerBaseUrl) {
     console.debug('[entitlement] License server not configured; using free plan.');
@@ -75,6 +75,7 @@ export async function ensureFreeEntitlement(options: { allowPinnedPlan?: boolean
   if (inFlight) return inFlight;
   inFlight = (async () => {
     try {
+      const generation = await captureAccountGeneration();
       const installId = getOrCreateInstallId();
       const res = await fetch(`${licenseServerBaseUrl}/issue-free`, {
         method: 'POST',
@@ -104,20 +105,15 @@ export async function ensureFreeEntitlement(options: { allowPinnedPlan?: boolean
         return;
       }
 
-      // Issuance and verification yield to other entitlement writers. Recheck
-      // immediately before the synchronous write so a late free response cannot
-      // replace a newly saved license or commit after a pin or opt-out change.
-      if (
-        readCachedEntitlement()?.licenseKey
-        || process.env.O8_PLAN !== pinnedPlan
-        || !configuredLicenseServerBaseUrl()
-      ) return;
-
-      writeCachedEntitlement({
-        plan: verified.plan,
-        status: 'active',
-        expiresAt: verified.expiresAt,
-        licenseKey: license,
+      await withAccountStateLease(() => {
+        requireAccountGeneration(generation);
+        if (readCachedEntitlement()?.licenseKey) return;
+        writeCachedEntitlement({
+          plan: verified.plan!,
+          status: 'active',
+          expiresAt: verified.expiresAt,
+          licenseKey: license,
+        });
       });
     } catch {
       retryAfterMs = Date.now() + LICENSE_SERVER_RETRY_COOLDOWN_MS;
