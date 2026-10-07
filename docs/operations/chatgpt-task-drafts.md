@@ -223,4 +223,38 @@ usage. Actual-route tests substitute the CLI and upstream; the native sandbox
 test checks filesystem isolation. A private native source trial also exercised
 the actual CLI and provider. These are separate from installed ChatGPT acceptance,
 production activation, direct hosted launch and subscription allowance savings.
-The preparation grant still requires local review and Launch.
+The preparation grant still requires local review and Launch unless the separate
+hosted launch capability below has been activated and explicitly consented.
+
+## Separate bounded hosted launch
+
+Source for #3376 adds `o8_launch_task` and `o8_stop_task` under the distinct
+`o8:launch-task` scope. Existing read, follow-up and preparation grants cannot
+perform either action. The schema export remains dormant until the reviewed
+relay flag, account-provider scope and host consent are activated. This source
+does not establish installed or live hosted acceptance.
+
+Launch accepts only the exact prepared task ID and contract hash for the current
+account, sign-in epoch, original client and computer. Its first supported route
+is the offered read-only Claude Code carrier with the fixed OpenRouter model,
+provider-default reasoning and immutable bounded policy above. Native providers,
+changed pins and wider permissions are refused. The user must explicitly request
+execution; preparation itself still starts nothing.
+
+The first grant's client, computer and expiry are saved on the permanent attempt.
+Source verification precedes reservation; expiry is checked synchronously before
+the reservation and immediately before actual process creation. Account and task
+admission also surround binding and final workspace checks. Expiry during setup
+holds that attempt without starting a child. Duplicate launch calls inspect it,
+including after failure or Stop; they never create a replacement worker.
+
+Hosted Stop names that same task and hash and requires current scoped account
+authorization. It revokes further provider requests and targets only the bound
+attempt. Local operator Stop remains available under its existing safety policy.
+Neither hosted action grants task writes, approval, merge, release, arbitrary
+process control, saved default changes or automatic fallback.
+
+Actual-route fixtures cover old-scope refusal, client/hash/account/epoch isolation,
+expiry during verification/setup/final spawn, one launch, Stop and replay. The CLI,
+OS sandbox and upstream are substituted in those fixtures; native source trials,
+installed execution and the real ChatGPT consent flow remain distinct evidence.

@@ -15,6 +15,9 @@ import { readTaskExecution, taskBinding, withTaskExecutionLock, writeTaskExecuti
 import { verifyTaskExecutionWorkspace } from './task-execution-workspace';
 
 export const operatorAccount = () => ({ accountId: readActiveIdentity() ?? undefined, expiresAt: Infinity });
+function launchAccount(record: TaskExecutionRecord) {
+  return { accountId: record.account.accountId, expiresAt: record.pluginLaunchGrant?.expiresAt ?? Infinity };
+}
 function draftFor(binding: ControlledTaskBinding) {
   const draft = findTaskDraft(binding.taskId, readActiveIdentity() ?? '');
   if (draft.contractHash !== binding.contractHash) throw new TaskDraftError('contract_conflict', 409);
@@ -37,7 +40,8 @@ function requirePins(record: TaskExecutionRecord, request: Pick<OwnedLaunchReque
 export async function bindControlledTaskSession(request: OwnedLaunchRequest, runtime: string, surfaceId: string): Promise<void> {
   if (!request.controlledTask) return;
   const draft = draftFor(request.controlledTask);
-  await withTaskDraftAccountAdmission(operatorAccount(), draft.account, () => withTaskExecutionLock(draft.taskId, async () => {
+  const admission = launchAccount(executionFor(request.controlledTask));
+  await withTaskDraftAccountAdmission(admission, draft.account, () => withTaskExecutionLock(draft.taskId, async () => {
     const record = executionFor(request.controlledTask!);
     requirePins(record, request, runtime);
     if (record.state !== 'accepted' || record.surfaceId) throw new TaskDraftError('execution_already_reserved', 409);
@@ -51,7 +55,8 @@ export async function withControlledTaskSpawn<T extends OwnedRunRecord>(session:
   runId: string, action: () => Promise<T>): Promise<T> {
   if (!session.controlledTask) return action();
   const draft = draftFor(session.controlledTask);
-  return withTaskDraftAccountAdmission(operatorAccount(), draft.account, () => withTaskExecutionLock(draft.taskId, async () => {
+  const admission = launchAccount(executionFor(session.controlledTask));
+  return withTaskDraftAccountAdmission(admission, draft.account, () => withTaskExecutionLock(draft.taskId, async () => {
     const record = executionFor(session.controlledTask!);
     requirePins(record, { ...session, clientMutationId: session.launchMutationId, executionPolicy: 'single-attempt' }, runtime);
     if (record.state !== 'accepted' || record.surfaceId !== session.surfaceId || record.runId || !record.laneId
@@ -74,6 +79,15 @@ export async function withControlledTaskSpawn<T extends OwnedRunRecord>(session:
       throw error;
     }
   }));
+}
+
+/** Called synchronously immediately before actual process creation, inside the account lease. */
+export function assertControlledLaunchGrantCurrent(session: OwnedSessionRecord): void {
+  if (!session.controlledTask) return;
+  const record = executionFor(session.controlledTask);
+  if (record.pluginLaunchGrant && record.pluginLaunchGrant.expiresAt <= Date.now()) {
+    throw new TaskDraftError('account_changed_or_unavailable', 403);
+  }
 }
 
 export function readExecutionSession(record: TaskExecutionRecord): OwnedSessionRecord | null {
