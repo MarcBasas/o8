@@ -3027,6 +3027,7 @@
       "reasons": [
         "apfs-tool",
         "child-process",
+        "git-cli",
         "native-build",
         "real-path"
       ]
