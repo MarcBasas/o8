@@ -316,7 +316,7 @@ describe('completion and steer overlap through production callbacks and routes',
   });
 
   it('rejects an old completion even when the newer turn has already exited', async () => {
-    const { packet, lane, sessionKey, runId, finishRun } = fixture();
+    const { packet, sessionKey, runId, finishRun } = fixture();
     const delayed = delayVerification();
     const completion = ingestAgentCompletionSignal(sessionKey, runId);
     await delayed.entered;
