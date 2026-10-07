@@ -3076,6 +3076,13 @@
       ]
     },
     {
+      "path": "tests/pi-orchestrator-real-path.test.ts",
+      "reasons": [
+        "network-listener",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/pi-sdk-approved-write-races-real-path.test.ts",
       "reasons": [
         "executable-fixture",
