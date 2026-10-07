@@ -1,11 +1,11 @@
 ---
 name: connected-o8
-description: Check tasks, prepare explicitly requested drafts, and read worker results through your connected o8 computer from ChatGPT or Codex.
+description: Check tasks, prepare explicitly requested drafts, run separately consented bounded workers, and read results through your connected o8 computer from ChatGPT or Codex.
 ---
 
 # Use connected o8
 
-Use this workflow when the user asks to check, prepare or follow up work in their connected
+Use this workflow when the user asks to check, prepare, run, stop or follow up work in their connected
 o8 app. The hosted tools require account linking. Let the host's OAuth flow obtain
 the permission; never ask the user to paste credentials into chat.
 
