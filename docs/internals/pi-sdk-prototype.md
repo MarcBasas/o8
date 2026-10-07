@@ -1,8 +1,10 @@
 # Managed Pi SDK prototype
 
-This is an opt-in server-side prototype under issue #3230. It is not registered
-in the runtime catalog, exposed as a public route, selected by default, or part
-of native first-run acceptance. Existing external Pi RPC behavior is unchanged.
+This began as an opt-in server-side prototype under issue #3230. Since #3258 it
+backs the `pi` orchestrator backend (see "Orchestrator" below), offered in the
+composer under Customize leads as a preview. It is not the default, not a worker
+runtime yet, and not part of native first-run acceptance. Existing external Pi
+RPC behavior is unchanged.
 
 ## Entry point and ownership
 
@@ -104,6 +106,62 @@ The process-table cases run on macOS only. On Linux, the supervisor cases cover
 an orphaned TERM-ignoring child in its own session at exit, timeout and Stop,
 the host's death, a host that is gone before launch, and a supervisor that ends
 without a receipt.
+
+## Orchestrator
+
+`src/lib/lane/orchestrator-backends/pi.ts` registers bundled Pi as the `pi`
+orchestrator backend (#3258). It runs one turn at a time per repo and thread; a
+message that arrives while a turn is running or starting is refused. Each thread
+has one Pi process, and its session file lives under `<data dir>/pi/orchestrator/`,
+so a new process after a restart, a failure or a 15-minute idle close resumes the
+same conversation. Stop aborts the run and the next message is accepted. A failed
+run closes the process and the next message starts a new one on the same session
+file. A turn that needs a different tool surface gets a new process.
+
+Pi gets the built-in o8 servers that the Claude orchestrator surface gets for
+the same repo and tool profile, from the same tool-spine entries:
+
+- the operator server, reached the way the operator stdio proxy forwards every
+  message: a JSON-RPC POST to `/api/mcp` with the ws token;
+- cortex, launched as a stdio MCP server from its tool-spine entry. A proposer
+  turn gets it read-only and no operator server, as Claude does.
+
+A plan-mode turn is read-only: it gets the proposer projection, and of Pi's own
+tools only `read_file`.
+
+User-configured external MCP servers are not attached to Pi.
+
+The servers list 152 commands when this was written (125 from the operator server
+and 27 from cortex). The operator server's schemas alone are about
+110 KB, which would ride on every model call. Pi instead gets three host tools:
+`o8_commands` lists commands with a one-line summary, `o8_command_help` returns
+one command's description and argument schema, and `o8_run` runs a command with
+its arguments as a JSON object string (a string, because some providers reject
+an object parameter that declares no properties). The system prompt is the
+shared `orchestrator.md` prompt plus the list of command names. Claude sees each
+server's tools under that server's name, so a name listed by two servers stays
+two commands: the operator's `cortex_ask` and cortex's `cortex.cortex_ask`.
+A command result is capped at 40 KB. Calls reach the servers unchanged, so their
+own checks apply as for every other orchestrator. Transport errors, which can
+carry server stderr, go to the host log; Pi and the stream get a fixed message.
+A server's own error result reaches Pi exactly as it reaches Claude, including
+any API error text the server put in it (#3373).
+A start failure is shown only when o8 itself explains it (unsupported Node or
+platform).
+
+Pi's own `write_file` and `run_command` in the repo keep per-call approval in the
+inbox. Per-turn limits are 40 model calls, 80 tool calls and 30 minutes.
+
+`tests/pi-orchestrator-real-path.test.ts` serves the real `/api/mcp` route over a
+local HTTP server behind the real middleware gate, which refuses a request
+without the ws token. It spawns every built-in server in the Claude
+orchestrator's emitted MCP config and checks that Pi's production path reaches
+the same commands on the same servers with the same schemas, and that a proposer
+turn drops the operator server. It then drives turns through the backend with a
+scripted model: command help, a real operator command, an unknown command, an
+approved write, resume in a new backend, the used-up allowance message, Stop
+followed by a new message, a read-only plan turn, an overlapping message, shutdown
+while Pi is starting, idle close, and a transport error that must not reach Pi.
 
 ## Managed inference boundary
 

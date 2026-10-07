@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 
 import { PLUGIN_FOLLOW_UP_SCOPE, PLUGIN_READ_SCOPE, PLUGIN_PREPARE_TASK_SCOPE, type PluginPrincipal } from '@/lib/auth/plugin-token';
+import { taskDraftValidationMessage } from '@/lib/mcp/task-draft-validation';
 import { bindIdempotencyClientMutation, deriveIdempotencyKey, withIdempotency } from '@/lib/orchestrator/idempotency-store';
 import { listMissionRegistryEntries, readMissionRegistryEntry } from '@/lib/orchestrator/mission-registry';
 import { steerPacket } from '@/lib/orchestrator/operator-mission-service';
@@ -149,9 +150,11 @@ export async function callPluginTool(principal: PluginPrincipal, payload: unknow
     }
   } catch (error) {
     status = error instanceof TaskDraftError ? error.status : 503;
+    const validation = draftTool && error instanceof TaskDraftError && error.status === 400
+      ? taskDraftValidationMessage(error.code) : undefined;
     result = { ok: false, code: error instanceof TaskDraftError ? error.code : 'task_unavailable',
-      message: draftTool ? 'The task draft is held or unavailable. This preparation request did not start or retry a worker. Retry only with the same arguments and key.'
-        : 'Inspect the task in o8. Retry a follow-up only with the same arguments and key.' };
+      message: validation ?? (draftTool ? 'The task draft is held or unavailable. This preparation request did not start or retry a worker. Retry only with the same arguments and key.'
+        : 'Inspect the task in o8. Retry a follow-up only with the same arguments and key.') };
   }
   try {
     appendPluginAudit({ ...audit, at: new Date().toISOString(), phase: 'finished', outcome: result.ok ? 'success' : 'refused',

@@ -1,3 +1,4 @@
+import { revokeControlledGateway } from '@/lib/claude-code/controlled-gateway';
 import { revokeReadOnlyWorkerToken } from '@/lib/auth/read-only-worker-token';
 import { launchRuntimeSurface } from '@/lib/runtime/actions';
 import { escalateInterruptOwnedSurface } from '@/lib/runtime/interrupt-escalation';
@@ -11,9 +12,12 @@ import { operatorAccount, readExecutionSession, reconcileTaskExecution } from '.
 import { executionReceipt, readTaskExecution, reserveTaskExecution, taskBinding, withTaskExecutionLock,
   writeTaskExecution, type TaskExecutionRecord } from './task-execution-store';
 import { prepareTaskExecutionWorkspace, verifyTaskSource } from './task-execution-workspace';
+import { admittedTaskInstructions } from './task-draft-workspace';
 
-function promptFor(draft: TaskDraftRecord): string {
-  return [draft.contract.objective, 'Read-only task. Report evidence to stdout; never modify files or contact o8 APIs.',
+async function promptFor(draft: TaskDraftRecord): Promise<string> {
+  const instructions = await admittedTaskInstructions(draft.snapshot.repoPath, draft.contract.allowedFiles, draft.snapshot.rulesDigest);
+  return ['Your working directory is the admitted isolated workspace. Requested files are copies at the same relative paths below. Read them relative to this directory; do not use the original repository path or reopen instruction files.',
+    instructions, 'Current task:', draft.contract.objective, 'Read-only task. Report evidence to stdout; never modify files or contact o8 APIs.',
     `Requested file scope: ${draft.contract.allowedFiles.join(', ')}`,
     `Acceptance evidence: ${draft.contract.evidence.join('\n')}`,
     `Sealed task contract: ${JSON.stringify(draft.contract.sealedTaskContract)}`].join('\n\n');
@@ -29,6 +33,7 @@ async function fail(draft: TaskDraftRecord): Promise<void> {
 async function launch(draft: TaskDraftRecord, record: TaskExecutionRecord): Promise<void> {
   try {
     await prepareTaskExecutionWorkspace(draft, record);
+    const prompt = await promptFor(draft);
     const lane = createLane({ repoPath: draft.snapshot.repoPath, projectId: draft.contract.projectId,
       worktreePath: record.workspacePath, runtime: record.runtime, branch: '', baseBranch: draft.snapshot.revision,
       label: `Controlled task ${draft.taskId}`, ownership: 'managed', actor: 'user' });
@@ -37,12 +42,13 @@ async function launch(draft: TaskDraftRecord, record: TaskExecutionRecord): Prom
       if (current.state !== 'accepted' || current.laneId) throw new TaskDraftError('execution_already_reserved', 409);
       writeTaskExecution({ ...current, laneId: lane.id });
     });
-    const result = await launchRuntimeSurface({ runtime: record.runtime, model: record.model, effort: record.effort,
-      ...(record.runtime === 'claude-code' ? { claudeCodeModel: record.model, claudeCodeCarrier: 'native' } : {}),
+    const result = await launchRuntimeSurface({ runtime: record.runtime, model: record.model, effort: record.effort === 'provider-default' ? undefined : record.effort,
+      controlledProvider: record.provider,
+      ...(record.runtime === 'claude-code' ? { claudeCodeModel: record.model, claudeCodeCarrier: record.provider ? 'openrouter' : 'native' } : {}),
       executionPolicy: 'single-attempt', controlledTask: taskBinding(record), clientMutationId: record.attemptId,
       cwd: record.workspacePath, repoPath: record.workspacePath, projectRepoPath: draft.snapshot.repoPath,
       existingLaneId: lane.id, isolate: false, skipSetup: true, workMode: 'read-only',
-      taskName: `Controlled task ${draft.taskId}`, prompt: promptFor(draft) });
+      taskName: `Controlled task ${draft.taskId}`, prompt });
     if (!result.ok) await fail(draft);
   } catch { await fail(draft); }
 }
@@ -58,6 +64,7 @@ async function stop(taskId: string, hash: string) {
       const stopped = { ...record, state: 'stop_requested' as const,
         stopRequestedAt: record.stopRequestedAt ?? new Date().toISOString() };
       writeTaskExecution(stopped); // Publication/sync uncertainty forbids subsequent signals.
+      if (stopped.surfaceId) revokeControlledGateway(stopped.surfaceId);
       if (stopped.runId) revokeReadOnlyWorkerToken(stopped.runId);
       if (stopped.runId) readExecutionSession(stopped);
       return stopped;
