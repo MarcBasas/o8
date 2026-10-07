@@ -59,12 +59,6 @@ or substitute a native provider. It uses the configured OpenRouter API credit;
 the CLI name does not identify the payer. If the route or key is unavailable,
 stop and report the refusal. Leave saved worker defaults unchanged.
 
-For an explicitly selected OpenRouter catalog row, copy its provider policy
-exactly and use `provider-default` effort. Do not describe that as High reasoning
-or substitute a native provider. It uses the configured OpenRouter API credit;
-the CLI name does not identify the payer. If the route or key is unavailable,
-stop and report the refusal. Leave saved worker defaults unchanged.
-
 A new draft is held. Preparation cannot launch, retry, approve, merge or release.
 Keep the returned `taskId` and `contractHash`. If the user explicitly asks to run
 the prepared task, `o8_launch_task` is offered, and the connection has separately
