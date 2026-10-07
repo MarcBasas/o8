@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 
 import { signalBridgeTerminalSession } from '@/lib/runtime/pty-bridge';
 import { chainOnKey } from '@/lib/util/keyed-promise-chain';
+import { bindControlledTaskSession } from '@/lib/mcp/task-execution-admission';
 import {
   getOrPinPacketRuntimeIdentity,
   getSelectedRuntimeIdentity,
@@ -44,6 +45,7 @@ import {
   OwnedWorkspaceUnavailableError,
   type OwnedWorkspaceSpawnGuard,
 } from './workspace-spawn-guard';
+import { createOwnedExecutionPolicy, refuseOwnedSingleAttemptResume } from './execution-policy';
 import type {
   OwnedFleetAdditions,
   OwnedLaunchRequest,
@@ -143,6 +145,7 @@ export function createOwnedSessionStore(
   });
 
   async function launch(request: OwnedLaunchRequest): Promise<OwnedLaunchResponse> {
+    const executionPolicy = createOwnedExecutionPolicy(request, runtimeId);
     const prompt = request.prompt.trim();
     if (!prompt) {
       throw new Error('prompt is required');
@@ -151,6 +154,7 @@ export function createOwnedSessionStore(
     const repoPath = await validateWorkspace(request.cwd);
     const repo = await resolveRepoContext(repoPath);
     const id = `${sessionIdPrefix}${Date.now()}-${randomUUID().slice(0, 8)}`;
+    await bindControlledTaskSession(request, runtimeId, `${surfacePrefix}${id}`);
     const sessionDir = path.join(await io.ensureRoot(), id);
     await ensureDir(sessionDir);
     let selectedIdentity: Awaited<ReturnType<typeof getSelectedRuntimeIdentity>> = null;
@@ -187,7 +191,9 @@ export function createOwnedSessionStore(
     const createdAt = nowIso();
     const session = {
       surfaceId: `${surfacePrefix}${id}`,
+      ...(executionPolicy ? { executionPolicy, autoRetry: false } : {}),
       launchMutationId: request.clientMutationId?.trim() || undefined,
+      controlledTask: request.controlledTask ? { ...request.controlledTask } : undefined,
       laneId: request.laneId?.trim() || undefined,
       packetId: request.packetId?.trim() || undefined,
       sessionDir,
@@ -260,12 +266,14 @@ export function createOwnedSessionStore(
 
   async function resumeInner(surfaceId: string, prompt: string) {
     let session = await io.findSession(surfaceId);
+    refuseOwnedSingleAttemptResume(session);
     const automaticRunId = requestedAutomaticRecoveryRun(surfaceId);
     if (automaticRunId) assertAutomaticRecoveryGeneration(session, automaticRunId);
     let coldRestored = false;
 
     if (!session) {
       const archived = await io.findArchivedSession(surfaceId);
+      refuseOwnedSingleAttemptResume(archived);
       if (archived?.threadId) {
         const restore = await restoreArchivedOwnedSessionDir(root, surfaceId, surfacePrefix);
         if (restore.restored) {
@@ -677,7 +685,7 @@ export function createOwnedSessionStore(
     getReviewPacket: (surfaceId) => withSurfaceLock(surfaceId, () => reviewTailController.getReviewPacket(surfaceId)),
     getFleetAdditions,
     sessionState: (surfaceId) => readOwnedSessionState(root, surfaceId, surfacePrefix),
-    archiveSession: io.archiveSession,
+    archiveSession: (surfaceId) => withSurfaceLock(surfaceId, () => io.archiveSession(surfaceId)),
     setDetachedSession,
     sweepOrphanedSessions: fleetComputer.sweepOrphanedSessions,
     getTelemetrySources: reviewTailController.getTelemetrySources,

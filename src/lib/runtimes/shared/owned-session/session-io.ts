@@ -1,5 +1,8 @@
+import { revokeReadOnlyWorkerToken } from '@/lib/auth/read-only-worker-token';
+import { executionRunIsClear } from '@/lib/mcp/task-execution-admission';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { saveRestrictedOwnedSession } from './restricted-session-persistence';
 
 import {
   archiveOwnedSessionDir,
@@ -55,6 +58,13 @@ export function createOwnedSessionIo({
 
   async function saveSession(session: OwnedSessionRecord) {
     session.updatedAt = nowIso();
+    if (session.executionPolicy !== undefined) {
+      for (const run of session.recentRuns) {
+        if (run.outcome !== 'running' || run.interruptRequestedAt) revokeReadOnlyWorkerToken(run.id);
+      }
+      saveRestrictedOwnedSession(metadataPath(session.sessionDir), session);
+      return;
+    }
     await writeJsonFile(metadataPath(session.sessionDir), session, { mode: 0o600 });
   }
 
@@ -99,6 +109,10 @@ export function createOwnedSessionIo({
       return { archived: false, note: 'Session was not found.' };
     }
 
+    if (session.controlledTask && (!session.recentRuns.length
+      || !(await Promise.all(session.recentRuns.map(executionRunIsClear))).every(Boolean))) {
+      return { archived: false, note: 'Controlled task process evidence is not clear. Stop and verify it before archive.' };
+    }
     const result = await archiveOwnedSessionDir(root, session);
     if (result.archived) {
       invalidateFleetCache();

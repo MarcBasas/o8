@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 
-import { PLUGIN_FOLLOW_UP_SCOPE, PLUGIN_READ_SCOPE, type PluginPrincipal } from '@/lib/auth/plugin-token';
+import { PLUGIN_FOLLOW_UP_SCOPE, PLUGIN_READ_SCOPE, PLUGIN_PREPARE_TASK_SCOPE, type PluginPrincipal } from '@/lib/auth/plugin-token';
 import { bindIdempotencyClientMutation, deriveIdempotencyKey, withIdempotency } from '@/lib/orchestrator/idempotency-store';
 import { listMissionRegistryEntries, readMissionRegistryEntry } from '@/lib/orchestrator/mission-registry';
 import { steerPacket } from '@/lib/orchestrator/operator-mission-service';
@@ -10,6 +10,8 @@ import { readOrchestratorMissionState } from '@/lib/orchestrator/store';
 import type { OrchestratorMissionState, OrchestratorPacket } from '@/lib/orchestrator/types';
 import { appendPluginAudit, type PluginAuditEntry } from './plugin-audit';
 import { readPluginCompletion } from './plugin-result';
+import { callTaskDraftTool } from './task-draft-host';
+import { TaskDraftError } from './task-draft-contract';
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -88,7 +90,7 @@ async function followUp(principal: PluginPrincipal, args: Record<string, unknown
     : { ok: false, code: 'follow_up_pending', message: 'The follow-up is pending. Check o8 and retry only with the same arguments and key.' };
 }
 
-/** Three capabilities only. This host never calls the unrestricted operator registry. */
+/** Explicit capabilities only. This host never calls the unrestricted operator registry. */
 export async function callPluginTool(principal: PluginPrincipal, payload: unknown): Promise<{
   status: number; result: ToolReceipt;
 }> {
@@ -111,12 +113,16 @@ export async function callPluginTool(principal: PluginPrincipal, payload: unknow
   }
   let status = 200;
   let result: ToolReceipt;
-  const known = ['o8_attention', 'o8_result', 'o8_follow_up'].includes(tool);
-  const requiredScope = tool === 'o8_follow_up' ? PLUGIN_FOLLOW_UP_SCOPE : PLUGIN_READ_SCOPE;
+  const draftTool = tool === 'o8_task_options' || tool === 'o8_prepare_task';
+  const known = draftTool || ['o8_attention', 'o8_result', 'o8_follow_up'].includes(tool);
+  const requiredScope = draftTool ? PLUGIN_PREPARE_TASK_SCOPE
+    : tool === 'o8_follow_up' ? PLUGIN_FOLLOW_UP_SCOPE : PLUGIN_READ_SCOPE;
   try {
     if (!known || !principal.scopes.includes(requiredScope) || args.machineId !== principal.machineId) {
       status = 403;
       result = { ok: false, code: 'forbidden', message: 'This connection cannot perform that action. Use o8 for operator decisions.' };
+    } else if (draftTool) {
+      result = await callTaskDraftTool(principal, tool, args) as ToolReceipt;
     } else if (!validArguments(tool, args)) {
       status = 400;
       result = { ok: false, code: 'invalid_arguments' };
@@ -138,12 +144,15 @@ export async function callPluginTool(principal: PluginPrincipal, payload: unknow
     } else {
       result = await followUp(principal, args);
     }
-  } catch {
-    status = 503;
-    result = { ok: false, code: 'task_unavailable', message: 'Inspect the task in o8. Retry a follow-up only with the same arguments and key.' };
+  } catch (error) {
+    status = error instanceof TaskDraftError ? error.status : 503;
+    result = { ok: false, code: error instanceof TaskDraftError ? error.code : 'task_unavailable',
+      message: draftTool ? 'The task draft is held or unavailable. No worker started. Retry only with the same arguments and key.'
+        : 'Inspect the task in o8. Retry a follow-up only with the same arguments and key.' };
   }
   try {
-    appendPluginAudit({ ...audit, at: new Date().toISOString(), phase: 'finished', outcome: result.ok ? 'success' : 'refused' });
+    appendPluginAudit({ ...audit, at: new Date().toISOString(), phase: 'finished', outcome: result.ok ? 'success' : 'refused',
+      ...(typeof result.taskId === 'string' ? { taskId: result.taskId } : {}) });
   } catch {
     return { status: 503, result: { ok: false, code: 'audit_outcome_unknown', outcomeUnknown: true } };
   }

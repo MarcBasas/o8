@@ -394,6 +394,9 @@ export function panelGateMiddleware(req: NextRequest): NextResponse {
   // credential handshake there.
   const auth = req.headers.get('authorization');
   const bearer = auth?.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  if (bearer.startsWith('o8ro_')) {
+    return NextResponse.json({ error: 'Read-only worker has no API capability.' }, { status: 403 });
+  }
   if (resolvePluginToken(bearer)) {
     if (pathname === '/api/plugins/mcp' && method === 'POST') return NextResponse.next();
     return NextResponse.json({ error: 'Plugin token is not authorized for this endpoint.' }, { status: 403 });

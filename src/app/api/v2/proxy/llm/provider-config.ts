@@ -1,7 +1,8 @@
 import { parseInlineMarkdownDataImages } from '@/lib/llm/inline-images';
 import { toolsForAnthropic, toolsForOpenAI } from '@/lib/llm/tools';
+import { chatGPTPlanProvider } from '@/lib/chatgpt-plan/responses-provider';
 
-export type Provider = 'anthropic' | 'openai' | 'google' | 'operator';
+export type Provider = 'anthropic' | 'openai' | 'google' | 'operator' | 'chatgpt';
 
 /** o8 Operator backing model for FOUNDERS/paid — Gemini Flash via
  *  GOOGLE_AI_API_KEY (tool-capable, fastest; not available to free users —
@@ -36,6 +37,7 @@ export type StreamEvent =
   | { type: 'content'; text: string }
   | { type: 'usage'; inputTokens: number; outputTokens: number }
   | { type: 'done' }
+  | { type: 'completed'; inputTokens: number; outputTokens: number }
   | { type: 'tool_call_start'; toolName: string; toolId: string }
   | { type: 'tool_call_delta'; json: string }
   | { type: 'tool_call_end' }
@@ -92,6 +94,7 @@ const THINKING_MODELS = new Set([
 export const GOOGLE_PROVIDER_ENV_KEY = 'GOOGLE_AI_API_KEY';
 
 export const PROVIDERS: Record<Exclude<Provider, 'google' | 'operator'>, ProviderConfig> = {
+  chatgpt: chatGPTPlanProvider,
   anthropic: {
     url: 'https://api.anthropic.com/v1/messages',
     envKey: 'ANTHROPIC_API_KEY',
@@ -277,10 +280,12 @@ export function isSupportedProvider(provider: string): provider is Provider {
     || provider === 'anthropic'
     || provider === 'openai'
     || provider === 'operator'
+    || provider === 'chatgpt'
   );
 }
 
 export function resolveApiKey(provider: Provider): string | null {
+  if (provider === 'chatgpt') return null;
   if (provider === 'google' || provider === 'operator') {
     return process.env[GOOGLE_PROVIDER_ENV_KEY] ?? null;
   }
