@@ -144,6 +144,8 @@ two commands: the operator's `cortex_ask` and cortex's `cortex.cortex_ask`.
 A command result is capped at 40 KB. Calls reach the servers unchanged, so their
 own checks apply as for every other orchestrator. Transport errors, which can
 carry server stderr, go to the host log; Pi and the stream get a fixed message.
+A server's own error result reaches Pi exactly as it reaches Claude, including
+any API error text the server put in it (#3373).
 A start failure is shown only when o8 itself explains it (unsupported Node or
 platform).
 
