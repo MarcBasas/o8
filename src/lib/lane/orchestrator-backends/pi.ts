@@ -7,10 +7,11 @@
  * cortex, projected by the turn's tool profile) through three catalog tools, so
  * every o8 command is reachable without sending every schema on every call. Its
  * own file writes and commands in the repo keep per-call approval in the inbox.
+ * A plan-mode turn gets the proposer projection and only `read_file`.
  *
- * One resident Pi process per repo and thread. The session file lives under the
- * o8 data directory, so a new process after a restart or failure resumes the
- * same conversation.
+ * One turn at a time per repo and thread, and one resident Pi process for it.
+ * The session file lives under the o8 data directory, so a new process after a
+ * restart, failure or idle close resumes the same conversation.
  */
 
 import { createHash } from 'node:crypto';
@@ -34,14 +35,29 @@ export const PI_ORCHESTRATOR_IDLE_MS = 15 * 60_000;
 
 type PiSession = Awaited<ReturnType<typeof createPiSdkSession>>;
 
-interface ResidentPi {
+/** The tool surface a resident was started with. A turn needing another one gets a new process. */
+interface PiSurface {
+  profile: ToolProfile;
+  readOnly: boolean;
+}
+
+interface ResidentPi extends PiSurface {
+  name: string;
   session: PiSession;
   servers: O8ServerSet;
-  profile: ToolProfile;
-  busy: boolean;
   emit?: (event: OrchestratorEvent) => void;
   idle?: ReturnType<typeof setTimeout>;
 }
+
+/** Plan mode is read-only, like Claude's plan mode: proposer servers and no repo writes or commands. */
+export function piSurfaceForTurn(options: OrchestratorTurnOptions): PiSurface {
+  const plan = options.permissionMode === 'plan';
+  const profile: ToolProfile = plan ? 'propose' : options.toolProfile ?? 'full';
+  return { profile, readOnly: plan || profile === 'propose' };
+}
+
+/** Start failures o8 itself explains; anything else stays in the host log. */
+const PI_START_FAILURE_TEXT = /^The Pi prototype (?:needs Node|does not support)/;
 
 /** Trusted seams for tests. Production uses the managed transport, the inbox and /api/mcp. */
 export interface PiOrchestratorDeps {
@@ -102,32 +118,33 @@ export function createPiOrchestratorBackend(deps: PiOrchestratorDeps = {}): Orch
   closeAll(): Promise<void>;
 } {
   const resident = new Map<string, ResidentPi>();
-  const starting = new Map<string, Promise<ResidentPi>>();
+  /** Threads with a turn in flight, startup included. Reserved before any await. */
+  const active = new Set<string>();
+  const inflight = new Set<Promise<void>>();
   const ensured = new Set<string>();
+  let closing = false;
   const stateRoot = deps.stateRoot ?? (() => join(getDataDir(), 'pi', 'orchestrator'));
 
   const nameFor = (repoPath: string, threadId?: string | null) => sessionNameForRepo('pi-orchestrator', repoPath, threadId);
 
-  async function close(name: string) {
-    const pi = resident.get(name);
-    resident.delete(name);
-    if (pi) {
-      clearTimeout(pi.idle);
-      await Promise.allSettled([pi.session.close(), pi.servers.close()]);
-    }
+  /** Closes one resident; the map entry goes only if it still names this resident. */
+  async function close(pi: ResidentPi) {
+    clearTimeout(pi.idle);
+    if (resident.get(pi.name) === pi) resident.delete(pi.name);
+    await Promise.allSettled([pi.session.close(), pi.servers.close()]);
   }
 
-  async function start(name: string, repoPath: string, options: OrchestratorTurnOptions, profile: ToolProfile): Promise<ResidentPi> {
+  async function start(name: string, repoPath: string, options: OrchestratorTurnOptions, surface: PiSurface): Promise<ResidentPi> {
     const stateDir = join(stateRoot(), createHash('sha256').update(name).digest('hex').slice(0, 32));
     const signal = options.signal ?? new AbortController().signal;
-    const servers = await (deps.openServers ?? openO8Servers)(repoPath, { profile, threadId: options.threadId });
+    const servers = await (deps.openServers ?? openO8Servers)(repoPath, { profile: surface.profile, threadId: options.threadId });
     try {
       const commands = servers.servers.length ? await listO8Commands(servers.servers, signal) : [];
       const systemPrompt = [
-        buildOrchestratorSystemPrompt(repoPath, { backend: 'pi', toolProfile: profile }),
+        buildOrchestratorSystemPrompt(repoPath, { backend: 'pi', toolProfile: surface.profile }),
         commands.length ? o8CommandPrompt(commands) : '',
       ].filter(Boolean).join('\n\n');
-      const pi: ResidentPi = { servers, profile, busy: false } as ResidentPi;
+      const pi = { name, servers, ...surface } as ResidentPi;
       // Loaded on the first Pi turn, so ws-server startup never evaluates the Pi SDK.
       const { createPiSdkSession } = await import('@/lib/pi/sdk/session');
       pi.session = await createPiSdkSession({
@@ -139,6 +156,7 @@ export function createPiOrchestratorBackend(deps: PiOrchestratorDeps = {}): Orch
         approve: deps.approve,
         hostTools: commands.length ? createO8CommandTools(commands) : [],
         systemPrompt,
+        readOnly: surface.readOnly,
         onEvent: (event) => {
           for (const mapped of piEventToOrchestratorEvents(event)) pi.emit?.(mapped);
         },
@@ -151,89 +169,106 @@ export function createPiOrchestratorBackend(deps: PiOrchestratorDeps = {}): Orch
     }
   }
 
-  async function ensure(name: string, repoPath: string, options: OrchestratorTurnOptions): Promise<ResidentPi> {
-    const profile = options.toolProfile ?? 'full';
-    const existing = resident.get(name);
-    // A different tool profile needs a different tool set; the session file keeps the conversation.
-    if (existing && (existing.profile !== profile || !existing.session.running)) await close(name);
-    else if (existing) return existing;
-    let pending = starting.get(name);
-    if (!pending) {
-      pending = start(name, repoPath, options, profile).finally(() => starting.delete(name));
-      starting.set(name, pending);
-    }
-    const pi = await pending;
-    resident.set(name, pi);
-    return pi;
-  }
-
-  async function sendTurn(repoPath: string, message: string, onEvent: (event: OrchestratorEvent) => void,
-    options: OrchestratorTurnOptions = {}) {
-    const name = nameFor(repoPath, options.threadId);
-    ensured.add(name);
+  async function runTurn(name: string, repoPath: string, message: string, onEvent: (event: OrchestratorEvent) => void,
+    options: OrchestratorTurnOptions) {
     let sessionId: string | null = null;
     const done = () => onEvent({ type: 'done', sessionId, cost: null });
-    let pi: ResidentPi;
-    try {
-      pi = await ensure(name, repoPath, options);
-    } catch (error) {
-      if (!options.signal?.aborted) {
-        onEvent({ type: 'error', error: `Pi could not start: ${error instanceof Error ? error.message : String(error)}` });
+    const surface = piSurfaceForTurn(options);
+    let pi = resident.get(name);
+    // A different tool surface needs a different process; the session file keeps the conversation.
+    if (pi && (pi.profile !== surface.profile || pi.readOnly !== surface.readOnly || !pi.session.running)) {
+      await close(pi);
+      pi = undefined;
+    }
+    if (!pi) {
+      try {
+        pi = await start(name, repoPath, options, surface);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        if (!PI_START_FAILURE_TEXT.test(detail)) console.warn('[pi-orchestrator] Pi could not start:', error);
+        if (!options.signal?.aborted) {
+          onEvent({ type: 'error', error: PI_START_FAILURE_TEXT.test(detail) ? detail : 'Pi could not start. Details are in the o8 log.' });
+        }
+        done();
+        return;
       }
-      done();
-      return;
+      if (closing) {
+        await close(pi);
+        done();
+        return;
+      }
+      resident.set(name, pi);
     }
-    sessionId = pi.session.sessionId;
-    if (pi.busy) {
-      onEvent({ type: 'error', error: 'Pi is still working on the previous message in this thread.' });
-      done();
-      return;
-    }
-    clearTimeout(pi.idle);
-    pi.busy = true;
-    pi.emit = onEvent;
+    const current = pi;
+    sessionId = current.session.sessionId;
+    clearTimeout(current.idle);
+    current.emit = onEvent;
     onEvent({ type: 'turn_receipt', leadModel: 'pi', effort: options.thinkingEffort ?? 'medium' });
-    const stop = () => { void pi.session.abort(); };
+    const stop = () => { void current.session.abort(); };
     options.signal?.addEventListener('abort', stop, { once: true });
     try {
       if (options.signal?.aborted) return;
-      const result = await pi.session.prompt(message);
+      const result = await current.session.prompt(message);
       if (result.errorMessage && !options.signal?.aborted) onEvent({ type: 'error', error: result.errorMessage });
     } catch (error) {
       // A failed prompt closes the Pi process; the next message starts a new one on the same session file.
-      await close(name);
+      await close(current);
       if (!options.signal?.aborted) {
-        onEvent({ type: 'error', error: `Pi stopped: ${error instanceof Error ? error.message : String(error)}` });
+        console.warn('[pi-orchestrator] Pi run failed:', error);
+        onEvent({ type: 'error', error: 'Pi stopped unexpectedly. Send the message again to continue.' });
       }
     } finally {
       options.signal?.removeEventListener('abort', stop);
-      pi.busy = false;
-      pi.emit = undefined;
-      if (resident.get(name) === pi) {
-        pi.idle = setTimeout(() => { if (!pi.busy && resident.get(name) === pi) void close(name); },
+      current.emit = undefined;
+      if (resident.get(name) === current) {
+        current.idle = setTimeout(() => { if (!active.has(name)) void close(current); },
           deps.idleMs ?? PI_ORCHESTRATOR_IDLE_MS);
-        pi.idle.unref?.();
+        current.idle.unref?.();
       }
       done();
     }
   }
+
+  function sendTurn(repoPath: string, message: string, onEvent: (event: OrchestratorEvent) => void,
+    options: OrchestratorTurnOptions = {}): Promise<void> {
+    const name = nameFor(repoPath, options.threadId);
+    ensured.add(name);
+    if (closing || active.has(name)) {
+      onEvent({ type: 'error', error: closing ? 'Pi is shutting down.' : 'Pi is still working on the previous message in this thread.' });
+      onEvent({ type: 'done', sessionId: resident.get(name)?.session.sessionId ?? null, cost: null });
+      return Promise.resolve();
+    }
+    active.add(name);
+    const turn = runTurn(name, repoPath, message, onEvent, options).finally(() => {
+      active.delete(name);
+      inflight.delete(turn);
+    });
+    inflight.add(turn);
+    return turn;
+  }
+
+  const status = (name: string) => (active.has(name) ? 'busy' as const : 'ready' as const);
 
   return {
     id: 'pi',
     label: 'Pi',
     peekSession(repoPath, _agent, threadId): OrchestratorSessionInfo | null {
       const name = nameFor(repoPath, threadId);
-      if (!ensured.has(name)) return null;
-      return { sessionName: name, status: resident.get(name)?.busy ? 'busy' : 'ready' };
+      return ensured.has(name) ? { sessionName: name, status: status(name) } : null;
     },
     ensureSession(repoPath, _agent, threadId): OrchestratorSessionInfo {
       const name = nameFor(repoPath, threadId);
       ensured.add(name);
-      return { sessionName: name, status: resident.get(name)?.busy ? 'busy' : 'ready' };
+      return { sessionName: name, status: status(name) };
     },
     sendTurn,
+    /** Ends every turn and process, including ones still starting. */
     async closeAll() {
-      await Promise.allSettled([...resident.keys()].map(close));
+      closing = true;
+      await Promise.allSettled([...resident.values()].map(close));
+      await Promise.allSettled([...inflight]);
+      await Promise.allSettled([...resident.values()].map(close));
+      closing = false;
     },
   };
 }

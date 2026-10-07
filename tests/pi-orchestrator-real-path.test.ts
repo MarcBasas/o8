@@ -5,7 +5,9 @@ import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AssistantMessage, AssistantMessageEvent } from '@earendil-works/pi-ai';
+import { NextRequest } from 'next/server';
 import { getDataDir } from '@/lib/data-dir-migration';
+import { getOrCreateWsToken } from '@/lib/ws-auth';
 import { buildToolRegistry, resetToolSpinePortIdentityForTests } from '@/lib/mcp/tool-spine/build';
 import { toClaudeJson } from '@/lib/mcp/tool-spine/emit-claude';
 import { entriesForSurface } from '@/lib/mcp/tool-spine/registry';
@@ -13,20 +15,22 @@ import { StdioJsonRpcPeer } from '@/lib/runtimes/shared/stdio-json-rpc';
 import { createPiOrchestratorBackend, PI_ORCHESTRATOR_LIMITS } from '@/lib/lane/orchestrator-backends/pi';
 import { getOrchestratorBackend } from '@/lib/lane/orchestrator-backends/registry';
 import type { OrchestratorEvent } from '@/lib/lane/orchestrator-stream-events';
-import { listO8Commands } from '@/lib/pi/orchestrator/o8-commands';
+import { createO8CommandTools, listO8Commands } from '@/lib/pi/orchestrator/o8-commands';
 import { openO8Servers } from '@/lib/pi/orchestrator/o8-servers';
 import { PI_ALLOWANCE_EXHAUSTED_MESSAGE } from '@/lib/pi/sdk/transport';
 import { buildPiWriteHelper } from './helpers/pi-write-helper';
 
 vi.mock('@/lib/push/notify', () => ({ notifyApprovalCreated: vi.fn() }));
 
-// The real app routes behind a local HTTP server: /api/mcp, so the operator
-// stdio proxy (Claude's path) and Pi's HTTP client both reach the in-app host,
-// and /api/panel/repos, which the o8_list_repos handler calls.
+// The real app routes behind a local HTTP server and the real middleware gate:
+// /api/mcp, so the operator stdio proxy (Claude's path) and Pi's HTTP client
+// both reach the in-app host, and /api/panel/repos, which o8_list_repos calls.
 let api: Server;
 const saved = { NEXT_ORIGIN: process.env.NEXT_ORIGIN, O8_API_PORT: process.env.O8_API_PORT };
 beforeAll(async () => {
   buildPiWriteHelper();
+  getOrCreateWsToken();
+  const { panelGateMiddleware } = await import('@/middleware');
   const routes: Record<string, Record<string, (request: Request) => Promise<Response>>> = {
     '/api/mcp': await import('@/app/api/mcp/route') as never,
     '/api/panel/repos': await import('@/app/api/panel/repos/route') as never,
@@ -38,7 +42,12 @@ beforeAll(async () => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
     const body = chunks.length ? Buffer.concat(chunks).toString('utf8') : undefined;
-    const response = await handler(new Request(url, { method: req.method, headers: { 'Content-Type': 'application/json' }, body }));
+    const headers = new Headers();
+    for (const [key, value] of Object.entries(req.headers)) if (typeof value === 'string') headers.set(key, value);
+    const gate = panelGateMiddleware(new NextRequest(url, { method: req.method, headers, body }));
+    const response = gate.headers.get('x-middleware-next') === '1'
+      ? await handler(new Request(url, { method: req.method, headers, body }))
+      : gate;
     res.writeHead(response.status, { 'Content-Type': 'application/json' }).end(await response.text());
   });
   await new Promise<void>(resolve => api.listen(0, '127.0.0.1', resolve));
@@ -76,8 +85,8 @@ async function listTools(config: { command: string; args?: string[]; env?: Recor
     env: { ...process.env, ...config.env } }, 120_000);
   try {
     await peer.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'parity', version: '1' } });
-    const result = await peer.request<{ tools: Array<{ name: string }> }>('tools/list', {});
-    return result.tools.map(tool => tool.name);
+    const result = await peer.request<{ tools: Array<{ name: string; inputSchema: unknown }> }>('tools/list', {});
+    return result.tools;
   } finally { await peer.close({ gracefulMs: 200 }); }
 }
 
@@ -125,21 +134,26 @@ describe('Pi orchestrator (#3258)', () => {
     expect(builtIn.map(({ name }) => name).sort()).toEqual(['cortex', 'operator']);
     // Claude's emitted --mcp-config, spawned as Claude would spawn it.
     const claudeServers = toClaudeJson(registry).mcpServers;
-    const expected = new Set<string>();
+    // Claude sees each tool under its server, so parity is per server and per schema.
+    const expected = new Map<string, string>();
     for (const { name } of builtIn) {
       const config = claudeServers[name];
       if (config.type !== 'stdio') throw new Error(`${name} is not a stdio server`);
-      for (const tool of await listTools(config, repo)) expected.add(tool);
+      for (const tool of await listTools(config, repo)) expected.set(`${name}/${tool.name}`, JSON.stringify(tool.inputSchema));
     }
-    for (const command of ['create_mission', 'dispatch_mission', 'get_mission_status', 'o8_packet_diff', 'submit_review',
-      'o8_merge_preview', 'approve_and_merge', 'o8_verify', 'cortex_read_packets', 'cortex_fleet_status']) {
+    for (const command of ['operator/create_mission', 'operator/dispatch_mission', 'operator/get_mission_status',
+      'operator/o8_packet_diff', 'operator/submit_review', 'operator/o8_merge_preview', 'operator/approve_and_merge',
+      'operator/o8_verify', 'operator/cortex_ask', 'cortex/cortex_ask', 'cortex/cortex_read_packets', 'cortex/cortex_fleet_status']) {
       expect(expected.has(command)).toBe(true);
     }
     // Pi's production path: operator over /api/mcp, cortex from the same tool-spine entry.
     const servers = await openO8Servers(repo, { profile: 'full', threadId: 'thoughts-pi-test' });
     try {
       const reachable = await listO8Commands(servers.servers, new AbortController().signal);
-      expect(new Set(reachable.map(({ tool }) => tool.name))).toEqual(expected);
+      expect(new Map(reachable.map(({ server, tool }) => [`${server.name}/${tool.name}`, JSON.stringify(tool.inputSchema)]))).toEqual(expected);
+      const runNames = reachable.map(({ name }) => name);
+      expect(new Set(runNames).size).toBe(runNames.length);
+      expect(reachable.find(({ name }) => name === 'cortex.cortex_ask')?.server.name).toBe('cortex');
     } finally { await servers.close(); }
   }, 180_000);
 
@@ -147,7 +161,7 @@ describe('Pi orchestrator (#3258)', () => {
     const { repo } = await fixture();
     const servers = await openO8Servers(repo, { profile: 'propose', threadId: 'thoughts-pi-test' });
     try {
-      const names = (await listO8Commands(servers.servers, new AbortController().signal)).map(({ tool }) => tool.name);
+      const names = (await listO8Commands(servers.servers, new AbortController().signal)).map(({ name }) => name);
       expect(servers.servers.map(server => server.name)).toEqual(['cortex']);
       expect(names).toContain('cortex_read_packets');
       for (const mutator of ['dispatch_mission', 'approve_and_merge', 'create_mission', 'cortex_launch_agent']) {
@@ -252,6 +266,85 @@ describe('Pi orchestrator (#3258)', () => {
     // The idle close ended the first processes, so the second message started new ones.
     expect(opens).toBe(2);
   }, 180_000);
+
+  it('refuses the operator server without the ws token at the middleware gate', async () => {
+    const response = await fetch(`${process.env.NEXT_ORIGIN}/api/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) });
+    expect(response.status).toBe(401);
+  });
+
+  it('keeps a plan-mode turn read-only: proposer servers and no repo writes or commands', async () => {
+    const { repo, stateRoot } = await fixture();
+    const seen: Array<{ messages: unknown[]; tools: string[] }> = [];
+    let approvals = 0;
+    const backend = createPiOrchestratorBackend({ stateRoot: () => stateRoot, approve: async () => { approvals++; return true; },
+      transport: script([call('w1', 'write_file', { path: 'plan.md', content: 'no' }), message([{ type: 'text', text: 'Read only.' }])], seen) });
+    backends.push(backend);
+    const out: OrchestratorEvent[] = [];
+    await backend.sendTurn(repo, 'Plan only', event => out.push(event), { threadId: 'thoughts-pi-test', permissionMode: 'plan' });
+    expect(seen[0].tools).toEqual(['read_file', 'o8_commands', 'o8_command_help', 'o8_run']);
+    const result = out.find((event): event is Extract<OrchestratorEvent, { type: 'tool_result' }> => event.type === 'tool_result');
+    expect(result?.isError).toBe(true);
+    expect(approvals).toBe(0);
+    await expect(readFile(join(repo, 'plan.md'), 'utf8')).rejects.toThrow();
+  }, 180_000);
+
+  it('runs one turn per thread: an overlapping message is refused and Pi starts once', async () => {
+    const { repo, stateRoot } = await fixture();
+    let opens = 0;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const backend = createPiOrchestratorBackend({ stateRoot: () => stateRoot,
+      openServers: async (...args) => { opens++; await gate; return openO8Servers(...args); },
+      transport: script([message([{ type: 'text', text: 'Only one.' }])]) });
+    backends.push(backend);
+    const first: OrchestratorEvent[] = [];
+    const running = backend.sendTurn(repo, 'First', event => first.push(event), { threadId: 'thoughts-pi-test' });
+    const second = await turn(backend, repo, 'Second', {});
+    expect(second.map(event => event.type)).toEqual(['error', 'done']);
+    expect(backend.peekSession(repo, undefined, 'thoughts-pi-test')?.status).toBe('busy');
+    release();
+    await running;
+    expect(first.filter(event => event.type === 'error')).toEqual([]);
+    expect(opens).toBe(1);
+  }, 180_000);
+
+  it('closes a Pi that is still starting when the backend shuts down', async () => {
+    const { repo, stateRoot } = await fixture();
+    let closed = 0;
+    let modelCalls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const backend = createPiOrchestratorBackend({ stateRoot: () => stateRoot,
+      openServers: async (...args) => {
+        await gate;
+        const servers = await openO8Servers(...args);
+        return { servers: servers.servers, close: async () => { closed++; await servers.close(); } };
+      },
+      transport: async function* () { modelCalls++; yield* events(message([{ type: 'text', text: 'Too late.' }])); } });
+    const running = turn(backend, repo, 'Start');
+    const shutdown = backend.closeAll();
+    release();
+    await Promise.all([running, shutdown]);
+    expect(closed).toBe(1);
+    // The started Pi is closed before it runs the message.
+    expect(modelCalls).toBe(0);
+    expect(backend.peekSession(repo, undefined, 'thoughts-pi-test')?.status).toBe('ready');
+  }, 180_000);
+
+  it('keeps transport diagnostics out of command results', async () => {
+    const server = { name: 'cortex', request: async (method: string) => {
+      if (method === 'tools/list') return { tools: [{ name: 'cortex_fleet_status', description: 'Fleet.', inputSchema: { type: 'object' } }] };
+      throw new Error('JSON-RPC process exited (exit code 1)\nstderr: token=secret-value at /Users/someone/private');
+    } };
+    const commands = await listO8Commands([server], new AbortController().signal);
+    const run = createO8CommandTools(commands).find(tool => tool.definition.name === 'o8_run')!;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await run.execute({ name: 'cortex_fleet_status', arguments: '{}' }, new AbortController().signal);
+    expect(result.content[0].text).toBe('o8 command cortex_fleet_status could not reach the o8 cortex server.');
+    expect(JSON.stringify(result)).not.toContain('secret-value');
+    warn.mockRestore();
+  });
 
   it('is registered as the pi backend with orchestrator-sized limits', () => {
     expect(getOrchestratorBackend('pi').id).toBe('pi');

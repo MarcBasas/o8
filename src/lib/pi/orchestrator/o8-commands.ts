@@ -11,6 +11,8 @@ export interface O8CommandServer {
 }
 
 export interface O8Command {
+  /** The name Pi runs it by: the tool's own name, or `server.tool` when an earlier server lists the same name. */
+  name: string;
   server: O8CommandServer;
   tool: McpTool;
 }
@@ -20,8 +22,9 @@ export const O8_COMMAND_OUTPUT_BYTES = 40_000;
 
 /**
  * Every command the servers list, read the same way an MCP client reads them.
- * A name listed by two servers (the operator and cortex both list cortex_ask)
- * runs on the first server that lists it.
+ * Claude sees each server's tools under that server's name, so a name listed by
+ * two servers (the operator and cortex both list cortex_ask) stays two commands:
+ * the later one is named `server.tool`.
  */
 export async function listO8Commands(servers: O8CommandServer[], signal: AbortSignal): Promise<O8Command[]> {
   const commands = new Map<string, O8Command>();
@@ -29,16 +32,18 @@ export async function listO8Commands(servers: O8CommandServer[], signal: AbortSi
     const result = await server.request('tools/list', {}, signal) as { tools?: unknown } | undefined;
     if (!Array.isArray(result?.tools)) throw new Error(`The o8 ${server.name} server returned no command list`);
     for (const tool of result.tools as McpTool[]) {
-      if (tool && typeof tool.name === 'string' && !commands.has(tool.name)) commands.set(tool.name, { server, tool });
+      if (!tool || typeof tool.name !== 'string') continue;
+      const name = commands.has(tool.name) ? `${server.name}.${tool.name}` : tool.name;
+      if (!commands.has(name)) commands.set(name, { name, server, tool });
     }
   }
   return [...commands.values()];
 }
 
-function summary(tool: McpTool): string {
+function summary({ name, tool }: O8Command): string {
   const description = (tool.description ?? '').replace(/\s+/g, ' ').trim();
   const sentence = description.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? description;
-  return `${tool.name}: ${sentence.slice(0, 160)}`;
+  return `${name}: ${sentence.slice(0, 160)}`;
 }
 
 function capped(text: string): string {
@@ -59,7 +64,7 @@ function text(value: string) {
  * apply as they do for every other orchestrator.
  */
 export function createO8CommandTools(commands: O8Command[]): PiHostTool[] {
-  const byName = new Map(commands.map(command => [command.tool.name, command]));
+  const byName = new Map(commands.map(command => [command.name, command]));
   return [
     {
       definition: {
@@ -69,9 +74,9 @@ export function createO8CommandTools(commands: O8Command[]): PiHostTool[] {
       },
       async execute(args) {
         const query = typeof args.query === 'string' ? args.query.trim().toLowerCase() : '';
-        const matches = commands.filter(({ tool }) => !query
-          || tool.name.toLowerCase().includes(query) || (tool.description ?? '').toLowerCase().includes(query));
-        return text(matches.length ? matches.map(({ tool }) => summary(tool)).join('\n') : `No o8 command matches "${query}".`);
+        const matches = commands.filter(({ name, tool }) => !query
+          || name.toLowerCase().includes(query) || (tool.description ?? '').toLowerCase().includes(query));
+        return text(matches.length ? matches.map(summary).join('\n') : `No o8 command matches "${query}".`);
       },
     },
     {
@@ -83,8 +88,8 @@ export function createO8CommandTools(commands: O8Command[]): PiHostTool[] {
       async execute(args) {
         const command = typeof args.name === 'string' ? byName.get(args.name) : undefined;
         if (!command) return text(`Unknown o8 command: ${String(args.name)}. Use o8_commands to list them.`);
-        const { name, description, inputSchema } = command.tool;
-        return text(capped(JSON.stringify({ name, description, arguments: inputSchema }, null, 2)));
+        const { description, inputSchema } = command.tool;
+        return text(capped(JSON.stringify({ name: command.name, description, arguments: inputSchema }, null, 2)));
       },
     },
     {
@@ -116,10 +121,12 @@ export function createO8CommandTools(commands: O8Command[]): PiHostTool[] {
         }
         let result: { content?: Array<{ type?: string; text?: string }>; isError?: boolean } | undefined;
         try {
-          result = await command.server.request('tools/call', { name, arguments: commandArgs }, signal) as typeof result;
+          result = await command.server.request('tools/call', { name: command.tool.name, arguments: commandArgs }, signal) as typeof result;
         } catch (error) {
           signal.throwIfAborted();
-          return text(`o8 command ${name} failed: ${error instanceof Error ? error.message : String(error)}`);
+          // Transport errors can carry server stderr; they stay in the host log.
+          console.warn(`[pi-orchestrator] o8 command ${name} failed:`, error);
+          return text(`o8 command ${name} could not reach the o8 ${command.server.name} server.`);
         }
         const output = (result?.content ?? [])
           .map(part => (part.type === 'text' && typeof part.text === 'string' ? part.text : `[${part.type ?? 'unknown'} content omitted]`))
@@ -138,6 +145,6 @@ export function o8CommandPrompt(commands: O8Command[]): string {
     'passing its name and its arguments as a JSON object string. Read o8_command_help for a command',
     'before its first use, and use o8_commands to search. Never claim a command ran unless o8_run',
     'returned its result.',
-    `Commands: ${commands.map(({ tool }) => tool.name).join(', ')}.`,
+    `Commands: ${commands.map(({ name }) => name).join(', ')}.`,
   ].join('\n');
 }

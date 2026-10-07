@@ -33,6 +33,8 @@ export interface PiSdkSessionOptions {
   hostTools?: PiHostTool[];
   /** Replaces the default system prompt. Host-set only. */
   systemPrompt?: string;
+  /** Offer and allow only `read_file` of the file and command tools. */
+  readOnly?: boolean;
 }
 /** `errorMessage` is o8's own failure text; anything else becomes a generic failure. */
 export interface PiRunResult { text?: string; stopReason?: string; errorMessage?: string; messageCount: number }
@@ -84,6 +86,7 @@ export async function createPiSdkSession(options: PiSdkSessionOptions) {
     }
     hostTools.set(name, tool);
   }
+  const fileTools = options.readOnly ? PI_SDK_TOOLS.filter(tool => tool.name === 'read_file') : PI_SDK_TOOLS;
   if (options.systemPrompt !== undefined && (!options.systemPrompt.trim() || Buffer.byteLength(options.systemPrompt) > 200_000)) {
     throw new Error('Invalid system prompt');
   }
@@ -120,6 +123,7 @@ export async function createPiSdkSession(options: PiSdkSessionOptions) {
         throw new Error('Invalid tool request');
       }
       const hostTool = hostTools.get(name);
+      if (!hostTool && !fileTools.some(tool => tool.name === name)) throw new Error('Tool is not available');
       const turn = toolTail.then(() => hostTool
         ? (signal.throwIfAborted(), hostTool.execute(structuredClone(args as Record<string, unknown>), signal))
         : executePiTool(root, { name, args: args as Record<string, unknown> }, approve, signal,
@@ -153,7 +157,7 @@ export async function createPiSdkSession(options: PiSdkSessionOptions) {
       model: { id: options.model.id, name: options.model.name, reasoning: false, input: ['text'],
         contextWindow: options.model.contextWindow, maxTokens: options.model.maxTokens,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
-      tools: [...PI_SDK_TOOLS, ...[...hostTools.values()].map(tool => tool.definition)],
+      tools: [...fileTools, ...[...hostTools.values()].map(tool => tool.definition)],
       ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}) });
   } catch (error) { await peer.close(); throw error; }
   surfaceId = `pi-sdk:${ready.sessionId}`;
