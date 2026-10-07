@@ -203,6 +203,49 @@ function cold(draft: Awaited<ReturnType<typeof prepare>>) {
 }
 
 describe('controlled tasks through the operator route, durable intent and owned child', () => {
+  it.each(['running', 'completed'] as const)('reports persisted %s execution on an exact hosted preparation retry without another child', async (state) => {
+    persistent = state === 'running';
+    const args = contract((await options()).snapshotId);
+    const prepared = await call('o8_prepare_task', args);
+    expect(prepared.result).toMatchObject({ state: 'held', dispatched: false, completed: false });
+    const draft = listTaskDrafts(accountId)[0]!;
+    await decision(draft);
+    await vi.waitFor(() => expect(runs()).toHaveLength(1));
+    if (state === 'completed') {
+      await vi.waitFor(async () => expect((await decision(draft, 'inspect')).body.execution.state).toBe('completed'));
+    }
+    const execution = readTaskExecution(draft)!;
+    const replay = await call('o8_prepare_task', args);
+    expect(replay.result).toMatchObject({ ok: true, accepted: true, taskId: draft.taskId,
+      replayed: true, state, dispatched: true, completed: state === 'completed',
+      executionEnabled: false, executionEvidence: 'persisted', attemptId: execution.attemptId });
+    expect(replay.result.message).not.toContain('No worker has started');
+    expect(JSON.stringify(replay.result)).not.toContain(execution.workspacePath);
+    expect(runs()).toHaveLength(1);
+    expect(listTaskDrafts(accountId)).toHaveLength(1);
+    expect(readTaskExecution(draft)!.attemptId).toBe(execution.attemptId);
+    const conflict = await call('o8_prepare_task', { ...args, objective: 'Different task.' });
+    expect(conflict.result.code).toBe('idempotency_key_conflict');
+    expect(conflict.result.message).not.toContain('No worker started');
+    expect(runs()).toHaveLength(1);
+    await account('user_other_account');
+    expect((await call('o8_prepare_task', args)).status).toBe(403);
+  });
+
+  it('reports uncertainty after a reserved execution loses its receipt instead of claiming no worker started', async () => {
+    const args = contract((await options()).snapshotId);
+    await call('o8_prepare_task', args);
+    const draft = listTaskDrafts(accountId)[0]!;
+    await reserveTaskExecution(draft);
+    rmSync(executionFile(draft));
+    const replay = await call('o8_prepare_task', args);
+    expect(replay.result).toMatchObject({ ok: true, accepted: true, taskId: draft.taskId,
+      replayed: true, state: 'uncertain', dispatched: null, completed: false,
+      executionEnabled: false, executionEvidence: 'unavailable', errorCode: 'execution_uncertain' });
+    expect(replay.result.message).not.toContain('No worker has started');
+    expect(runs()).toHaveLength(0);
+  });
+
   it('lists exact operator contract bindings and safe permanent receipts without workspace paths', async () => {
     const draft = await prepare();
     const request = () => new NextRequest('http://localhost/api/plugins/task-drafts', {
@@ -321,6 +364,10 @@ describe('controlled tasks through the operator route, durable intent and owned 
       expect(before.state).toBe('blocked');
       if (kind !== 'sign-out' && kind !== 'account-switch') {
         expect((await decision(draft)).body.execution).toMatchObject({ attemptId: before.attemptId, retryAllowed: false, state: 'blocked' });
+        expect((await call('o8_prepare_task', draft.contract)).result).toMatchObject({
+          taskId: draft.taskId, state: 'blocked', dispatched: false, completed: false, replayed: true,
+        });
+        expect(runs()).toHaveLength(0);
       }
     }, 20_000);
 
