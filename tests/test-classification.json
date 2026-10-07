@@ -742,6 +742,7 @@
     {
       "path": "src/lib/runtimes/shared/owned-session-index.test.ts",
       "reasons": [
+        "child-process",
         "terminal-tool"
       ]
     },
@@ -3601,6 +3602,15 @@
         "child-process",
         "network-listener",
         "process-signal",
+        "real-path"
+      ]
+    },
+    {
+      "path": "tests/retained-completion-handoff-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "executable-fixture",
+        "git-cli",
         "real-path"
       ]
     },

@@ -4,6 +4,7 @@ import type { Lane } from '@/lib/lane/types';
 import type { AgentCompletionDecision } from './agent-supervisor-types';
 import type { SupervisorInboxKind } from './inbox';
 import { createCompletionTurnGuard, SupersededCompletionError } from './completion-turn';
+import { completionHandoffTurnCheck } from '@/lib/orchestrator/completion-handoff';
 
 interface CompletionDependencies {
   enqueueAutoReview(laneId: string): Promise<unknown>;
@@ -35,7 +36,8 @@ export async function handleAgentCompletion(
 ): Promise<AgentCompletionDecision | void> {
   const lane = findLaneBySession(surfaceId);
   if (!lane) return;
-  const guard = createCompletionTurnGuard(lane);
+  const handoffTurn = completionHandoffTurnCheck(lane);
+  const guard = createCompletionTurnGuard(lane, { checkCurrent: handoffTurn.check });
   const { enqueueAutoReview, triggerHeadlessSprintTick,
     queueReviewContinuation, enqueueVerificationFailureInboxItem } = dependencies;
   try {
@@ -266,6 +268,7 @@ export async function handleAgentCompletion(
               packet.lastEventAt = now;
               packet.lastEventLabel = 'ralph_retry_requeued';
               packet.lane = null;
+              handoffTurn.acceptRetryGeneration(packet);
             }));
             console.warn(`[ralph-loop] Attempt ${attemptNumber}/${maxAttempts} failed for packet ${packetId}, re-queuing with learnings`);
             void triggerHeadlessSprintTick().catch((error) => {
