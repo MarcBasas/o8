@@ -1,10 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NextRequest } from 'next/server';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OrchestratorPacket } from '@/lib/orchestrator/types';
 import type { CompletionVerificationResult } from '@/lib/supervisor/completion-verification';
+import type { OwnedSessionRecord } from '@/lib/runtimes/shared/owned-session/types';
 
 const h = vi.hoisted(() => ({
   perform: vi.fn(), verify: vi.fn(), commit: vi.fn(), capture: vi.fn(), probe: vi.fn(), transcript: vi.fn(),
@@ -31,6 +32,9 @@ vi.mock('@/lib/lane/worktree-cleanup', () => ({ pruneRepoWorktrees: vi.fn(async 
 const dataDir = mkdtempSync(join(tmpdir(), 'o8-completion-steer-race-'));
 process.env.CORTEX_IDE_DATA_DIR = dataDir;
 process.env.O8_DATA_DIR = dataDir;
+const ownedRoot = join(dataDir, 'owned-claude-code');
+mkdirSync(ownedRoot, { mode: 0o700 });
+process.env.CORTEX_IDE_OWNED_CLAUDE_CODE_ROOT = ownedRoot;
 const { closeDb, getSqlite } = await import('@/lib/db');
 const { createLane, getLane, setLaneStatus, updateLane } = await import('@/lib/lane/registry');
 const { recordLaneEvent } = await import('@/lib/lane/events');
@@ -68,8 +72,23 @@ function fixture() {
   const id = `pkt-completion-race-${++sequence}`;
   const repoPath = join(dataDir, id);
   const sessionKey = `claude-code-owned:${id}`;
+  mkdirSync(repoPath, { mode: 0o700 });
   const lane = createLane({ repoPath, worktreePath: repoPath, branch: `inline/${id}`,
     runtime: 'claude-code', packetId: id, sessionKey });
+  const sessionDir = join(ownedRoot, id);
+  mkdirSync(sessionDir, { mode: 0o700 });
+  const now = new Date().toISOString();
+  const session: OwnedSessionRecord = {
+    surfaceId: sessionKey, laneId: lane.id, packetId: id,
+    sessionDir, cwd: repoPath, repoPath, title: id,
+    createdAt: now, updatedAt: now, latestPrompt: 'Verify completion overlap',
+    latestSummary: 'Finished fixture run', recentRuns: [{
+      id: `run-${id}`, mode: 'launch', prompt: 'Verify completion overlap',
+      startedAt: now, finishedAt: now, pid: 0, outcome: 'finished',
+      stdoutPath: join(sessionDir, 'stdout.log'), stderrPath: join(sessionDir, 'stderr.log'),
+    }],
+  };
+  writeFileSync(join(sessionDir, 'session.json'), JSON.stringify(session), { mode: 0o600 });
   setLaneStatus(lane.id, 'reviewing', 'system', 'review_requested');
   const packet: OrchestratorPacket = {
     id, referenceLabel: id, title: id, summary: id, runtime: 'claude-code',
@@ -288,7 +307,10 @@ describe('completion and steer overlap through production callbacks and routes',
 
   it('does not let a finished turn cleanup timer delete a newly registered watch', async () => {
     const { lane, sessionKey } = fixture();
-    await ingestAgentCompletionSignal(sessionKey);
+    expect(await ingestAgentCompletionSignal(sessionKey)).toBe(true);
+    expect(h.verify).toHaveBeenCalledTimes(1);
+    expect(dependencies.enqueueAutoReview).toHaveBeenCalledTimes(1);
+    expect(getWatchedAgents().find((entry) => entry.surfaceId === sessionKey)?.completionReported).toBe(true);
     registerWatchedAgent(sessionKey, lane.repoPath, 'successor', 'new prompt');
     const replacement = getWatchedAgents().find((entry) => entry.surfaceId === sessionKey);
     await vi.advanceTimersByTimeAsync(60_000);
@@ -326,7 +348,9 @@ describe('completion and steer overlap through production callbacks and routes',
       outcome: 'Inspection complete', evidence: ['Observed result'], residual: 'No changes required' } });
     const completion = ingestAgentCompletionSignal(sessionKey);
     await entered.promise;
-    await vi.advanceTimersByTimeAsync(2_000);
+    let settled = false;
+    void completion.then(() => { settled = true; }, () => { settled = true; });
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 5_000 });
     await completion;
     expect(getLane(lane.id)?.status).toBe('completed');
     expect(readOrchestratorControlPlaneState().packets[0]?.releaseState).toBe('released');
@@ -349,7 +373,7 @@ describe('completion and steer overlap through production callbacks and routes',
     h.transcript.mockImplementationOnce(() => { transcriptEntered.resolve(); return transcript.promise; });
     const completion = ingestAgentCompletionSignal(sessionKey);
     await probeEntered.promise;
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.waitFor(() => expect(h.transcript).toHaveBeenCalledTimes(1), { timeout: 5_000 });
     await transcriptEntered.promise;
     expect((await steer(packet.id)).status).toBe(200);
     transcript.resolve([{ role: 'assistant', text: 'Implementation plan: inspect and verify.' }]);
