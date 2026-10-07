@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { execFile, execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -308,37 +308,52 @@ describe('Pi governed command tool through the real worker', () => {
     await runner.abort(); await running;
   }, 30000);
 
+  it('returns all output written just before a quick exit', async () => {
+    const paths = await fixture(); const results: string[] = [];
+    const session = await client({ ...paths, model, approve: async () => true,
+      transport: scripted([command('burst', 'head -c 40000 /dev/zero | tr "\\000" y; echo END')], results) });
+    await session.prompt('Write a burst');
+    expect(results[0]).toContain('Exit code 0');
+    expect(results[0]).toContain(`${'y'.repeat(40000)}END`);
+  }, 20000);
+
   // A TERM-ignoring child that starts a new session and is orphaned at once:
-  // its parent exits before any read could see it.
-  const ESCAPE = `sh -c 'perl -MPOSIX -e "\\$SIG{TERM}=q(IGNORE); POSIX::setsid(); sleep 30" & echo $! > hard.pid'`;
-  function sid(pid: number) { return Number(execFileSync('ps', ['-o', 'sid=', '-p', String(pid)], { encoding: 'utf8' }).trim()); }
+  // its parent exits before any read could see it. The command waits until the
+  // child is ready and records its session id before going on.
+  const ESCAPE = `sh -c 'perl -MPOSIX -e "\\$SIG{TERM}=q(IGNORE); POSIX::setsid(); open(my \\$f, q(>), q(ready)); close \\$f; sleep 30" & echo $! > hard.pid'; `
+    + 'while [ ! -e ready ]; do sleep 0.05; done; ps -o sid= -p "$(cat hard.pid)" > hard.sid';
+  async function expectEndedNow(dir: string) {
+    const [hard] = await pids(dir, ['hard.pid']);
+    expect(Number((await readFile(join(dir, 'hard.sid'), 'utf8')).trim())).toBe(hard);
+    // The supervisor reaps every descendant before its receipt, so none is left when the call returns.
+    expect(alive(hard)).toBe(false);
+  }
 
   supervisorIt.each([
-    ['a normal exit', `${ESCAPE}; sleep 0.5`, {}],
-    ['the timeout', `${ESCAPE}; sleep 30`, { commandTimeoutMs: 1_000 }],
-  ] as const)('ends an orphaned child in its own session at %s', async (_case, text, limits) => {
-    const paths = await fixture();
-    const session = await client({ ...paths, model, approve: async () => true, ...limits, transport: scripted([command('escape', text)]) });
+    ['a normal exit', `${ESCAPE}; sleep 0.3`, {}, 'Exit code 0'],
+    ['the timeout', `${ESCAPE}; sleep 30`, { commandTimeoutMs: 2_000 }, 'stopped after 2 seconds'],
+  ] as const)('ends an orphaned child in its own session at %s', async (_case, text, limits, status) => {
+    const paths = await fixture(); const results: string[] = [];
+    const session = await client({ ...paths, model, approve: async () => true, ...limits, transport: scripted([command('escape', text)], results) });
     await session.prompt('Run an escaping child');
-    await allEnded(paths.workspace, ['hard.pid']);
+    expect(results[0]).toContain(status);
+    await expectEndedNow(paths.workspace);
   }, 30000);
 
   supervisorIt('ends an orphaned child in its own session on Stop', async () => {
     const paths = await fixture();
     const session = await client({ ...paths, model, approve: async () => true,
-      transport: scripted([command('escape-stop', `${ESCAPE}; sleep 0.3; touch started; sleep 30`)]) });
+      transport: scripted([command('escape-stop', `${ESCAPE}; touch started; sleep 30`)]) });
     const run = session.prompt('Run until stopped');
     await vi.waitFor(() => readFile(join(paths.workspace, 'started')), { timeout: 10_000, interval: 50 });
-    const [hard] = await pids(paths.workspace, ['hard.pid']);
-    expect(sid(hard)).toBe(hard);
     await session.abort(); await run;
-    await allEnded(paths.workspace, ['hard.pid']);
+    await expectEndedNow(paths.workspace);
   }, 30000);
 
   supervisorIt('ends the command tree when the host process dies', async () => {
     const paths = await fixture();
     // A stand-in host: a shell that starts the supervisor, then is killed.
-    const host = spawn('/bin/sh', ['-c', '"$0" supervise /bin/sh -c "sleep 30 & echo \\$! > bg.pid; sleep 30" 3>/dev/null & echo $! > supervisor.pid; wait',
+    const host = spawn('/bin/sh', ['-c', '"$0" supervise $$ /bin/sh -c "sleep 30 & echo \\$! > bg.pid; sleep 30" 3>/dev/null & echo $! > supervisor.pid; wait',
       helperPath], { cwd: paths.workspace, stdio: 'ignore' });
     await vi.waitFor(() => readFile(join(paths.workspace, 'bg.pid')), { timeout: 10_000, interval: 50 });
     const [supervisor, background] = await pids(paths.workspace, ['supervisor.pid', 'bg.pid']);
@@ -347,20 +362,30 @@ describe('Pi governed command tool through the real worker', () => {
     await vi.waitFor(() => expect([alive(supervisor), alive(background)]).toEqual([false, false]), { timeout: 10_000 });
   }, 30000);
 
+  supervisorIt('refuses to start the command when its parent is not the expected host', async () => {
+    const paths = await fixture();
+    const run = spawnSync(helperPath, ['supervise', '1', '/bin/sh', '-c', 'touch ran'],
+      { cwd: paths.workspace, stdio: ['ignore', 'pipe', 'pipe', 'pipe'], encoding: 'utf8' });
+    expect(run.status).toBe(125);
+    expect(JSON.parse(String(run.output[3]).trim())).toEqual({ code: null, signal: null, confirmed: true });
+    expect(await readdir(paths.workspace)).toEqual([]);
+  }, 30000);
+
   supervisorIt('refuses later commands when the supervisor ends without a receipt', async () => {
-    const paths = await fixture(); const results: string[] = [];
+    const paths = await fixture();
     const session = await client({ ...paths, model, approve: async () => true,
-      transport: scripted([command('lost', 'touch started; sleep 30'),
-        { type: 'toolCall', id: 'write', name: 'write_file', arguments: { path: 'note.txt', content: 'refused' } }], results) });
+      transport: scripted([command('lost', 'echo $PPID > supervisor.pid; echo $$ > command.pid; touch started; sleep 30'),
+        { type: 'toolCall', id: 'write', name: 'write_file', arguments: { path: 'note.txt', content: 'refused' } }]) });
     const run = session.prompt('Lose the supervisor');
     await vi.waitFor(() => readFile(join(paths.workspace, 'started')), { timeout: 10_000, interval: 50 });
-    const supervisors = await new Promise<string>(resolve => execFile('pgrep', ['-f', `${helperPath} supervise`], (_e, out) => resolve(out)));
-    for (const pid of supervisors.split(/\s+/).filter(Boolean)) process.kill(Number(pid), 'SIGKILL');
+    const [supervisor, commandPid] = await pids(paths.workspace, ['supervisor.pid', 'command.pid']);
+    expect(readFileSync(`/proc/${supervisor}/cmdline`, 'utf8').split('\0')).toContain('supervise');
+    process.kill(supervisor, 'SIGKILL');
     await run;
     expect(piCommandCleanupUnconfirmed()).toBe(true);
-    expect(await readdir(paths.workspace)).toEqual(['started']);
-    // The orphaned command is outside any supervisor now; end it for the next test file.
-    execFileSync('pkill', ['-f', 'touch started; sleep 30']);
+    expect((await readdir(paths.workspace)).sort()).toEqual(['command.pid', 'started', 'supervisor.pid']);
+    // The orphaned command group is outside any supervisor now; end only this test's processes.
+    process.kill(-commandPid, 'SIGKILL');
   }, 30000);
 
   // Last: an unconfirmed cleanup refuses commands and writes for the rest of the host process.

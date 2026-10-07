@@ -1,19 +1,26 @@
 //! Command supervisor for the o8 Pi SDK worker (#3350).
 //!
-//! `o8-pi-write supervise <program> [args...]` runs one approved command and
-//! ends every process it starts. On Linux the supervisor marks itself a child
-//! subreaper, so any descendant whose parent exits is reparented to the
-//! supervisor instead of init, whatever process group or session it moved to.
-//! Every descendant therefore stays reachable by walking parent links in /proc
-//! from the supervisor, and it is done only when `waitpid` reports no children.
+//! `o8-pi-write supervise <host-pid> <program> [args...]` runs one approved
+//! command and ends every process it starts. On Linux the supervisor marks
+//! itself a child subreaper, so any descendant whose parent exits is reparented
+//! to the supervisor instead of init, whatever process group or session it moved
+//! to. Every descendant therefore stays reachable by walking parent links in
+//! /proc from the supervisor, and it is done only when `waitpid` reports no
+//! children.
 //!
 //! The command runs in its own process group. When it exits, or the host sends
 //! SIGTERM, SIGINT or SIGHUP, the supervisor sends TERM to every descendant,
 //! waits up to 1.5 seconds, then sends KILL until none is left. If the host
-//! dies, the parent-death signal starts the same teardown.
+//! dies, the parent-death signal starts the same teardown; the supervisor
+//! refuses to start the command unless its parent is still the expected host.
+//! Signals go through pidfds checked against each process's start time, so a
+//! reused pid never receives one.
 //!
 //! The receipt goes to fd 3, never to the command: one JSON line with the
 //! command's exit code or signal and whether teardown was confirmed.
+//!
+//! Outside the tree, and so outside this guarantee: work handed to another
+//! service (systemd, an already running daemon) over IPC.
 
 use std::ffi::OsString;
 #[cfg(target_os = "linux")]
@@ -25,46 +32,79 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 const RECEIPT: libc::c_int = 3;
+/// Reaps per pass, so a stream of exiting orphans cannot hold teardown past its deadlines.
+#[cfg(target_os = "linux")]
+const REAP_BUDGET: usize = 4_096;
 
 #[cfg(target_os = "linux")]
-fn children_by_parent() -> std::collections::HashMap<libc::pid_t, Vec<libc::pid_t>> {
-    let mut map: std::collections::HashMap<libc::pid_t, Vec<libc::pid_t>> = std::collections::HashMap::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else { return map };
-    for entry in entries.flatten() {
-        let Ok(pid) = entry.file_name().to_string_lossy().parse::<libc::pid_t>() else { continue };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { continue };
-        // The command name may contain spaces and parentheses; fields resume after the last ')'.
-        let Some(rest) = stat.rfind(')').map(|at| &stat[at + 1..]) else { continue };
-        let mut fields = rest.split_whitespace();
-        let state = fields.next();
-        let Some(ppid) = fields.next().and_then(|value| value.parse::<libc::pid_t>().ok()) else { continue };
-        // Zombies are already dead and only wait to be reaped.
-        if state == Some("Z") {
-            continue;
-        }
-        map.entry(ppid).or_default().push(pid);
-    }
-    map
+#[derive(Clone, Copy)]
+struct Proc {
+    pid: libc::pid_t,
+    started: u64,
 }
 
+/// Parent pid and start time (clock ticks since boot) from /proc/<pid>/stat.
 #[cfg(target_os = "linux")]
-fn descendants() -> Vec<libc::pid_t> {
-    let map = children_by_parent();
+fn proc_stat(pid: libc::pid_t) -> Option<(libc::pid_t, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name may contain spaces and parentheses; fields resume after the last ')'.
+    let rest = &stat[stat.rfind(')')? + 1..];
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    // Field 4 (ppid) and field 22 (starttime) of proc(5), counted from field 3 here.
+    Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
+}
+
+/// Every live descendant of the supervisor. Zombies stay in the walk: a thread
+/// group leader that exited while other threads still run shows as a zombie,
+/// and its children still name it as their parent.
+#[cfg(target_os = "linux")]
+fn descendants() -> Vec<Proc> {
+    let mut children: std::collections::HashMap<libc::pid_t, Vec<Proc>> = std::collections::HashMap::new();
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<libc::pid_t>() else { continue };
+            let Some((ppid, started)) = proc_stat(pid) else { continue };
+            children.entry(ppid).or_default().push(Proc { pid, started });
+        }
+    }
     let mut found = Vec::new();
     let mut pending = vec![unsafe { libc::getpid() }];
     while let Some(parent) = pending.pop() {
-        for child in map.get(&parent).into_iter().flatten() {
+        for child in children.get(&parent).into_iter().flatten() {
             found.push(*child);
-            pending.push(*child);
+            pending.push(child.pid);
         }
     }
     found
 }
 
-/// Reaps every exited child; records the command's status when it is among them.
+/// Signals one process only if it is still the process that was scanned: the
+/// pidfd pins whatever holds the pid, and the start time proves it is the same one.
+#[cfg(target_os = "linux")]
+fn signal_one(target: Proc, signal: libc::c_int) {
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, target.pid, 0) } as libc::c_int;
+    if fd < 0 {
+        // Kernels before 5.3 have no pidfds; check the start time and use kill.
+        if std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOSYS)
+            && proc_stat(target.pid).map(|(_, started)| started) == Some(target.started)
+        {
+            unsafe { libc::kill(target.pid, signal) };
+        }
+        return;
+    }
+    if proc_stat(target.pid).map(|(_, started)| started) == Some(target.started) {
+        unsafe {
+            libc::syscall(libc::SYS_pidfd_send_signal, fd, signal, std::ptr::null::<libc::siginfo_t>(), 0);
+        }
+    }
+    unsafe { libc::close(fd) };
+}
+
+/// Reaps exited children within the budget; records the command's status when
+/// it is among them. Returns true only when `waitpid` reports no child at all.
 #[cfg(target_os = "linux")]
 fn reap(command: libc::pid_t, status: &mut Option<libc::c_int>) -> bool {
-    loop {
+    for _ in 0..REAP_BUDGET {
         let mut raw = 0;
         let pid = unsafe { libc::waitpid(-1, &mut raw, libc::WNOHANG) };
         if pid == command {
@@ -76,6 +116,7 @@ fn reap(command: libc::pid_t, status: &mut Option<libc::c_int>) -> bool {
         // ECHILD: no child is left, live or zombie.
         return pid < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD);
     }
+    false
 }
 
 #[cfg(target_os = "linux")]
@@ -85,12 +126,10 @@ fn wait_signal(set: &libc::sigset_t, timeout: Duration) -> libc::c_int {
 }
 
 #[cfg(target_os = "linux")]
-fn signal_all(signal: libc::c_int) -> bool {
-    let found = descendants();
-    for pid in &found {
-        unsafe { libc::kill(*pid, signal) };
+fn signal_all(signal: libc::c_int) {
+    for target in descendants() {
+        signal_one(target, signal);
     }
-    !found.is_empty()
 }
 
 /// TERM, a grace period, then KILL until `waitpid` reports no child. Returns
@@ -137,31 +176,44 @@ pub fn run(_argv: &[OsString]) -> i32 {
 
 #[cfg(target_os = "linux")]
 pub fn run(argv: &[OsString]) -> i32 {
-    if argv.is_empty() {
+    // The receipt is required; without fd 3 the host could not confirm teardown.
+    if unsafe { libc::fcntl(RECEIPT, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
         return 125;
     }
-    let Ok(program) = argv.iter().map(|arg| CString::new(arg.as_bytes())).collect::<Result<Vec<_>, _>>() else {
+    let Some(host) = argv.first().and_then(|arg| arg.to_str()).and_then(|arg| arg.parse::<libc::pid_t>().ok()) else {
+        write_receipt(None, false);
         return 125;
     };
+    if argv.len() < 2 {
+        write_receipt(None, false);
+        return 125;
+    }
+    let Ok(program) = argv[1..].iter().map(|arg| CString::new(arg.as_bytes())).collect::<Result<Vec<_>, _>>() else {
+        write_receipt(None, false);
+        return 125;
+    };
+    let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+    let mut previous: libc::sigset_t = unsafe { std::mem::zeroed() };
     unsafe {
-        // The command never sees the receipt descriptor.
-        libc::fcntl(RECEIPT, libc::F_SETFD, libc::FD_CLOEXEC);
+        // Block first, so a parent-death signal arriving from here on stays
+        // pending for the wait loop instead of ending the supervisor.
+        libc::sigemptyset(&mut set);
+        for signal in [libc::SIGCHLD, libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+            libc::sigaddset(&mut set, signal);
+        }
+        libc::sigprocmask(libc::SIG_BLOCK, &set, &mut previous);
         if libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0
             || libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0) != 0
         {
             write_receipt(None, false);
             return 125;
         }
-    }
-    let host = unsafe { libc::getppid() };
-    let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
-    let mut previous: libc::sigset_t = unsafe { std::mem::zeroed() };
-    unsafe {
-        libc::sigemptyset(&mut set);
-        for signal in [libc::SIGCHLD, libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
-            libc::sigaddset(&mut set, signal);
+        // Armed now: if the expected host already died, the parent is someone
+        // else and nothing would end this command on the host's death.
+        if libc::getppid() != host {
+            write_receipt(None, true);
+            return 125;
         }
-        libc::sigprocmask(libc::SIG_BLOCK, &set, &mut previous);
     }
     let mut pointers: Vec<*const libc::c_char> = program.iter().map(|arg| arg.as_ptr()).collect();
     pointers.push(std::ptr::null());
@@ -179,12 +231,12 @@ pub fn run(argv: &[OsString]) -> i32 {
         }
     }
     let mut status = None;
-    // The host may have died before the parent-death signal was armed.
-    let mut stop = unsafe { libc::getppid() } != host;
-    while !stop {
+    loop {
         let signal = wait_signal(&set, Duration::from_millis(250));
         reap(command, &mut status);
-        stop = status.is_some() || matches!(signal, libc::SIGTERM | libc::SIGINT | libc::SIGHUP);
+        if status.is_some() || matches!(signal, libc::SIGTERM | libc::SIGINT | libc::SIGHUP) {
+            break;
+        }
     }
     let confirmed = teardown(&set, command, &mut status);
     write_receipt(status, confirmed);

@@ -3102,8 +3102,7 @@
       "reasons": [
         "child-process",
         "process-signal",
-        "real-path",
-        "terminal-tool"
+        "real-path"
       ]
     },
     {

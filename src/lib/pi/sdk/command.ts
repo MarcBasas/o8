@@ -169,11 +169,22 @@ const LAUNCHER = '[ "$(pwd -P)" = "$1" ] || { echo "The workspace changed before
 const SUPERVISED = process.platform === 'linux';
 const SUPERVISOR_EXIT_MS = 10_000;
 
-function parseReceipt(text: string): { confirmed: boolean } | null {
+function parseReceipt(text: string): { confirmed: boolean; started: boolean } | null {
   try {
-    const receipt = JSON.parse(text.trim().split('\n').at(-1) ?? '') as { confirmed?: unknown };
-    return { confirmed: receipt.confirmed === true };
+    const receipt = JSON.parse(text.trim().split('\n').at(-1) ?? '') as { confirmed?: unknown; code?: unknown; signal?: unknown };
+    // No exit code and no signal: the supervisor refused before starting the command.
+    return { confirmed: receipt.confirmed === true, started: receipt.code != null || receipt.signal != null };
   } catch { return null; }
+}
+
+/** Resolves when a stream has delivered everything, or at once if there is none. */
+function drained(stream: NodeJS.ReadableStream | null | undefined): Promise<void> {
+  return new Promise(resolve => {
+    if (!stream || (stream as { readableEnded?: boolean }).readableEnded) { resolve(); return; }
+    stream.once('end', () => resolve());
+    stream.once('close', () => resolve());
+    stream.once('error', () => resolve());
+  });
 }
 
 /**
@@ -190,7 +201,7 @@ export async function runPiCommand(root: string, command: string, abort: AbortSi
   const maxOutputBytes = options.maxOutputBytes ?? PI_COMMAND_OUTPUT_BYTES;
   const launch = ['/bin/sh', '-c', LAUNCHER, 'o8-pi-command', root, command];
   const child = SUPERVISED
-    ? spawn(piWriteHelperPath(), ['supervise', ...launch], { cwd: root, env: piCommandEnv(), detached: true,
+    ? spawn(piWriteHelperPath(), ['supervise', String(process.pid), ...launch], { cwd: root, env: piCommandEnv(), detached: true,
       stdio: ['ignore', 'pipe', 'pipe', 'pipe'] })
     : spawn(launch[0], launch.slice(1), { cwd: root, env: piCommandEnv(), detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let hasExited = false;
@@ -216,16 +227,22 @@ export async function runPiCommand(root: string, command: string, abort: AbortSi
       return false;
     }
     await Promise.race([receiptRead, sleep(1_000)]);
-    return parseReceipt(receipt)?.confirmed === true;
+    const parsed = parseReceipt(receipt);
+    notStarted = parsed?.started === false;
+    return parsed?.confirmed === true;
   };
+  let notStarted = false;
   let teardown: Promise<boolean> | undefined;
   const endTree = () => (teardown ??= SUPERVISED ? endSupervised() : tree ? endCommandTree(tree) : Promise.resolve(true));
   const chunks: Buffer[] = [];
   let size = 0;
   let stopped: 'timeout' | 'output' | 'stop' | undefined;
+  let stopRequested!: () => void;
+  const stopping = new Promise<void>(resolve => { stopRequested = resolve; });
   const stop = (reason: NonNullable<typeof stopped>) => {
     if (stopped) return;
     stopped = reason;
+    stopRequested();
     void endTree();
   };
   const take = (chunk: Buffer) => {
@@ -246,13 +263,19 @@ export async function runPiCommand(root: string, command: string, abort: AbortSi
   const onAbort = () => stop('stop');
   abort.addEventListener('abort', onAbort, { once: true });
   try {
-    const result = await exited;
+    // A process that cannot be killed (for example in uninterruptible sleep)
+    // must not hold the call open: once a stop's teardown fails, stop waiting.
+    const result = await Promise.race([exited,
+      stopping.then(endTree).then(ended => (ended ? exited : { code: null, error: false, lost: true }))]);
     if (!await endTree()) {
       cleanupUnconfirmed = true;
       throw new Error('The command processes could not be confirmed stopped. Restart o8 before running more commands.');
     }
     abort.throwIfAborted();
-    if (result.error) throw new Error('Command could not start');
+    if (result.error || notStarted) throw new Error('Command could not start');
+    // Exit can arrive before the last buffered output; with no writer left, the
+    // pipes end promptly.
+    await Promise.race([Promise.all([drained(child.stdout), drained(child.stderr)]), sleep(1_000)]);
     const output = Buffer.concat(chunks).toString('utf8');
     const status = stopped === 'timeout'
       ? `The command was stopped after ${Math.round(timeoutMs / 1000)} second${timeoutMs === 1000 ? '' : 's'}.`
