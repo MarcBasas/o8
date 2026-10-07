@@ -163,7 +163,7 @@ async function fixture(retained = true) {
     decision: 'finding_ready', recurrenceProtection: 'none' })}</self-review>`;
   writeFileSync(session.recentRuns[0].stdoutPath, transcriptText);
   const runtime: AgentRuntime = {
-    id: 'codex', displayName: 'Completion transcript fixture', kind: 'codex',
+    id: 'codex', displayName: 'Completion transcript fixture',
     capabilities: { discover: false, readTranscript: true, launch: false, resume: false,
       interrupt: false, reviewDiffs: false, costTelemetry: false, streaming: false },
     discoverSessions: async () => [],
@@ -662,7 +662,7 @@ describe('retained worker completion through the production supervisor callback'
           '--import', createRequire(import.meta.url).resolve('tsx'), '--input-type=module', '-e', code,
           f.packet.id, f.sessionKey, f.transcriptText], { cwd: process.cwd(), env: { ...process.env, NODE_OPTIONS: '' },
           encoding: 'utf8', timeout: 15_000 });
-        expect(result.split('FIFO_RESULT:').at(-1)).toMatch(/^refused:.*(?:unsafe|ownership)/s);
+        expect(result.split('FIFO_RESULT:').at(-1)).toMatch(/^refused:[\s\S]*(?:unsafe|ownership)/);
         expect(Date.now() - start).toBeLessThan(15_000);
         expect(lstatSync(fifo).isFIFO()).toBe(true);
         expect(privateHandoffs(getDataDir(), f.packet.id)).toHaveLength(0);
