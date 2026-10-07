@@ -1842,6 +1842,23 @@
       ]
     },
     {
+      "path": "tests/controlled-openrouter-worker-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "process-signal",
+        "real-path"
+      ]
+    },
+    {
+      "path": "tests/controlled-provider-sandbox-real-path.test.ts",
+      "reasons": [
+        "child-process",
+        "git-cli",
+        "real-path"
+      ]
+    },
+    {
       "path": "tests/controlled-task-dispatch-real-path.test.ts",
       "reasons": [
         "child-process",

@@ -24,7 +24,7 @@ interface Usage {
 interface Registration {
   session: OwnedSessionRecord; policy: ControlledOpenRouterPolicy;
   token: string; key: string; usage: Usage; controller: AbortController;
-  expiresAt: number; queue: Promise<void>;
+  expiresAt: number; queue: Promise<void>; timer?: ReturnType<typeof setTimeout>;
 }
 const registrations = new Map<string, Registration>();
 let serverPromise: Promise<number> | undefined;
@@ -34,6 +34,7 @@ function save(registration: Registration): void {
 }
 function close(registration: Registration, reason: string): void {
   registration.usage.blockedReason ??= reason;
+  if (registration.timer) clearTimeout(registration.timer);
   registration.controller.abort();
   registrations.delete(registration.token);
   registration.key = '';
@@ -171,9 +172,12 @@ async function processRequest(registration: Registration, request: IncomingMessa
       registration.usage.blockedReason = mismatched ? 'provider_model_changed' : usage.cost === null ? 'cost_unavailable' : 'provider_or_cost_limit';
     }
     save(registration);
-    await current(registration);
-    if (registration.usage.blockedReason) { close(registration, registration.usage.blockedReason); reply(response, 429); return; }
-    response.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json' }).end(result);
+    const draft = findTaskDraft(registration.session.controlledTask!.taskId, operatorAccount().accountId);
+    await withTaskDraftAccountAdmission(operatorAccount(), draft.account, async () => {
+      await current(registration);
+      if (registration.usage.blockedReason) { close(registration, registration.usage.blockedReason); reply(response, 429); return; }
+          response.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json' }).end(result);
+    });
   } catch {
     close(registration, 'request_refused_or_uncertain');
     try { save(registration); } catch { /* Memory stays revoked when persistence fails. */ }
@@ -215,6 +219,11 @@ export async function prepareControlledGateway(session: OwnedSessionRecord, key:
       generationIds: [], pending: false, blockedReason: null } };
   save(registration);
   const port = await ensureServer(); registrations.set(token, registration);
-  const timer = setTimeout(() => close(registration, 'attempt_expired'), 90_000); timer.unref();
+  registration.timer = setTimeout(() => {
+    close(registration, 'attempt_expired');
+    try { save(registration); } catch { /* Revocation remains effective. */ }
+    void import('@/lib/runtime/interrupt-escalation').then(({ escalateInterruptOwnedSurface }) =>
+      escalateInterruptOwnedSurface(session.surfaceId)).catch(() => { /* Process remains bound; gateway is revoked. */ });
+  }, 90_000); registration.timer.unref();
   return { baseUrl: `http://127.0.0.1:${port}/${token}`, token };
 }

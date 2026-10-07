@@ -14,7 +14,7 @@ export const TASK_DRAFT_TOOLS = [
   },
   {
     name: 'o8_prepare_task', title: 'Prepare a held o8 task draft',
-    description: 'Prepare an explicitly requested task draft against a fresh snapshot. Requires exact files, sealed requirements, evidence and runtime/model/effort pins. Reuse idempotencyKey only for an exact retry. New drafts are held; retries report persisted execution state. This request never starts or retries a worker. Launch, approvals, merges and releases remain in o8.',
+    description: 'Prepare an explicitly requested task draft against a fresh snapshot. Requires exact files, sealed requirements, evidence and runtime/model/effort pins. For an offered OpenRouter model, copy its provider policy and provider-default effort exactly; it uses API credit, with no native fallback. Reuse idempotencyKey only for an exact retry. New drafts are held; retries report persisted execution state. This request never starts or retries a worker. Launch, approvals, merges and releases remain in o8.',
     inputSchema: { type: 'object', additionalProperties: false,
       properties: { machineId: string, repoId: string, projectId: string, snapshotId: string, idempotencyKey: string,
         objective: { type: 'string', minLength: 1, maxLength: 2000 },

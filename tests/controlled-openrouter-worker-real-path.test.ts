@@ -3,6 +3,7 @@ import { generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { request as httpRequest } from 'node:http';
 import { NextRequest } from 'next/server';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -42,8 +43,9 @@ let repo: string;
 let repoId: string;
 let projectId: string;
 let calls: Array<{ url: string; headers: Headers; body: Record<string, unknown> }>;
-let cost = 0.001;
-let holdChild = false;
+let cost: number | null = 0.001;
+let fakeContentCost = false;
+let upstreamGate: Promise<void> | undefined;
 
 async function account(subject = accountId) {
   await withAccountStateLease(() => {
@@ -96,8 +98,21 @@ function session() {
 }
 function childReceipt() { return JSON.parse(readFileSync(join(root, 'child.json'), 'utf8')); }
 
+function childConfig(config: Record<string, unknown>) { writeFileSync(join(root, 'child-config.json'), JSON.stringify(config)); }
+async function replayGateway(body = childReceipt().body, path = '/v1/messages?beta=true'): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = childReceipt(); const request = httpRequest(child.base + path,
+      { method: 'POST', headers: child.headers }, (response) => { response.resume(); response.on('end', () => resolve(response.statusCode!)); });
+    request.on('error', reject); request.end(JSON.stringify(body));
+  });
+}
+async function launchedTask(config = {}) {
+  childConfig(config); const prepared = await prepare(); expect(prepared.status).toBe(200);
+  const draft = prepared.draft!; expect((await decision(draft.taskId, draft.contractHash)).status).toBe(200);
+  await vi.waitFor(() => expect(existsSync(join(root, 'child.json'))).toBe(true), { timeout: 10000 }); return draft;
+}
 beforeEach(async () => {
-  vi.restoreAllMocks(); cost = 0.001; holdChild = false; calls = [];
+  vi.restoreAllMocks(); cost = 0.001; fakeContentCost = false; upstreamGate = undefined; calls = [];
   process.env.O8_LICENSE_PUBKEY = keyPair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
   process.env.OPENROUTER_API_KEY = 'sk-or-fixture-parent-only';
   process.env.O8_CLAUDE_CODE_BIN = process.execPath;
@@ -115,24 +130,31 @@ beforeEach(async () => {
     lastOpenedAt: null, storagePressureParkingDisabled: false, setup: {} }] }));
   await upsertProjectLedgerRecord({ id: projectId, name: project.name, slug: project.slug, repoPaths: [repo] });
   const child = join(root, 'worker.cjs');
+  childConfig({});
   writeFileSync(child, `const fs=require('node:fs');let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',async()=>{
+    const cfg=JSON.parse(fs.readFileSync(${JSON.stringify(join(root, 'child-config.json'))},'utf8'));
     const headers={'content-type':'application/json','x-api-key':process.env.ANTHROPIC_API_KEY};
-    const body={model:${JSON.stringify(model)},messages:[{role:'user',content:'Read value.txt'}],tools:[{name:'Read',input_schema:{type:'object'}}],max_tokens:99999,thinking:{type:'adaptive'}};
-    const base=process.env.ANTHROPIC_BASE_URL;if(!base.startsWith('http://127.0.0.1:'))process.exit(98);const r=await fetch(base+'/v1/messages?beta=true',{method:'POST',headers,body:JSON.stringify(body)});
-    const text=await r.text();fs.writeFileSync(${JSON.stringify(join(root, 'child.json'))},JSON.stringify({pid:process.pid,status:r.status,input,env:process.env,base,headers,body}));
-    if(${holdChild ? 'true' : 'false'})setInterval(()=>{},1000);else{const answer=fs.readFileSync('value.txt','utf8').trim();
+    const body={model:${JSON.stringify(model)},messages:[{role:'user',content:'Read value.txt'}],tools:[{name:'Read',input_schema:{type:'object'}}],max_tokens:99999,thinking:{type:'adaptive'},...cfg.body};
+    const base=process.env.ANTHROPIC_BASE_URL;if(!base.startsWith('http://127.0.0.1:'))process.exit(98);
+    const statuses=await Promise.all(Array.from({length:cfg.requests||1},async()=>{const r=await fetch(base+(cfg.path||'/v1/messages?beta=true'),{method:'POST',headers,body:JSON.stringify(body)});await r.text();return r.status;}));
+    fs.writeFileSync(${JSON.stringify(join(root, 'child.json'))},JSON.stringify({pid:process.pid,status:statuses[0],statuses,input,env:process.env,base,headers,body}));
+    if(cfg.hold)setInterval(()=>{},1000);else{const answer=fs.readFileSync('value.txt','utf8').trim();const success=statuses.every(s=>s===200);
     process.stdout.write(JSON.stringify({type:'assistant',message:{role:'assistant',content:[{type:'text',text:'Observed '+answer}]}})+'\\n');
-    process.stdout.write(JSON.stringify({type:'result',subtype:r.ok?'success':'error',is_error:!r.ok,result:'Observed '+answer})+'\\n');process.exit(r.ok?0:1);}});`);
+    process.stdout.write(JSON.stringify({type:'result',subtype:success?'success':'error',is_error:!success,result:'Observed '+answer})+'\\n');process.exit(success?0:1);}});`);
   vi.spyOn(claudeCodeOwnedAdapter, 'launchArgs').mockImplementation(() => [child]);
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
     if (String(url) !== 'https://openrouter.ai/api/v1/messages') {
       const requested = new URL(String(url));
+      if (requested.origin === 'https://openrouter.ai' && requested.pathname === '/api/v1/generation') {
+        return new Response(JSON.stringify({ data: { id: requested.searchParams.get('id'), total_cost: cost } }), { status: 200 });
+      }
       if (!['localhost', '127.0.0.1'].includes(requested.hostname)) throw new Error(`Unexpected external request: ${requested.origin}`);
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     calls.push({ url: String(url), headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) });
+    if (upstreamGate) await upstreamGate;
     return new Response(JSON.stringify({ type: 'message', id: `gen-fixture-${calls.length}`, model,
-      content: [{ type: 'text', text: 'Observed 40' }], usage: { input_tokens: 10, output_tokens: 4, cost } }),
+      content: fakeContentCost ? [{ type: 'tool_use', name: 'Read', input: { cost: 0, total_cost: 0 } }] : [{ type: 'text', text: 'Observed 40' }], usage: { input_tokens: 10, output_tokens: 4, cost } }),
     { status: 200, headers: { 'content-type': 'application/json' } });
   });
 });
@@ -159,7 +181,7 @@ describe('controlled OpenRouter preparation, owned child and actual local gatewa
     const launched = await decision(draft.taskId, draft.contractHash);
 
     expect(launched.status).toBe(200);
-    await vi.waitFor(() => expect(existsSync(join(root, 'child.json'))).toBe(true));
+    await vi.waitFor(() => expect(existsSync(join(root, 'child.json'))).toBe(true), { timeout: 10000 });
     expect(childReceipt().status).toBe(200);
     expect(JSON.stringify(childReceipt().env)).not.toContain('sk-or-fixture-parent-only');
     expect(calls).toHaveLength(1); expect(calls[0]!.url).toBe('https://openrouter.ai/api/v1/messages');
@@ -188,4 +210,90 @@ describe('controlled OpenRouter preparation, owned child and actual local gatewa
     expect(calls).toHaveLength(0); expect(existsSync(join(root, 'child.json'))).toBe(false);
     expect(readTaskExecution(prepared.draft!)?.state).toBe('blocked');
   });
+  it('serializes concurrent calls and refuses the fifth inference before forwarding', async () => {
+    const draft = await launchedTask({ requests: 5 });
+    expect(childReceipt().statuses.filter((status: number) => status === 200)).toHaveLength(4);
+    expect(childReceipt().statuses.filter((status: number) => status !== 200)).toHaveLength(1);
+    expect(calls).toHaveLength(4);
+    expect(await replayGateway()).toBe(403); expect(calls).toHaveLength(4);
+    await vi.waitFor(async () => expect((await decision(draft.taskId, draft.contractHash, 'inspect')).body.execution.state).toBe('blocked'));
+  });
+
+  it.each([{ tools: [{ name: 'Bash', input_schema: { type: 'object' } }] }, { model: 'gpt-6.1-sol' }])
+    ('refuses child-side model/tool substitution with zero inference %j', async (body) => {
+      await launchedTask({ body }); expect(childReceipt().status).toBe(403); expect(calls).toHaveLength(0);
+    });
+
+  it('does not trust generated cost fields when authoritative provider cost is missing', async () => {
+    cost = null; fakeContentCost = true;
+    const draft = await launchedTask({ requests: 2 });
+    expect(childReceipt().statuses.every((status: number) => status !== 200)).toBe(true);
+    expect(calls).toHaveLength(1);
+    await vi.waitFor(async () => expect((await decision(draft.taskId, draft.contractHash, 'inspect')).body.execution.state).toBe('blocked'));
+    expect((await call('o8_task_result', { machineId: 'gateway-machine', taskId: draft.taskId })).result.completed).toBe(false);
+  });
+
+  it('latches the post-charge cost stop before a queued second request', async () => {
+    cost = 0.01; await launchedTask({ requests: 2 });
+    expect(calls).toHaveLength(1); expect(childReceipt().statuses.every((status: number) => status !== 200)).toBe(true);
+    expect(await replayGateway()).toBe(403); expect(calls).toHaveLength(1);
+  });
+
+  it('revokes the actual gateway token on Stop and never starts another inference', async () => {
+    const draft = await launchedTask({ hold: true }); expect(childReceipt().status).toBe(200);
+    const stopped = await decision(draft.taskId, draft.contractHash, 'stop'); expect(stopped.status).toBe(200);
+    expect(await replayGateway()).toBe(403); expect(calls).toHaveLength(1);
+    expect((await decision(draft.taskId, draft.contractHash)).body.execution.replayed).toBe(true);
+  });
+
+  it('refuses further requests after switching accounts and conceals the prior report', async () => {
+    const draft = await launchedTask({ hold: true }); await account('user_another_gateway_fixture');
+    expect(await replayGateway()).toBe(403); expect(calls).toHaveLength(1);
+    expect((await call('o8_task_result', { machineId: 'gateway-machine', taskId: draft.taskId }, 'user_another_gateway_fixture')).status).toBe(404);
+  });
+
+  it('refuses response disclosure after the same account changes sign-in epoch while inference is pending', async () => {
+    let settle!: () => void; upstreamGate = new Promise<void>((resolve) => { settle = resolve; });
+    const prepared = await prepare(); const draft = prepared.draft!;
+    expect((await decision(draft.taskId, draft.contractHash)).status).toBe(200);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await account(); settle();
+    await vi.waitFor(() => expect(existsSync(join(root, 'child.json'))).toBe(true), { timeout: 10000 });
+    expect(childReceipt().status).toBe(403); expect(calls).toHaveLength(1);
+    expect((await call('o8_task_result', { machineId: 'gateway-machine', taskId: draft.taskId })).status).toBe(404);
+  });
+
+  it('refuses inference when durable gateway admission cannot be synced', async () => {
+    const storage = await import('@/lib/mcp/task-draft-store');
+    const original = storage.atomicWriteTaskState;
+    vi.spyOn(storage, 'atomicWriteTaskState').mockImplementation((path, value) => {
+      if (path.endsWith('controlled-provider-usage.json') && (value as { requests?: number }).requests! > 0) throw new Error('Fixture sync failure');
+      original(path, value);
+    });
+    await launchedTask({ requests: 2 });
+    expect(childReceipt().statuses.every((status: number) => status !== 200)).toBe(true); expect(calls).toHaveLength(0);
+  });
+
+  it('refuses changed persisted provider limits before actual spawn', async () => {
+    const prepared = await prepare(); const draft = prepared.draft!;
+    const original = claudeCodeOwnedAdapter.extraSpawnEnv!;
+    vi.spyOn(claudeCodeOwnedAdapter, 'extraSpawnEnv').mockImplementation(async (saved) => {
+      const env = await original(saved); const execution = readTaskExecution(draft)!;
+      const storage = await import('@/lib/mcp/task-execution-store');
+      storage.writeTaskExecution({ ...execution, provider: { ...provider, maxRequests: 100 } as unknown as typeof execution.provider });
+      return env;
+    });
+    expect((await decision(draft.taskId, draft.contractHash)).status).toBe(409);
+    expect(calls).toHaveLength(0); expect(existsSync(join(root, 'child.json'))).toBe(false);
+  });
+
+  it('refuses an options disclosure if account epoch changes while resolving the provider catalog', async () => {
+    let release!: (value: string | null) => void;
+    const resolver = await import('@/lib/claude-code/worker-profile');
+    const entered = vi.spyOn(resolver, 'resolveClaudeCodeWorkerGatewayKey').mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    const pending = call('o8_task_options', { machineId: 'gateway-machine', repoId, projectId });
+    await vi.waitFor(() => expect(entered).toHaveBeenCalled()); await account(); release('sk-or-fixture-parent-only');
+    expect((await pending).status).toBe(403); expect(calls).toHaveLength(0);
+  });
+
 });

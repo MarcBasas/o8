@@ -72,12 +72,15 @@ export async function callTaskDraftTool(principal: PluginPrincipal, tool: string
     const projectId = normalizedText(args.projectId);
     const workspace = await captureTaskDraftWorkspace(repoId, projectId);
     await requireTaskDraftAccount(principal, account);
+    const runtimes = await catalog();
     const snapshot = { ...workspace, ...account, snapshotId: randomUUID(),
       machineId: principal.machineId, clientId: principal.clientId, expiresAt: Date.now() + 300_000 };
-    await withTaskDraftAccountAdmission(principal, account, () => writeTaskDraftSnapshot(snapshot));
-    return { ok: true, repoId, projectId, snapshotId: snapshot.snapshotId, revision: snapshot.revision,
+    return withTaskDraftAccountAdmission(principal, account, () => {
+      writeTaskDraftSnapshot(snapshot);
+      return { ok: true, repoId, projectId, snapshotId: snapshot.snapshotId, revision: snapshot.revision,
       rulesDigest: snapshot.rulesDigest, expiresAt: snapshot.expiresAt,
-      workMode: 'read-only', executionEnabled: false, runtimes: await catalog() };
+      workMode: 'read-only', executionEnabled: false, runtimes };
+    });
   }
   if (tool !== 'o8_prepare_task') throw new TaskDraftError('forbidden', 403);
   const contract = parseTaskDraftContract(args);
