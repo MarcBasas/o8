@@ -2,7 +2,7 @@ import { controlledProviderSandbox } from './controlled-provider-sandbox';
 import { revokeControlledGateway } from '@/lib/claude-code/controlled-gateway';
 import { mintReadOnlyWorkerToken, revokeReadOnlyWorkerToken } from '@/lib/auth/read-only-worker-token';
 import { ownedSpawnEnvironment } from './restricted-spawn-env';
-import { withControlledTaskSpawn } from '@/lib/mcp/task-execution-admission';
+import { assertControlledLaunchGrantCurrent, withControlledTaskSpawn } from '@/lib/mcp/task-execution-admission';
 import { currentRecoveryRun, recoveryInterrupted } from './automatic-recovery';
 import { createFailureRetry } from './failure-retry';
 import { assertOwnedSingleAttemptSpawn } from './execution-policy';
@@ -697,6 +697,7 @@ export function createOwnedRunController({
                     ['-n', '10', spawnBinary, ...spawnArgs],
                     materializationIdentity,
                   );
+              assertControlledLaunchGrantCurrent(session);
               const child = process.platform === 'win32'
                 ? spawn(directLaunch.command, directLaunch.args, {
                     windowsHide: true,

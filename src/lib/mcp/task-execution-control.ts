@@ -13,6 +13,8 @@ import { executionReceipt, readTaskExecution, reserveTaskExecution, taskBinding,
   writeTaskExecution, type TaskExecutionRecord } from './task-execution-store';
 import { prepareTaskExecutionWorkspace, verifyTaskSource } from './task-execution-workspace';
 import { admittedTaskInstructions } from './task-draft-workspace';
+import { PLUGIN_LAUNCH_TASK_SCOPE, type PluginPrincipal } from '@/lib/auth/plugin-token';
+import { CONTROLLED_OPENROUTER_MODEL, parseControlledProvider } from '@/lib/runtimes/shared/owned-session/controlled-provider';
 
 async function promptFor(draft: TaskDraftRecord): Promise<string> {
   const instructions = await admittedTaskInstructions(draft.snapshot.repoPath, draft.contract.allowedFiles, draft.snapshot.rulesDigest);
@@ -78,7 +80,11 @@ async function stop(taskId: string, hash: string) {
   });
 }
 
-export async function controlTaskExecution(input: unknown) {
+export function controlTaskExecution(input: unknown) {
+  return controlTaskExecutionInner(input);
+}
+
+async function controlTaskExecutionInner(input: unknown, principal?: PluginPrincipal) {
   const args = object(input);
   exactKeys(args, ['action', 'taskId', 'contractHash']);
   if (!['launch', 'inspect', 'stop'].includes(String(args.action))) throw new TaskDraftError('invalid_action');
@@ -86,25 +92,60 @@ export async function controlTaskExecution(input: unknown) {
   const hash = normalizedText(args.contractHash, 64);
   if (args.action === 'stop') return stop(taskId, hash);
   let draft!: TaskDraftRecord;
-  const admitted = await withTaskDraftAccountAdmission(operatorAccount(), undefined, async (account) => {
+  const admission = principal ?? operatorAccount();
+  const admitted = await withTaskDraftAccountAdmission(admission, undefined, async (account) => {
     draft = findTaskDraft(taskId, account.accountId);
+    if (principal && (draft.clientId !== principal.clientId || draft.snapshot.clientId !== principal.clientId
+      || draft.contract.machineId !== principal.machineId || draft.snapshot.machineId !== principal.machineId)) {
+      throw new TaskDraftError('task_unavailable', 404);
+    }
     if (hash !== draft.contractHash) throw new TaskDraftError('contract_conflict', 409);
-    return withTaskDraftAccountAdmission(operatorAccount(), draft.account, async () => {
+    return withTaskDraftAccountAdmission(admission, draft.account, async () => {
       const previous = readTaskExecution(draft);
       if (args.action === 'launch') {
         if (!previous) await verifyTaskSource(draft);
-        return reserveTaskExecution(draft);
+        return reserveTaskExecution(draft, principal ? { clientId: principal.clientId,
+          machineId: principal.machineId, expiresAt: principal.expiresAt } : undefined);
       }
       if (!previous) throw new TaskDraftError('execution_unavailable', 409);
       return { record: previous, created: false };
     });
   });
   if (admitted.created) await launch(draft, admitted.record);
-  const latest = await withTaskDraftAccountAdmission(operatorAccount(), draft.account,
+  const latest = await withTaskDraftAccountAdmission(admission, draft.account,
     () => withTaskExecutionLock(taskId, async () => {
       const record = await reconcileTaskExecution(readTaskExecution(draft)!);
       writeTaskExecution(record);
       return record;
     }));
   return executionReceipt(latest, !admitted.created);
+}
+
+/** A scoped hosted decision, never an operator credential or arbitrary launch request. */
+export async function controlHostedTaskExecution(principal: PluginPrincipal, input: unknown, action: 'launch' | 'stop') {
+  if (!principal.scopes.includes(PLUGIN_LAUNCH_TASK_SCOPE)) throw new TaskDraftError('forbidden', 403);
+  const args = object(input);
+  exactKeys(args, ['machineId', 'taskId', 'contractHash']);
+  const taskId = normalizedText(args.taskId, 36);
+  const hash = normalizedText(args.contractHash, 64);
+  const draft = await withTaskDraftAccountAdmission(principal, undefined, async (account) => {
+    const draft = findTaskDraft(taskId, account.accountId);
+    if (args.machineId !== principal.machineId || draft.contract.machineId !== principal.machineId
+      || draft.snapshot.machineId !== principal.machineId || draft.clientId !== principal.clientId
+      || draft.snapshot.clientId !== principal.clientId) throw new TaskDraftError('task_unavailable', 404);
+    if (draft.contractHash !== hash) throw new TaskDraftError('contract_conflict', 409);
+    if (draft.contract.runtime !== 'claude-code' || draft.contract.model !== CONTROLLED_OPENROUTER_MODEL
+      || draft.contract.effort !== 'provider-default' || draft.contract.workMode !== 'read-only') throw new TaskDraftError('forbidden', 403);
+    try { parseControlledProvider(draft.contract.provider); }
+    catch { throw new TaskDraftError('forbidden', 403); }
+    await withTaskDraftAccountAdmission(principal, draft.account, () => undefined);
+    return draft;
+  });
+  // Setup remains outside the lease; reserve/bind/final spawn each re-admit the
+  // persisted expiring grant. Do not let the gateway listener inherit a lease.
+  const decision = () => controlTaskExecutionInner({ action, taskId, contractHash: hash }, principal);
+  const execution = action === 'stop'
+    ? await withTaskDraftAccountAdmission(principal, draft.account, decision)
+    : await decision();
+  return { ok: true, taskId, execution, completed: execution.completed, retryAllowed: false };
 }

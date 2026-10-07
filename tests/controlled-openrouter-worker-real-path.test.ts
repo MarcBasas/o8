@@ -60,11 +60,13 @@ async function account(subject = accountId) {
   });
 }
 function git(...args: string[]) { return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: 'pipe' }); }
-async function call(name: string, args: unknown, subject = accountId) {
+async function call(name: string, args: unknown, subject = accountId,
+  grant: { scopes?: string[]; clientId?: string; expiresAt?: number } = {}) {
   const req = new NextRequest('http://localhost/api/plugins/mcp', { method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${mintPluginToken({
-      machineId: 'gateway-machine', clientId: 'gateway-client', accountId: subject, scopes: ['o8:read', 'o8:prepare-task'],
-    })}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) });
+      machineId: 'gateway-machine', clientId: grant.clientId ?? 'gateway-client', accountId: subject,
+      scopes: grant.scopes ?? ['o8:read', 'o8:prepare-task'],
+    }, { expiresAt: grant.expiresAt })}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) });
   expect(panelGateMiddleware(req).status).toBe(200);
   const response = await POST(req);
   return { status: response.status, result: (await response.json()).result.structuredContent };
@@ -164,7 +166,10 @@ afterEach(async () => {
     for (const dir of readdirSync(sessions)) {
       const saved = JSON.parse(readFileSync(join(sessions, dir, 'session.json'), 'utf8'));
       const gateway = await import('@/lib/claude-code/controlled-gateway'); gateway.revokeControlledGateway(saved.surfaceId);
-      for (const run of saved.recentRuns ?? []) { try { process.kill(-run.pid, 'SIGKILL'); } catch { /* Already clear. */ } }
+      for (const run of saved.recentRuns ?? []) {
+        if (!Number.isInteger(run.pid) || run.pid <= 1) continue; // Prepared attempts have no child PID.
+        try { process.kill(-run.pid, 'SIGKILL'); } catch { /* Already clear. */ }
+      }
     }
   }
   if (existsSync(join(root, 'child.json'))) { try { process.kill(-childReceipt().pid, 'SIGKILL'); } catch { /* Already clear. */ } }
@@ -174,6 +179,116 @@ afterEach(async () => {
 afterAll(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
 
 describe('controlled OpenRouter preparation, owned child and actual local gateway', () => {
+  const hostedArgs = (draft: NonNullable<Awaited<ReturnType<typeof prepare>>['draft']>) => ({
+    machineId: 'gateway-machine', taskId: draft.taskId, contractHash: draft.contractHash,
+  });
+  const launchGrant = { scopes: ['o8:launch-task'] };
+
+  it.each([['o8:read'], ['o8:prepare-task'], ['o8:read', 'o8:prepare-task', 'o8:follow-up']])(
+    'does not upgrade an existing grant into hosted launch authority %j', async (...scopes) => {
+      const { draft } = await prepare();
+      expect((await call('o8_launch_task', hostedArgs(draft!), accountId, { scopes })).status).toBe(403);
+      expect(readTaskExecution(draft!)).toBeNull(); expect(calls).toHaveLength(0);
+    });
+
+  it('launches the exact hosted provider contract once and records its plugin grant', async () => {
+    const { draft, result } = await prepare();
+    expect(result.contractHash).toBe(draft!.contractHash);
+    const receipt = await call('o8_launch_task', hostedArgs(draft!), accountId, launchGrant);
+    expect(receipt.status).toBe(200); expect(receipt.result.execution.replayed).toBe(false);
+    await vi.waitFor(() => expect(existsSync(join(root, 'child.json'))).toBe(true), { timeout: 10000 });
+    expect(childReceipt().status).toBe(200);
+    expect(readTaskExecution(draft!)?.pluginLaunchGrant).toMatchObject({ clientId: 'gateway-client', machineId: 'gateway-machine' });
+    await vi.waitFor(async () => expect((await call('o8_task_result', { machineId: 'gateway-machine', taskId: draft!.taskId })).result.completed).toBe(true));
+    const replay = await call('o8_launch_task', hostedArgs(draft!), accountId, launchGrant);
+    expect(replay.result.execution.replayed).toBe(true); expect(session().runIdentityLedger.totalRuns).toBe(1);
+    expect(calls).toHaveLength(1); expect(git('status', '--porcelain')).toBe('');
+  });
+
+  it('refuses a different client and changed contract before reserving an attempt', async () => {
+    const { draft } = await prepare();
+    expect((await call('o8_launch_task', hostedArgs(draft!), accountId, { ...launchGrant, clientId: 'other-client' })).status).toBe(404);
+    expect((await call('o8_launch_task', { ...hostedArgs(draft!), contractHash: '0'.repeat(64) }, accountId, launchGrant)).status).toBe(409);
+    expect(readTaskExecution(draft!)).toBeNull(); expect(calls).toHaveLength(0);
+  });
+
+  it('rechecks a hosted grant that expires during provider setup before actual child creation', async () => {
+    const { draft } = await prepare();
+    const resolver = await import('@/lib/claude-code/worker-profile');
+    vi.spyOn(resolver, 'resolveClaudeCodeWorkerGatewayKey').mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1500)); return 'sk-or-fixture-parent-only';
+    });
+    await call('o8_launch_task', hostedArgs(draft!), accountId, { ...launchGrant, expiresAt: Date.now() + 1000 });
+    expect(existsSync(join(root, 'child.json'))).toBe(false); expect(calls).toHaveLength(0);
+    expect(readTaskExecution(draft!)?.state).not.toBe('running');
+  });
+
+  it('refuses an expired grant after the prepared run journal, immediately before spawning', async () => {
+    const { draft } = await prepare();
+    const persistence = await import('@/lib/runtimes/shared/owned-session/restricted-session-persistence');
+    const save = persistence.saveRestrictedOwnedSession; const now = Date.now; let expired = false;
+    vi.spyOn(persistence, 'saveRestrictedOwnedSession').mockImplementation((file, saved) => {
+      save(file, saved);
+      if (!expired && saved.activeRun?.spawnState === 'prepared') {
+        expired = true; vi.spyOn(Date, 'now').mockReturnValue(now() + 60_001);
+      }
+    });
+    expect((await call('o8_launch_task', hostedArgs(draft!), accountId, launchGrant)).status).toBe(403);
+    expect(expired).toBe(true); expect(readTaskExecution(draft!)?.runId).toBeTruthy();
+    expect(existsSync(join(root, 'child.json'))).toBe(false); expect(calls).toHaveLength(0);
+  });
+
+  it('refuses expiry during source verification before creating the permanent reservation', async () => {
+    const { draft } = await prepare();
+    const workspace = await import('@/lib/mcp/task-draft-workspace');
+    const capture = workspace.captureTaskDraftWorkspace; const now = Date.now;
+    vi.spyOn(workspace, 'captureTaskDraftWorkspace').mockImplementation(async (...args) => {
+      const snapshot = await capture(...args); vi.spyOn(Date, 'now').mockReturnValue(now() + 60_001); return snapshot;
+    });
+    expect((await call('o8_launch_task', hostedArgs(draft!), accountId, launchGrant)).status).toBe(403);
+    expect(readTaskExecution(draft!)).toBeNull();
+    expect(existsSync(join(taskDraftRoot(), 'execution-reservations', draft!.taskId))).toBe(false);
+    expect(existsSync(join(root, 'child.json'))).toBe(false); expect(calls).toHaveLength(0);
+  });
+
+  it('holds native-provider tasks instead of changing the hosted launch route', async () => {
+    const prepared = await prepare({ provider: null, model: 'claude-sonnet-4-6', effort: 'high' });
+    expect(prepared.status).toBe(200);
+    expect((await call('o8_launch_task', hostedArgs(prepared.draft!), accountId, launchGrant)).status).toBe(403);
+    expect(readTaskExecution(prepared.draft!)).toBeNull(); expect(calls).toHaveLength(0);
+  });
+
+  it('conceals foreign and stale-epoch tasks from hosted launch', async () => {
+    const { draft } = await prepare();
+    await account('user_other');
+    expect((await call('o8_launch_task', hostedArgs(draft!), 'user_other', launchGrant)).status).toBe(404);
+    expect((await call('o8_launch_task', hostedArgs(draft!), accountId, launchGrant)).status).toBe(403);
+    await account();
+    expect((await call('o8_launch_task', hostedArgs(draft!), accountId, launchGrant)).status).toBe(403);
+    expect(readTaskExecution(draft!)).toBeNull(); expect(calls).toHaveLength(0);
+  });
+
+  it('keeps the full launch grant out of operator approvals and the local control route', async () => {
+    const { draft } = await prepare();
+    expect((await call('approve_and_merge', hostedArgs(draft!), accountId, launchGrant)).status).toBe(403);
+    const token = mintPluginToken({ machineId: 'gateway-machine', clientId: 'gateway-client', accountId, scopes: launchGrant.scopes });
+    const req = new NextRequest('http://localhost/api/plugins/task-drafts/control', { method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action: 'launch', taskId: draft!.taskId, contractHash: draft!.contractHash }) });
+    expect((await control(req)).status).toBe(403); expect(readTaskExecution(draft!)).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('stops the hosted bound attempt and replay never launches a replacement', async () => {
+    childConfig({ hold: true }); const { draft } = await prepare();
+    expect((await call('o8_launch_task', hostedArgs(draft!), accountId, launchGrant)).status).toBe(200);
+    await vi.waitFor(() => expect(existsSync(join(root, 'child.json'))).toBe(true), { timeout: 10000 });
+    expect((await call('o8_stop_task', hostedArgs(draft!), accountId, launchGrant)).status).toBe(200);
+    expect(await replayGateway()).toBe(403);
+    expect((await call('o8_launch_task', hostedArgs(draft!), accountId, launchGrant)).result.execution.replayed).toBe(true);
+    expect(calls).toHaveLength(1); expect(session().runIdentityLedger.totalRuns).toBe(1);
+  });
+
   it('seals the payer and limits, runs once, and returns provider usage with the bound report', async () => {
     const prepared = await prepare(); expect(prepared.status).toBe(200);
     const draft = prepared.draft!; expect(draft.contract.provider).toEqual(provider);
