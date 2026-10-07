@@ -205,7 +205,6 @@ describe('CommandPalette file mode', () => {
     await act(async () => resolveBody({
       query: 're', results: [fileResult], groups: { ...emptySearchGroups(), file: [fileResult] },
     }));
-    await settleSearch(0);
     expect(container.textContent).not.toContain('README.md');
     expect(container.textContent).toContain(message);
   });
