@@ -276,6 +276,8 @@ export async function runPiCommand(root: string, command: string, abort: AbortSi
     // Exit can arrive before the last buffered output; with no writer left, the
     // pipes end promptly.
     await Promise.race([Promise.all([drained(child.stdout), drained(child.stderr)]), sleep(1_000)]);
+    // A Stop that arrived while draining still cancels the call.
+    abort.throwIfAborted();
     const output = Buffer.concat(chunks).toString('utf8');
     const status = stopped === 'timeout'
       ? `The command was stopped after ${Math.round(timeoutMs / 1000)} second${timeoutMs === 1000 ? '' : 's'}.`

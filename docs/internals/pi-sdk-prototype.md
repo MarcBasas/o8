@@ -59,7 +59,10 @@ Ending a command depends on the platform:
   to. On the command's exit, on SIGTERM from the host (timeout, output cap or
   Stop), or when the host dies (parent-death signal), it sends TERM to every
   descendant found from `/proc`, waits 1.5 seconds, then sends KILL until
-  `waitpid` reports no child. It writes a receipt on a separate descriptor that
+  `waitpid` reports no child. Signals go through pidfds checked against each
+  process's start time, so a reused pid never receives one; the supervisor
+  refuses to start a command when pidfds are unavailable (Linux before 5.3, or a
+  seccomp policy that denies them). It writes a receipt on a separate descriptor that
   the command never sees. A missing or unconfirmed receipt fails the call and
   refuses later commands and writes until o8 restarts.
 - macOS has no subreaper. The host reads the process table every 250 ms while a
@@ -85,7 +88,10 @@ between two reads, when a read that saw it is dropped as older than teardown's
 read, or when a scan taken around a fork shows the group empty. A missed process
 keeps running after the tool call. On Linux, a process stuck in uninterruptible
 sleep past the 5-second KILL deadline leaves the receipt unconfirmed, which
-refuses later commands and writes. The lock covers one host process, not other
+refuses later commands and writes. Work handed over IPC to a service outside
+the tree (systemd, an already running daemon) is not ended. After exit, the host
+waits at most 1 second for buffered output, so output still in flight after that
+is dropped. The lock covers one host process, not other
 processes writing the same workspace.
 
 `tests/pi-sdk-command-real-path.test.ts` covers inbox approval and rejection,
@@ -96,7 +102,8 @@ reused group number, an unreadable process table, ordering against approved
 writes in the same and another session, and Stop while waiting for the lock.
 The process-table cases run on macOS only. On Linux, the supervisor cases cover
 an orphaned TERM-ignoring child in its own session at exit, timeout and Stop,
-the host's death, and a supervisor that ends without a receipt.
+the host's death, a host that is gone before launch, and a supervisor that ends
+without a receipt.
 
 ## Managed inference boundary
 

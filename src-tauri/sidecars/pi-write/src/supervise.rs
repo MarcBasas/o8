@@ -14,7 +14,9 @@
 //! dies, the parent-death signal starts the same teardown; the supervisor
 //! refuses to start the command unless its parent is still the expected host.
 //! Signals go through pidfds checked against each process's start time, so a
-//! reused pid never receives one.
+//! reused pid never receives one. The supervisor refuses to start the command
+//! when pidfds are unavailable (kernels before 5.3, or a seccomp policy that
+//! denies them), since teardown could not signal anything.
 //!
 //! The receipt goes to fd 3, never to the command: one JSON line with the
 //! command's exit code or signal and whether teardown was confirmed.
@@ -84,12 +86,7 @@ fn descendants() -> Vec<Proc> {
 fn signal_one(target: Proc, signal: libc::c_int) {
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, target.pid, 0) } as libc::c_int;
     if fd < 0 {
-        // Kernels before 5.3 have no pidfds; check the start time and use kill.
-        if std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOSYS)
-            && proc_stat(target.pid).map(|(_, started)| started) == Some(target.started)
-        {
-            unsafe { libc::kill(target.pid, signal) };
-        }
+        // Gone already, or no pidfd for it; teardown keeps going until `waitpid` agrees.
         return;
     }
     if proc_stat(target.pid).map(|(_, started)| started) == Some(target.started) {
@@ -98,6 +95,19 @@ fn signal_one(target: Proc, signal: libc::c_int) {
         }
     }
     unsafe { libc::close(fd) };
+}
+
+/// True when this process can open a pidfd and send a signal through it, which
+/// is everything teardown needs. Signal 0 only checks that delivery is allowed.
+#[cfg(target_os = "linux")]
+fn pidfds_usable() -> bool {
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) } as libc::c_int;
+    if fd < 0 {
+        return false;
+    }
+    let sent = unsafe { libc::syscall(libc::SYS_pidfd_send_signal, fd, 0, std::ptr::null::<libc::siginfo_t>(), 0) };
+    unsafe { libc::close(fd) };
+    sent == 0
 }
 
 /// Reaps exited children within the budget; records the command's status when
@@ -186,6 +196,12 @@ pub fn run(argv: &[OsString]) -> i32 {
     };
     if argv.len() < 2 {
         write_receipt(None, false);
+        return 125;
+    }
+    // Nothing has started, so nothing is left behind.
+    if !pidfds_usable() {
+        eprintln!("The command supervisor needs pidfds (Linux 5.3 or later, not blocked by seccomp).");
+        write_receipt(None, true);
         return 125;
     }
     let Ok(program) = argv[1..].iter().map(|arg| CString::new(arg.as_bytes())).collect::<Result<Vec<_>, _>>() else {
