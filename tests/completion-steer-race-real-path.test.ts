@@ -1,11 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NextRequest } from 'next/server';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OrchestratorPacket } from '@/lib/orchestrator/types';
 import type { CompletionVerificationResult } from '@/lib/supervisor/completion-verification';
-import type { OwnedSessionRecord } from '@/lib/runtimes/shared/owned-session/types';
+import type { RuntimeActionRequest, RuntimeActionResult } from '@/lib/runtime/actions';
+import type { OwnedRunRecord, OwnedSessionRecord } from '@/lib/runtimes/shared/owned-session/types';
 
 const h = vi.hoisted(() => ({
   perform: vi.fn(), verify: vi.fn(), commit: vi.fn(), capture: vi.fn(), probe: vi.fn(), transcript: vi.fn(),
@@ -88,7 +89,37 @@ function fixture() {
       stdoutPath: join(sessionDir, 'stdout.log'), stderrPath: join(sessionDir, 'stderr.log'),
     }],
   };
-  writeFileSync(join(sessionDir, 'session.json'), JSON.stringify(session), { mode: 0o600 });
+  const metadataPath = join(sessionDir, 'session.json');
+  function saveSession(saved: OwnedSessionRecord) {
+    writeFileSync(metadataPath + '.tmp', JSON.stringify(saved), { mode: 0o600 });
+    renameSync(metadataPath + '.tmp', metadataPath);
+  }
+  function writeFinishedLogs(run: OwnedRunRecord) {
+    writeFileSync(run.stdoutPath, JSON.stringify({
+      type: 'result', subtype: 'success', is_error: false, result: 'Finished fixture run',
+    }) + '\n', { mode: 0o600 });
+    writeFileSync(run.stderrPath, '', { mode: 0o600 });
+  }
+  writeFinishedLogs(session.recentRuns[0]);
+  saveSession(session);
+  let resumedRuns = 0;
+  function finishRun() {
+    const saved = JSON.parse(readFileSync(metadataPath, 'utf8')) as OwnedSessionRecord;
+    const current = saved.activeRun;
+    expect(current).toMatchObject({ mode: 'resume', outcome: 'running' });
+    if (!current) throw new Error('Fixture has no active resumed run');
+    const finished: OwnedRunRecord = { ...current, pid: 0, outcome: 'finished',
+      finishedAt: new Date().toISOString(),
+      childExit: { code: 0, signal: null, classification: 'clean-exit' } };
+    writeFinishedLogs(finished);
+    saved.recentRuns = saved.recentRuns.map((run) => run.id === finished.id ? finished : run);
+    saved.activeRun = undefined;
+    saveSession(saved);
+    recordLaneEvent(lane.id, 'runtime_process_exit', 'system', {
+      surfaceId: sessionKey, runId: finished.id, exitCode: 0,
+    });
+    return finished.id;
+  }
   setLaneStatus(lane.id, 'reviewing', 'system', 'review_requested');
   const packet: OrchestratorPacket = {
     id, referenceLabel: id, title: id, summary: id, runtime: 'claude-code',
@@ -102,10 +133,28 @@ function fixture() {
   writeOrchestratorControlPlaneState({ ...createEmptyOrchestratorMissionState(),
     missionId: `mission-${id}`, repoPath, packets: [packet] });
   recordLaneEvent(lane.id, 'runtime_process_exit', 'system', { surfaceId: sessionKey, exitCode: 0 });
-  h.perform.mockResolvedValue({ ok: true, status: 'accepted', sessionKey, note: 'accepted' });
+  h.perform.mockImplementation(async (request: RuntimeActionRequest): Promise<RuntimeActionResult> => {
+    expect(request).toMatchObject({ action: 'steer', surfaceId: sessionKey });
+    const saved = JSON.parse(readFileSync(metadataPath, 'utf8')) as OwnedSessionRecord;
+    const next: OwnedRunRecord = {
+      id: 'run-' + id + '-resume-' + (++resumedRuns), mode: 'resume', prompt: request.message ?? '',
+      startedAt: new Date().toISOString(), outcome: 'running',
+      // The mock owns no child; its test process keeps the admitted run live.
+      pid: process.pid, stdoutPath: join(sessionDir, 'stdout-' + resumedRuns + '.log'),
+      stderrPath: join(sessionDir, 'stderr-' + resumedRuns + '.log'),
+    };
+    writeFileSync(next.stdoutPath, '', { mode: 0o600 });
+    writeFileSync(next.stderrPath, '', { mode: 0o600 });
+    saved.activeRun = next;
+    saved.recentRuns = [next, ...saved.recentRuns];
+    saved.latestPrompt = next.prompt;
+    saveSession(saved);
+    return { ok: true, action: request.action, surfaceId: sessionKey, runtime: 'claude-code',
+      status: 'queued', sessionKey, runId: next.id, note: 'accepted' };
+  });
   registerWatchedAgent(sessionKey, repoPath, id, 'test');
   broadcast.mockClear();
-  return { packet, lane, sessionKey };
+  return { packet, lane, sessionKey, runId: session.recentRuns[0].id, finishRun };
 }
 
 function request(path: string, body: unknown) {
@@ -167,7 +216,7 @@ afterAll(() => { closeDb(); rmSync(dataDir, { recursive: true, force: true }); }
 
 describe('completion and steer overlap through production callbacks and routes', () => {
   it.each(['current', 'registry'] as const)('keeps fully settled %s work reviewable across repeated continuation', async (location) => {
-    const { packet, lane, sessionKey } = fixture();
+    const { packet, lane, sessionKey, finishRun } = fixture();
     const missionId = `mission-${packet.id}`;
     if (location === 'registry') {
       recordMission({
@@ -208,7 +257,7 @@ describe('completion and steer overlap through production callbacks and routes',
       await vi.waitFor(() => expect(settled).toBe(true), { timeout: 5_000 });
       expect((await response).status).toBe(200);
       expect((await register(packet, `active${turn}`)).status).toBe(200);
-      recordLaneEvent(lane.id, 'runtime_process_exit', 'system', { surfaceId: sessionKey, exitCode: 0 });
+      finishRun();
     }
     expect(h.perform).toHaveBeenCalledTimes(3);
     await persistLanePacketHold(packet.id);
@@ -230,9 +279,9 @@ describe('completion and steer overlap through production callbacks and routes',
   });
 
   it.each(['pass', 'fail', 'throw'] as const)('discards a delayed %s result while the next turn remains admitted', async (outcome) => {
-    const { packet, lane, sessionKey } = fixture();
+    const { packet, lane, sessionKey, runId, finishRun } = fixture();
     const delayed = delayVerification();
-    const completion = ingestAgentCompletionSignal(sessionKey);
+    const completion = ingestAgentCompletionSignal(sessionKey, runId);
     await delayed.entered;
     expect((await steer(packet.id)).status).toBe(200);
     expect((await register(packet, 'before')).status).toBe(200);
@@ -251,20 +300,28 @@ describe('completion and steer overlap through production callbacks and routes',
     expect(getWatchedAgents().find((entry) => entry.surfaceId === sessionKey)?.completionReported).toBe(false);
     expect(broadcast).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
 
-    recordLaneEvent(lane.id, 'runtime_process_exit', 'system', { surfaceId: sessionKey, exitCode: 0 });
+    expect(await ingestAgentCompletionSignal(sessionKey, runId)).toBe(true);
+    expect(h.verify).toHaveBeenCalledTimes(1);
+    expect(getWatchedAgents().find((entry) => entry.surfaceId === sessionKey)?.completionReported).toBe(false);
+    const nextRunId = finishRun();
+    expect(nextRunId).not.toBe(runId);
     expect((await register(packet, 'exited')).status).toBe(409);
-    expect(await ingestAgentCompletionSignal(sessionKey)).toBe(true);
+    expect(await ingestAgentCompletionSignal(sessionKey, runId)).toBe(true);
+    expect(h.verify).toHaveBeenCalledTimes(1);
+    expect(getLane(lane.id)?.status).toBe('running');
+    expect(await ingestAgentCompletionSignal(sessionKey, nextRunId)).toBe(true);
+    expect(h.verify).toHaveBeenCalledTimes(2);
     expect(getLane(lane.id)?.status).toBe('reviewing');
     expect(dependencies.enqueueAutoReview).toHaveBeenCalledTimes(1);
   });
 
   it('rejects an old completion even when the newer turn has already exited', async () => {
-    const { packet, lane, sessionKey } = fixture();
+    const { packet, lane, sessionKey, runId, finishRun } = fixture();
     const delayed = delayVerification();
-    const completion = ingestAgentCompletionSignal(sessionKey);
+    const completion = ingestAgentCompletionSignal(sessionKey, runId);
     await delayed.entered;
     expect((await steer(packet.id)).status).toBe(200);
-    recordLaneEvent(lane.id, 'runtime_process_exit', 'system', { surfaceId: sessionKey, exitCode: 0 });
+    finishRun();
     delayed.resolve(verified);
     await completion;
     expect(dependencies.enqueueAutoReview).not.toHaveBeenCalled();
