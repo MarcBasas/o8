@@ -201,3 +201,26 @@ that bypass this protocol, installed acceptance or production activation.
 
 Tracked in [#3308](https://github.com/hurttlocker/o8/issues/3308), as a prerequisite
 for controlled worker dispatch in [#3249](https://github.com/hurttlocker/o8/issues/3249).
+
+## Controlled OpenRouter worker
+
+An explicitly selected OpenRouter catalog entry can prepare a held read-only task
+using Claude Code as the CLI carrier. Copy the offered model, `provider-default`
+effort and complete provider policy; native effort presets do not apply. Ordinary
+worker defaults are unchanged. Missing credentials or incompatible pins hold the
+task without native fallback.
+
+The parent gateway owns the provider key; the isolated child receives only a
+revocable local attempt token. The admitted task supplies current applicable
+instructions and relative workspace copies. The child can use only Read, with
+four inference requests, 2,048 output tokens per request and a 90-second lifetime.
+Each request is persisted before forwarding. The reported-cost stopping threshold
+is $0.01; the final charged request can exceed it. Missing billing evidence holds
+further requests. Stop, account changes and worker exit close the attempt.
+
+Completed results expose bound worker evidence and separately attributed provider
+usage. Actual-route tests substitute the CLI and upstream; the native sandbox
+test checks filesystem isolation. A private native source trial also exercised
+the actual CLI and provider. These are separate from installed ChatGPT acceptance,
+production activation, direct hosted launch and subscription allowance savings.
+The preparation grant still requires local review and Launch.
