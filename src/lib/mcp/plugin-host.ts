@@ -11,6 +11,7 @@ import type { OrchestratorMissionState, OrchestratorPacket } from '@/lib/orchest
 import { appendPluginAudit, type PluginAuditEntry } from './plugin-audit';
 import { readPluginCompletion } from './plugin-result';
 import { callTaskDraftTool } from './task-draft-host';
+import { readTaskResult } from './task-result-host';
 import { TaskDraftError } from './task-draft-contract';
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -114,7 +115,7 @@ export async function callPluginTool(principal: PluginPrincipal, payload: unknow
   let status = 200;
   let result: ToolReceipt;
   const draftTool = tool === 'o8_task_options' || tool === 'o8_prepare_task';
-  const known = draftTool || ['o8_attention', 'o8_result', 'o8_follow_up'].includes(tool);
+  const known = draftTool || ['o8_attention', 'o8_result', 'o8_task_result', 'o8_follow_up'].includes(tool);
   const requiredScope = draftTool ? PLUGIN_PREPARE_TASK_SCOPE
     : tool === 'o8_follow_up' ? PLUGIN_FOLLOW_UP_SCOPE : PLUGIN_READ_SCOPE;
   try {
@@ -123,6 +124,8 @@ export async function callPluginTool(principal: PluginPrincipal, payload: unknow
       result = { ok: false, code: 'forbidden', message: 'This connection cannot perform that action. Use o8 for operator decisions.' };
     } else if (draftTool) {
       result = await callTaskDraftTool(principal, tool, args) as ToolReceipt;
+    } else if (tool === 'o8_task_result') {
+      result = await readTaskResult(principal, args);
     } else if (!validArguments(tool, args)) {
       status = 400;
       result = { ok: false, code: 'invalid_arguments' };
