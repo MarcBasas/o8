@@ -16,7 +16,8 @@ import { admittedTaskInstructions } from './task-draft-workspace';
 
 async function promptFor(draft: TaskDraftRecord): Promise<string> {
   const instructions = await admittedTaskInstructions(draft.snapshot.repoPath, draft.contract.allowedFiles, draft.snapshot.rulesDigest);
-  return [instructions, 'Current task:', draft.contract.objective, 'Read-only task. Report evidence to stdout; never modify files or contact o8 APIs.',
+  return ['Your working directory is the admitted isolated workspace. Requested files are copies at the same relative paths below. Read them relative to this directory; do not use the original repository path or reopen instruction files.',
+    instructions, 'Current task:', draft.contract.objective, 'Read-only task. Report evidence to stdout; never modify files or contact o8 APIs.',
     `Requested file scope: ${draft.contract.allowedFiles.join(', ')}`,
     `Acceptance evidence: ${draft.contract.evidence.join('\n')}`,
     `Sealed task contract: ${JSON.stringify(draft.contract.sealedTaskContract)}`].join('\n\n');

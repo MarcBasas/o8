@@ -134,7 +134,7 @@ beforeEach(async () => {
   writeFileSync(child, `const fs=require('node:fs');let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',async()=>{
     const cfg=JSON.parse(fs.readFileSync(${JSON.stringify(join(root, 'child-config.json'))},'utf8'));
     const headers={'content-type':'application/json','x-api-key':process.env.ANTHROPIC_API_KEY};
-    const body={model:${JSON.stringify(model)},messages:[{role:'user',content:'Read value.txt'}],tools:[{name:'Read',input_schema:{type:'object'}}],max_tokens:99999,thinking:{type:'adaptive'},...cfg.body};
+    const body={model:${JSON.stringify(model)},messages:[{role:'user',content:'Read value.txt'}],tools:[{name:'Read',input_schema:{type:'object'}}],max_tokens:99999,thinking:{type:'adaptive'},context_management:{edits:[{type:'clear_thinking_20251015'}]},...cfg.body};
     const base=process.env.ANTHROPIC_BASE_URL;if(!base.startsWith('http://127.0.0.1:'))process.exit(98);
     const statuses=await Promise.all(Array.from({length:cfg.requests||1},async()=>{const r=await fetch(base+(cfg.path||'/v1/messages?beta=true'),{method:'POST',headers,body:JSON.stringify(body)});await r.text();return r.status;}));
     fs.writeFileSync(${JSON.stringify(join(root, 'child.json'))},JSON.stringify({pid:process.pid,status:statuses[0],statuses,input,env:process.env,base,headers,body}));
@@ -183,10 +183,14 @@ describe('controlled OpenRouter preparation, owned child and actual local gatewa
     expect(launched.status).toBe(200);
     await vi.waitFor(() => expect(existsSync(join(root, 'child.json'))).toBe(true), { timeout: 10000 });
     expect(childReceipt().status).toBe(200);
+    expect(childReceipt().input).toContain('Your working directory is the admitted isolated workspace.');
+    expect(childReceipt().input).not.toContain('## Project Brief');
+    expect(childReceipt().input).not.toContain(repo);
     expect(JSON.stringify(childReceipt().env)).not.toContain('sk-or-fixture-parent-only');
     expect(calls).toHaveLength(1); expect(calls[0]!.url).toBe('https://openrouter.ai/api/v1/messages');
     expect(calls[0]!.headers.get('authorization')).toBe('Bearer sk-or-fixture-parent-only');
     expect(calls[0]!.body).toMatchObject({ model, max_tokens: 2048 }); expect(calls[0]!.body.thinking).toBeUndefined();
+    expect(calls[0]!.body.context_management).toBeUndefined();
     await vi.waitFor(async () => expect((await decision(draft.taskId, draft.contractHash, 'inspect')).body.execution.state).toBe('completed'));
     const result = await call('o8_task_result', { machineId: 'gateway-machine', taskId: draft.taskId });
     expect(result.result).toMatchObject({ completed: true, effort: 'provider-default',

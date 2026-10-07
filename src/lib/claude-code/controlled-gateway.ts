@@ -64,7 +64,7 @@ function validToken(value: unknown, expected: string): boolean {
 function bodyFor(raw: Buffer, policy: ControlledOpenRouterPolicy): Record<string, unknown> {
   const value = JSON.parse(raw.toString('utf8')) as Record<string, unknown>;
   const allowed = ['model', 'messages', 'system', 'max_tokens', 'stream', 'tools', 'tool_choice',
-    'temperature', 'top_p', 'top_k', 'stop_sequences', 'metadata', 'thinking', 'output_config'];
+    'temperature', 'top_p', 'top_k', 'stop_sequences', 'metadata', 'thinking', 'output_config', 'context_management'];
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || Object.keys(value).some((key) => !allowed.includes(key))
     || value.model !== CONTROLLED_OPENROUTER_MODEL || !Array.isArray(value.messages) || !value.messages.length
@@ -75,7 +75,8 @@ function bodyFor(raw: Buffer, policy: ControlledOpenRouterPolicy): Record<string
       || ((value.tool_choice as Record<string, string>).type === 'tool'
         && (value.tool_choice as Record<string, string>).name !== 'Read')))) throw new Error('Invalid pins or tools');
   value.max_tokens = policy.maxOutputTokens;
-  delete value.thinking; delete value.output_config;
+  // Provider default reasoning; do not ask the carrier for vendor-managed compaction.
+  delete value.thinking; delete value.output_config; delete value.context_management;
   return value;
 }
 function finite(value: unknown): number | null {
@@ -176,7 +177,7 @@ async function processRequest(registration: Registration, request: IncomingMessa
     await withTaskDraftAccountAdmission(operatorAccount(), draft.account, async () => {
       await current(registration);
       if (registration.usage.blockedReason) { close(registration, registration.usage.blockedReason); reply(response, 429); return; }
-          response.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json' }).end(result);
+      response.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json' }).end(result);
     });
   } catch {
     close(registration, 'request_refused_or_uncertain');
