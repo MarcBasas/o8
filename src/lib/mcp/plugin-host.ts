@@ -147,7 +147,7 @@ export async function callPluginTool(principal: PluginPrincipal, payload: unknow
   } catch (error) {
     status = error instanceof TaskDraftError ? error.status : 503;
     result = { ok: false, code: error instanceof TaskDraftError ? error.code : 'task_unavailable',
-      message: draftTool ? 'The task draft is held or unavailable. No worker started. Retry only with the same arguments and key.'
+      message: draftTool ? 'The task draft is held or unavailable. This preparation request did not start or retry a worker. Retry only with the same arguments and key.'
         : 'Inspect the task in o8. Retry a follow-up only with the same arguments and key.' };
   }
   try {
