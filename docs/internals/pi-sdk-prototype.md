@@ -51,17 +51,25 @@ command starts, so a root replaced by a symlink after the host's checks is
 refused. Stdout and stderr share one 50 KB buffer; any output past it stops the
 command. The default limit is 120 seconds, set by the host only.
 
-The host reads the process table every 250 ms while a command runs and tracks
-the process group and every descendant by pid and start time, so a child that
-starts its own group stays tracked after its parent exits. Reads may overlap; a
-result older than the last one applied is dropped. Once a read shows the group
-empty, its number is no longer used to adopt processes, because it may have been
-reused. The timeout, the
-output cap, Stop and a normal exit each end the process group and every tracked
-descendant: TERM, then KILL on a fixed schedule. This is not yet a guarantee for
-every process a command starts; see the known limits and #3350. If the process table cannot be read, the group still
-gets TERM and KILL on that schedule, the tool call fails, and later commands
-and writes are refused until o8 restarts.
+Ending a command depends on the platform:
+
+- Linux: the command runs under the native supervisor (`o8-pi-write supervise`,
+  #3350). It marks itself a child subreaper, so a descendant whose parent exits
+  is reparented to the supervisor, whatever process group or session it moved
+  to. On the command's exit, on SIGTERM from the host (timeout, output cap or
+  Stop), or when the host dies (parent-death signal), it sends TERM to every
+  descendant found from `/proc`, waits 1.5 seconds, then sends KILL until
+  `waitpid` reports no child. It writes a receipt on a separate descriptor that
+  the command never sees. A missing or unconfirmed receipt fails the call and
+  refuses later commands and writes until o8 restarts.
+- macOS has no subreaper. The host reads the process table every 250 ms while a
+  command runs and tracks the process group and every descendant by pid and
+  start time. Reads may overlap; a result older than the last one applied is
+  dropped. Once a read shows the group empty, its number is no longer used to
+  adopt processes, because it may have been reused. The timeout, the output
+  cap, Stop and a normal exit each send TERM, then KILL on a fixed schedule. If
+  the table cannot be read, the group still gets TERM and KILL, the call fails,
+  and later commands and writes are refused until o8 restarts.
 
 Pi runs tool calls from one message in parallel by default. The host runs one
 tool call at a time per session, and one command or write commit at a time
@@ -70,20 +78,25 @@ while an approved write commits. Stop ends a call that is still waiting for its
 turn without running it.
 
 Known limits: approval is the boundary, not a sandbox. An approved command can
-read anything the user can, including files under `HOME`. Tracking comes from
-process-table snapshots, so a descendant that moves to a new process group and
-outlives its parent can be missed: when it leaves and is reparented between two
-reads, when a read that saw it is dropped as older than teardown's read, or when
-a scan taken around a fork shows the group empty and retires group adoption. A
-missed process keeps running after the tool call. #3350 replaces this with an
-OS-level supervisor before Pi reaches users. A pid can be reused between a read and a signal. The lock
-covers one host process, not other processes writing the same workspace.
+read anything the user can, including files under `HOME`. On macOS, tracking
+comes from process-table snapshots, so a descendant that moves to a new process
+group and outlives its parent can be missed: when it leaves and is reparented
+between two reads, when a read that saw it is dropped as older than teardown's
+read, or when a scan taken around a fork shows the group empty. A missed process
+keeps running after the tool call. On Linux, a process stuck in uninterruptible
+sleep past the 5-second KILL deadline leaves the receipt unconfirmed, which
+refuses later commands and writes. The lock covers one host process, not other
+processes writing the same workspace.
+
 `tests/pi-sdk-command-real-path.test.ts` covers inbox approval and rejection,
 denial, policy block and operator allow, the working directory, a swapped root,
 the environment, timeout, the output cap (including output that fills it
 exactly), Stop, a TERM-ignoring child in its own group, a late process-table read, a
 reused group number, an unreadable process table, ordering against approved
 writes in the same and another session, and Stop while waiting for the lock.
+The process-table cases run on macOS only. On Linux, the supervisor cases cover
+an orphaned TERM-ignoring child in its own session at exit, timeout and Stop,
+the host's death, and a supervisor that ends without a receipt.
 
 ## Managed inference boundary
 
