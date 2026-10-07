@@ -1,3 +1,4 @@
+import { revokeControlledGateway } from '@/lib/claude-code/controlled-gateway';
 import { revokeReadOnlyWorkerToken } from '@/lib/auth/read-only-worker-token';
 import { launchRuntimeSurface } from '@/lib/runtime/actions';
 import { escalateInterruptOwnedSurface } from '@/lib/runtime/interrupt-escalation';
@@ -37,8 +38,9 @@ async function launch(draft: TaskDraftRecord, record: TaskExecutionRecord): Prom
       if (current.state !== 'accepted' || current.laneId) throw new TaskDraftError('execution_already_reserved', 409);
       writeTaskExecution({ ...current, laneId: lane.id });
     });
-    const result = await launchRuntimeSurface({ runtime: record.runtime, model: record.model, effort: record.effort,
-      ...(record.runtime === 'claude-code' ? { claudeCodeModel: record.model, claudeCodeCarrier: 'native' } : {}),
+    const result = await launchRuntimeSurface({ runtime: record.runtime, model: record.model, effort: record.effort === 'provider-default' ? undefined : record.effort,
+      controlledProvider: record.provider,
+      ...(record.runtime === 'claude-code' ? { claudeCodeModel: record.model, claudeCodeCarrier: record.provider ? 'openrouter' : 'native' } : {}),
       executionPolicy: 'single-attempt', controlledTask: taskBinding(record), clientMutationId: record.attemptId,
       cwd: record.workspacePath, repoPath: record.workspacePath, projectRepoPath: draft.snapshot.repoPath,
       existingLaneId: lane.id, isolate: false, skipSetup: true, workMode: 'read-only',
@@ -58,6 +60,7 @@ async function stop(taskId: string, hash: string) {
       const stopped = { ...record, state: 'stop_requested' as const,
         stopRequestedAt: record.stopRequestedAt ?? new Date().toISOString() };
       writeTaskExecution(stopped); // Publication/sync uncertainty forbids subsequent signals.
+      if (stopped.surfaceId) revokeControlledGateway(stopped.surfaceId);
       if (stopped.runId) revokeReadOnlyWorkerToken(stopped.runId);
       if (stopped.runId) readExecutionSession(stopped);
       return stopped;

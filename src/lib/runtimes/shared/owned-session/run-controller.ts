@@ -1,3 +1,4 @@
+import { revokeControlledGateway } from '@/lib/claude-code/controlled-gateway';
 import { mintReadOnlyWorkerToken, revokeReadOnlyWorkerToken } from '@/lib/auth/read-only-worker-token';
 import { ownedSpawnEnvironment } from './restricted-spawn-env';
 import { withControlledTaskSpawn } from '@/lib/mcp/task-execution-admission';
@@ -212,6 +213,7 @@ export function createOwnedRunController({
     stderrPath: string,
     outcome: OwnedChildExitOutcome,
   ) {
+    revokeControlledGateway(surfaceId);
     const stderrTail = await readAbnormalStderrTail(stderrPath, outcome);
     const childExit = stderrTail ? { ...outcome, stderrTail } : outcome;
 

@@ -1,3 +1,4 @@
+import { CONTROLLED_OPENROUTER_MODEL, CONTROLLED_OPENROUTER_POLICY } from '@/lib/runtimes/shared/owned-session/controlled-provider';
 import { randomUUID } from 'node:crypto';
 import type { PluginPrincipal } from '@/lib/auth/plugin-token';
 import { CODEX_MODEL_IDS, SUPPORTED_MODEL_IDS } from '@/lib/models';
@@ -10,14 +11,17 @@ import { contractHash, readTaskDraft, readTaskDraftSnapshot, taskDraftKey, withT
 import { captureTaskDraftWorkspace, taskDraftChoices, verifyFiles } from './task-draft-workspace';
 import { readTaskExecution } from './task-execution-store';
 
-function catalog() {
+async function catalog() {
+  const { resolveClaudeCodeWorkerGatewayKey } = await import('@/lib/claude-code/worker-profile');
+  const configured = !!await resolveClaudeCodeWorkerGatewayKey();
   return (['codex', 'claude-code'] as const).map((runtime) => ({
     runtime,
-    models: (runtime === 'codex' ? CODEX_MODEL_IDS : SUPPORTED_MODEL_IDS.filter((model) => model.startsWith('claude-')))
+    models: [...(runtime === 'codex' ? CODEX_MODEL_IDS : SUPPORTED_MODEL_IDS.filter((model) => model.startsWith('claude-')))
       .map((model) => ({ model, efforts: THINKING_EFFORTS.filter((effort) => {
         const pin = resolveEffortPin({ runtime, model, explicitModel: model, requestedEffort: effort });
         return effort !== 'adaptive' && pin.ok && pin.selectedEffort === effort;
-      }) })),
+      }) })), ...(runtime === 'claude-code' ? [{ model: CONTROLLED_OPENROUTER_MODEL, efforts: ['provider-default'],
+        provider: CONTROLLED_OPENROUTER_POLICY, configured, availability: 'catalog_only_not_execution_proof' }] : [])],
     availability: 'catalog_only_not_execution_proof',
   }));
 }
@@ -26,7 +30,7 @@ function receipt(draft: TaskDraftRecord, replayed: boolean) {
   const prepared = {
     ok: true, accepted: true, executionEnabled: false,
     taskId: draft.taskId, replayed, runtime: draft.contract.runtime,
-    model: draft.contract.model, effort: draft.contract.effort, workMode: 'read-only',
+    model: draft.contract.model, effort: draft.contract.effort, ...(draft.contract.provider ? { provider: draft.contract.provider } : {}), workMode: 'read-only',
   };
   let execution: ReturnType<typeof readTaskExecution>;
   try { execution = readTaskExecution(draft); }
@@ -73,7 +77,7 @@ export async function callTaskDraftTool(principal: PluginPrincipal, tool: string
     await withTaskDraftAccountAdmission(principal, account, () => writeTaskDraftSnapshot(snapshot));
     return { ok: true, repoId, projectId, snapshotId: snapshot.snapshotId, revision: snapshot.revision,
       rulesDigest: snapshot.rulesDigest, expiresAt: snapshot.expiresAt,
-      workMode: 'read-only', executionEnabled: false, runtimes: catalog() };
+      workMode: 'read-only', executionEnabled: false, runtimes: await catalog() };
   }
   if (tool !== 'o8_prepare_task') throw new TaskDraftError('forbidden', 403);
   const contract = parseTaskDraftContract(args);

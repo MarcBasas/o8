@@ -12,6 +12,7 @@ export interface TaskExecutionRecord extends ControlledTaskBinding {
   runtime: TaskDraftRecord['contract']['runtime'];
   model: string;
   effort: TaskDraftRecord['contract']['effort'];
+  provider?: TaskDraftRecord['contract']['provider'];
   createdAt: string;
   state: 'accepted' | 'spawn_reserved' | 'running' | 'uncertain' | 'blocked' | 'stop_requested' | 'stopped' | 'completed';
   workspacePath: string;
@@ -48,6 +49,7 @@ export function readTaskExecution(draft: TaskDraftRecord): TaskExecutionRecord |
       || value.taskId !== draft.taskId || value.contractHash !== draft.contractHash
       || canonical(value.account) !== canonical(draft.account) || value.runtime !== draft.contract.runtime
       || value.model !== draft.contract.model || value.effort !== draft.contract.effort
+      || canonical(value.provider ?? null) !== canonical(draft.contract.provider ?? null)
       || !/^[a-f0-9-]{36}$/.test(value.attemptId) || value.workspacePath !== executionWorkspace(value.attemptId)
       || !['accepted', 'spawn_reserved', 'running', 'uncertain', 'blocked', 'stop_requested', 'stopped', 'completed'].includes(value.state)
       || (value.surfaceId && (!value.surfaceId.startsWith(`${value.runtime}-owned:`) || /[/\\]/.test(value.surfaceId)))) {
@@ -78,7 +80,7 @@ export async function reserveTaskExecution(draft: TaskDraftRecord): Promise<{ re
     const attemptId = randomUUID();
     const record: TaskExecutionRecord = { version: 1, taskId: draft.taskId, attemptId,
       contractHash: draft.contractHash, account: { ...draft.account }, runtime: draft.contract.runtime,
-      model: draft.contract.model, effort: draft.contract.effort, createdAt: new Date().toISOString(),
+      model: draft.contract.model, effort: draft.contract.effort, ...(draft.contract.provider ? { provider: draft.contract.provider } : {}), createdAt: new Date().toISOString(),
       state: 'accepted', workspacePath: executionWorkspace(attemptId), reviewRequired: true };
     writeTaskExecution(record);
     return { record, created: true };
@@ -88,6 +90,7 @@ export async function reserveTaskExecution(draft: TaskDraftRecord): Promise<{ re
 export function executionReceipt(record: TaskExecutionRecord, replayed: boolean) {
   return { taskId: record.taskId, attemptId: record.attemptId, contractHash: record.contractHash,
     state: record.state, runtime: record.runtime, model: record.model, effort: record.effort,
+    ...(record.provider ? { provider: record.provider } : {}),
     surfaceId: record.surfaceId ?? null, replayed, reviewRequired: true, retryAllowed: false,
     completed: record.state === 'completed', stopped: record.state === 'stopped', errorCode: record.errorCode ?? null };
 }

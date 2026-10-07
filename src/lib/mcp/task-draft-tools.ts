@@ -22,6 +22,11 @@ export const TASK_DRAFT_TOOLS = [
         runtime: { type: 'string', enum: ['codex', 'claude-code'] }, model: string, effort: string,
         workMode: { type: 'string', enum: ['read-only'] },
         evidence: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', minLength: 1, maxLength: 480 } },
+        provider: { type: ['object', 'null'], additionalProperties: false, properties: {
+          carrier: { type: 'string', enum: ['openrouter'] }, reasoning: { type: 'string', enum: ['provider-default'] },
+          maxRequests: { type: 'integer', enum: [4] }, maxOutputTokens: { type: 'integer', enum: [2048] },
+          maxRequestBytes: { type: 'integer', enum: [64000] }, costUsd: { type: 'number', enum: [0.01] },
+        }, required: ['carrier', 'reasoning', 'maxRequests', 'maxOutputTokens', 'maxRequestBytes', 'costUsd'] },
         sealedTaskContract: SEALED_TASK_CONTRACT_INPUT_SCHEMA },
       required: ['machineId', 'repoId', 'projectId', 'snapshotId', 'idempotencyKey', 'objective', 'allowedFiles',
         'runtime', 'model', 'effort', 'workMode', 'evidence', 'sealedTaskContract'] },
