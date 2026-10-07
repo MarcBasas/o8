@@ -104,15 +104,16 @@ export async function captureTaskWorkspacePath(repoPath: string): Promise<Pick<T
   return { revision, rulesDigest: (await captureRules(repoPath)).rulesDigest };
 }
 
-export async function taskDraftChoices(): Promise<Array<{ repoId: string; repository: string; projectId: string }>> {
+export async function taskDraftChoices(): Promise<Array<{ repoId: string; repository: string; projectId: string; project: string }>> {
   const [repos, ledger] = await Promise.all([listReposFresh(), getProjectsLedger()]);
-  const choices: Array<{ repoId: string; repository: string; projectId: string }> = [];
+  const choices: Array<{ repoId: string; repository: string; projectId: string; project: string }> = [];
   for (const repo of repos.slice(0, 20)) {
     for (const project of ledger.projects) {
       if (!project.repoPaths.some((file) => resolve(file) === resolve(repo.localPath))) continue;
       try {
         const context = await captureMissionProject(repo.localPath, project.id);
-        if (context) choices.push({ repoId: repo.id, repository: repo.name.slice(0, 160), projectId: context.id });
+        if (context) choices.push({ repoId: repo.id, repository: repo.name.slice(0, 160), projectId: context.id,
+          project: context.name.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 160) });
       } catch { /* Ambiguous or deleted projects are unavailable. */ }
     }
   }

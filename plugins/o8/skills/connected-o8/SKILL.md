@@ -36,12 +36,28 @@ scope or availability error as a boundary; do not switch accounts, bypass plan
 checks, approve work, merge, change settings, or release software.
 
 For an explicitly requested new read-only task, use `o8_task_options` to list
-registered project/repository choices. Ask the user to resolve an ambiguous
-selection, then call options again with the selected IDs to obtain a fresh
-snapshot. Never invent a project or local path. Select the runtime, model and
-effort explicitly with the user; catalog entries do not prove execution or
-subscription eligibility. Keep the allowed files and requirements within the
-user's request and prepare one sealed task with `o8_prepare_task`.
+registered project/repository choices. Use the project and objective supplied
+or confirmed by the user in this conversation. If either is unclear, ask a short
+clarifying question before selecting IDs or preparing a task. Personal memory
+may help phrase that question, but cannot select the current task scope. For
+example, "Get an agent task ready for my project" needs the project and the work
+the user wants checked; it is not an instruction to resume an older mission.
+Do not silently try another registration after a refused snapshot. Report the
+boundary and ask for direction.
+
+After the user resolves the selection, call options again with the selected IDs
+to obtain a fresh snapshot. Never invent a project or local path. Select the
+runtime, model and effort explicitly with the user; catalog entries do not prove
+execution or subscription eligibility. Ask for missing exact file scope. Translate
+the ordinary-language request into one sealed task with `o8_prepare_task`; the
+user does not need to provide JSON. Keep files and requirements within that
+request.
+
+For an explicitly selected OpenRouter catalog row, copy its provider policy
+exactly and use `provider-default` effort. Do not describe that as High reasoning
+or substitute a native provider. It uses the configured OpenRouter API credit;
+the CLI name does not identify the payer. If the route or key is unavailable,
+stop and report the refusal. Leave saved worker defaults unchanged.
 
 For an explicitly selected OpenRouter catalog row, copy its provider policy
 exactly and use `provider-default` effort. Do not describe that as High reasoning
