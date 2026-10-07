@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -38,7 +38,7 @@ const model: Model<'openai-completions'> = { id: 'fixture', name: 'Fixture', api
   provider: 'o8-managed', baseUrl: 'https://o8-host.invalid/v1', reasoning: false, input: ['text'],
   contextWindow: 16000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 // The ordering case also commits an approved write through the native helper.
-beforeAll(() => { buildPiWriteHelper(); }, 600_000);
+beforeAll(() => { helperPath = buildPiWriteHelper(); }, 600_000);
 const roots: string[] = [];
 const clients: Awaited<ReturnType<typeof createPiSdkSession>>[] = [];
 afterEach(async () => {
@@ -97,6 +97,12 @@ async function allEnded(dir: string, names = TREE_PIDS) {
 // whose parent dies on TERM, so it is reparented during cleanup.
 const TREE = `sleep 30 & echo $! > group.pid; perl -e 'setpgrp(0,0); sleep 30' & echo $! > job.pid; `
   + `sh -c 'perl -e "\\$SIG{TERM}=q(IGNORE); setpgrp(0,0); sleep 30" & echo $! > hard.pid; wait' & sleep 0.3`;
+
+// macOS ends commands with the host's process-table tracker; Linux uses the
+// native supervisor, which these seams cannot reach.
+const trackerIt = it.skipIf(process.platform === 'linux');
+const supervisorIt = it.runIf(process.platform === 'linux');
+let helperPath = '';
 
 describe('Pi governed command tool through the real worker', () => {
   it('runs an approved command in the workspace with a cleaned environment', async () => {
@@ -248,7 +254,7 @@ describe('Pi governed command tool through the real worker', () => {
     expect(await readdir(outside)).toEqual([]);
   }, 20000);
 
-  it('keeps a reparented child tracked when an older process-table read finishes late', async () => {
+  trackerIt('keeps a reparented child tracked when an older process-table read finishes late', async () => {
     const paths = await fixture();
     const session = await client({ ...paths, model, approve: async () => true,
       transport: scripted([command('late', 'perl -e \'$SIG{TERM}="IGNORE"; setpgrp(0,0); sleep 30\' & echo $! > hard.pid; sleep 0.6')]) });
@@ -259,7 +265,7 @@ describe('Pi governed command tool through the real worker', () => {
     await allEnded(paths.workspace, ['hard.pid']);
   }, 30000);
 
-  it('stops adopting by group number once the group was seen empty', async () => {
+  trackerIt('stops adopting by group number once the group was seen empty', async () => {
     const paths = await fixture();
     const victim = spawn('sleep', ['30'], { detached: true, stdio: 'ignore' }); victim.unref();
     try {
@@ -302,8 +308,88 @@ describe('Pi governed command tool through the real worker', () => {
     await runner.abort(); await running;
   }, 30000);
 
+  it('returns all output written just before a quick exit', async () => {
+    const paths = await fixture(); const results: string[] = [];
+    const session = await client({ ...paths, model, approve: async () => true,
+      transport: scripted([command('burst', 'head -c 40000 /dev/zero | tr "\\000" y; echo END')], results) });
+    await session.prompt('Write a burst');
+    expect(results[0]).toContain('Exit code 0');
+    expect(results[0]).toContain(`${'y'.repeat(40000)}END`);
+  }, 20000);
+
+  // A TERM-ignoring child that starts a new session and is orphaned at once:
+  // its parent exits before any read could see it. The command waits until the
+  // child is ready and records its session id before going on.
+  const ESCAPE = `sh -c 'perl -MPOSIX -e "\\$SIG{TERM}=q(IGNORE); POSIX::setsid(); open(my \\$f, q(>), q(ready)); close \\$f; sleep 30" & echo $! > hard.pid'; `
+    + 'while [ ! -e ready ]; do sleep 0.05; done; ps -o sid= -p "$(cat hard.pid)" > hard.sid';
+  async function expectEndedNow(dir: string) {
+    const [hard] = await pids(dir, ['hard.pid']);
+    expect(Number((await readFile(join(dir, 'hard.sid'), 'utf8')).trim())).toBe(hard);
+    // The supervisor reaps every descendant before its receipt, so none is left when the call returns.
+    expect(alive(hard)).toBe(false);
+  }
+
+  supervisorIt.each([
+    ['a normal exit', `${ESCAPE}; sleep 0.3`, {}, 'Exit code 0'],
+    ['the timeout', `${ESCAPE}; sleep 30`, { commandTimeoutMs: 2_000 }, 'stopped after 2 seconds'],
+  ] as const)('ends an orphaned child in its own session at %s', async (_case, text, limits, status) => {
+    const paths = await fixture(); const results: string[] = [];
+    const session = await client({ ...paths, model, approve: async () => true, ...limits, transport: scripted([command('escape', text)], results) });
+    await session.prompt('Run an escaping child');
+    expect(results[0]).toContain(status);
+    await expectEndedNow(paths.workspace);
+  }, 30000);
+
+  supervisorIt('ends an orphaned child in its own session on Stop', async () => {
+    const paths = await fixture();
+    const session = await client({ ...paths, model, approve: async () => true,
+      transport: scripted([command('escape-stop', `${ESCAPE}; touch started; sleep 30`)]) });
+    const run = session.prompt('Run until stopped');
+    await vi.waitFor(() => readFile(join(paths.workspace, 'started')), { timeout: 10_000, interval: 50 });
+    await session.abort(); await run;
+    await expectEndedNow(paths.workspace);
+  }, 30000);
+
+  supervisorIt('ends the command tree when the host process dies', async () => {
+    const paths = await fixture();
+    // A stand-in host: a shell that starts the supervisor, then is killed.
+    const host = spawn('/bin/sh', ['-c', '"$0" supervise $$ /bin/sh -c "sleep 30 & echo \\$! > bg.pid; sleep 30" 3>/dev/null & echo $! > supervisor.pid; wait',
+      helperPath], { cwd: paths.workspace, stdio: 'ignore' });
+    await vi.waitFor(() => readFile(join(paths.workspace, 'bg.pid')), { timeout: 10_000, interval: 50 });
+    const [supervisor, background] = await pids(paths.workspace, ['supervisor.pid', 'bg.pid']);
+    expect(alive(background)).toBe(true);
+    host.kill('SIGKILL');
+    await vi.waitFor(() => expect([alive(supervisor), alive(background)]).toEqual([false, false]), { timeout: 10_000 });
+  }, 30000);
+
+  supervisorIt('refuses to start the command when its parent is not the expected host', async () => {
+    const paths = await fixture();
+    const run = spawnSync(helperPath, ['supervise', '1', '/bin/sh', '-c', 'touch ran'],
+      { cwd: paths.workspace, stdio: ['ignore', 'pipe', 'pipe', 'pipe'], encoding: 'utf8' });
+    expect(run.status).toBe(125);
+    expect(JSON.parse(String(run.output[3]).trim())).toEqual({ code: null, signal: null, confirmed: true });
+    expect(await readdir(paths.workspace)).toEqual([]);
+  }, 30000);
+
+  supervisorIt('refuses later commands when the supervisor ends without a receipt', async () => {
+    const paths = await fixture();
+    const session = await client({ ...paths, model, approve: async () => true,
+      transport: scripted([command('lost', 'echo $PPID > supervisor.pid; echo $$ > command.pid; touch started; sleep 30'),
+        { type: 'toolCall', id: 'write', name: 'write_file', arguments: { path: 'note.txt', content: 'refused' } }]) });
+    const run = session.prompt('Lose the supervisor');
+    await vi.waitFor(() => readFile(join(paths.workspace, 'started')), { timeout: 10_000, interval: 50 });
+    const [supervisor, commandPid] = await pids(paths.workspace, ['supervisor.pid', 'command.pid']);
+    expect(readFileSync(`/proc/${supervisor}/cmdline`, 'utf8').split('\0')).toContain('supervise');
+    process.kill(supervisor, 'SIGKILL');
+    await run;
+    expect(piCommandCleanupUnconfirmed()).toBe(true);
+    expect((await readdir(paths.workspace)).sort()).toEqual(['command.pid', 'started', 'supervisor.pid']);
+    // The orphaned command group is outside any supervisor now; end only this test's processes.
+    process.kill(-commandPid, 'SIGKILL');
+  }, 30000);
+
   // Last: an unconfirmed cleanup refuses commands and writes for the rest of the host process.
-  it('ends the group and refuses later commands and writes when the process table cannot be read', async () => {
+  trackerIt('ends the group and refuses later commands and writes when the process table cannot be read', async () => {
     const paths = await fixture();
     const session = await client({ ...paths, model, approve: async () => true,
       transport: scripted([command('blind', 'sleep 30 & echo $! > group.pid; echo started'),

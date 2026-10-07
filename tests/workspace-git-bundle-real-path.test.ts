@@ -40,6 +40,7 @@ const { getWorkspaceSnapshot, listWorkspaceSnapshotTransitions } = await import(
 const { preserveWorkspaceArtifacts, readWorkspacePreservation } = await import('@/lib/workspace/preservation-store');
 const { captureWorkspaceMaterializationSnapshot } = await import('@/lib/workspace/workspace-materialization-retirement');
 const { getWorkspaceRetentionHold } = await import('@/lib/workspace/retention-holds');
+const artifactWorkers = await import('@/lib/workspace/ignored-artifact-worker');
 const execution = await import('@/lib/worktree/materialization-execution');
 const repoPath = path.join(root, 'repo');
 let repo: Awaited<ReturnType<typeof addRepo>>;
@@ -322,6 +323,136 @@ describe('portable source preservation through the managed retirement entry', ()
     } finally {
       spy.mockRestore();
     }
+    finished = true;
+  }, 60_000);
+
+  it('bounds live directory helpers while preserving a broad ignored tree', async () => {
+    const packetId = 'artifact-directory-breadth';
+    const { manager, created } = await workspace(packetId);
+    const targetPacketId = 'artifact-directory-breadth-target';
+    const target = await workspace(targetPacketId);
+    const checkpoints = Array.from({ length: 12 }, (_, index) => '.o8/recovery-' + index + '/checkpoint.bin');
+    const bytes = Buffer.from([0, 255, 42, 128, 0]);
+    for (const relative of checkpoints) {
+      mkdirSync(path.dirname(path.join(created.path, relative)), { recursive: true });
+      writeFileSync(path.join(created.path, relative), bytes);
+    }
+    const eventsPath = path.join(root, 'artifact-directory-worker-events.jsonl');
+    const script = artifactWorkers.artifactNodeScript();
+    const marker = 'const workerScript = process.argv[1];';
+    const actor = '\nconst workerEvents = ' + JSON.stringify(eventsPath) + ';\n'
+      + "fs.appendFileSync(workerEvents, JSON.stringify({ action: 'start', pid: process.pid }) + '\\n');\n"
+      + "process.on('exit', () => fs.appendFileSync(workerEvents, JSON.stringify({ action: 'end', pid: process.pid }) + '\\n'));\n";
+    const changed = script.replace(marker, marker + actor);
+    expect(changed).not.toBe(script);
+    const spy = vi.spyOn(artifactWorkers, 'artifactNodeScript').mockReturnValue(changed);
+    try {
+      expect(await manager.cleanup(created.id)).toBe(true);
+      expect(existsSync(created.path)).toBe(false);
+      const response = await restoreArtifacts(new NextRequest('http://localhost/api/orchestrator/workspace/preservation', {
+        method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+        body: JSON.stringify({ sourcePacketId: packetId, targetPacketId, paths: checkpoints,
+          clientMutationId: 'artifact-directory-breadth-restore-once' }),
+      }));
+      expect(response.status).toBe(200);
+      for (const relative of checkpoints) expect(readFileSync(path.join(target.created.path, relative))).toEqual(bytes);
+      const live = new Set<number>();
+      let peak = 0;
+      for (const line of readFileSync(eventsPath, 'utf8').trim().split('\n')) {
+        const event = JSON.parse(line) as { action: string; pid: number };
+        if (event.action === 'start') { expect(live.has(event.pid)).toBe(false); live.add(event.pid); }
+        else { expect(event.action).toBe('end'); expect(live.delete(event.pid)).toBe(true); }
+        peak = Math.max(peak, live.size);
+      }
+      expect(peak).toBe(3);
+      expect(live.size).toBe(0);
+    } finally { spy.mockRestore(); }
+    finished = true;
+  }, 60_000);
+
+  it('holds over-deep ignored content before exhausting directory workers', async () => {
+    const packetId = 'artifact-directory-depth';
+    const { manager, created, lane } = await workspace(packetId);
+    const relative = '.o8/' + Array.from({ length: 34 }, () => 'nested').join('/') + '/checkpoint.bin';
+    mkdirSync(path.dirname(path.join(created.path, relative)), { recursive: true });
+    const bytes = Buffer.from([0, 255, 42, 128, 0]);
+    writeFileSync(path.join(created.path, relative), bytes);
+    expect(await manager.cleanup(created.id)).toBe(false);
+    expect(existsSync(created.path)).toBe(true);
+    expect(readFileSync(path.join(created.path, relative))).toEqual(bytes);
+    expect(getWorkspaceSnapshot(repo.id, packetId)?.state).toBe('materialized');
+    expect(getWorkspaceRetentionHold(created.path)).toMatchObject({ packetId, laneId: lane.id });
+    finished = true;
+  }, 60_000);
+
+  it('holds a substituted artifact ancestor without reading its outside files', async () => {
+    const packetId = 'artifact-parent-substitution';
+    const { manager, created, lane } = await workspace(packetId);
+    const relative = '.o8/recovery/nested/checkpoint.bin';
+    mkdirSync(path.dirname(path.join(created.path, relative)), { recursive: true });
+    const originalBytes = Buffer.from([0, 255, 42, 128, 0]);
+    writeFileSync(path.join(created.path, relative), originalBytes);
+    const outside = path.join(root, 'outside-artifact-capture');
+    mkdirSync(outside, { mode: 0o700 });
+    const outsideBytes = Buffer.from('outside capture bytes stay intact');
+    writeFileSync(path.join(outside, 'sentinel.bin'), outsideBytes);
+    const script = artifactWorkers.artifactNodeScript();
+    const marker = '    client = await connectArtifactNode(';
+    const actor = "    if (part === '.o8') {\n"
+      + "      fs.renameSync(part, part + '-retained');\n"
+      + '      fs.symlinkSync(' + JSON.stringify(outside) + ", part, 'dir');\n"
+      + '    }\n';
+    const changed = script.replace(marker, actor + marker);
+    expect(changed).not.toBe(script);
+    const spy = vi.spyOn(artifactWorkers, 'artifactNodeScript').mockReturnValue(changed);
+    try {
+      expect(await manager.cleanup(created.id)).toBe(false);
+      expect(existsSync(created.path)).toBe(true);
+      expect(getWorkspaceSnapshot(repo.id, packetId)?.state).toBe('materialized');
+      expect(getWorkspaceRetentionHold(created.path)).toMatchObject({ packetId, laneId: lane.id });
+      expect(readFileSync(path.join(created.path, '.o8-retained/recovery/nested/checkpoint.bin'))).toEqual(originalBytes);
+      expect(readFileSync(path.join(outside, 'sentinel.bin'))).toEqual(outsideBytes);
+      expect(readdirSync(outside)).toEqual(['sentinel.bin']);
+    } finally { spy.mockRestore(); }
+    finished = true;
+  }, 60_000);
+
+  it('refuses a substituted restore ancestor before changing outside bytes', async () => {
+    const sourcePacketId = 'artifact-restore-parent-source';
+    const source = await workspace(sourcePacketId);
+    const targetPacketId = 'artifact-restore-parent-target';
+    const target = await workspace(targetPacketId);
+    const relative = '.o8/recovery/nested/checkpoint.bin';
+    mkdirSync(path.dirname(path.join(source.created.path, relative)), { recursive: true });
+    writeFileSync(path.join(source.created.path, relative), Buffer.from([0, 255, 42, 128, 0]));
+    expect(await source.manager.cleanup(source.created.id)).toBe(true);
+    const outside = path.join(root, 'outside-artifact-restore');
+    mkdirSync(outside, { mode: 0o700 });
+    const outsideBytes = Buffer.from('outside restore bytes stay intact');
+    writeFileSync(path.join(outside, 'sentinel.bin'), outsideBytes);
+    const script = artifactWorkers.artifactNodeScript();
+    const marker = '    client = await connectArtifactNode(';
+    const actor = "    if (part === '.o8') {\n"
+      + "      fs.renameSync(part, part + '-retained');\n"
+      + '      fs.symlinkSync(' + JSON.stringify(outside) + ", part, 'dir');\n"
+      + '    }\n';
+    const changed = script.replace(marker, actor + marker);
+    expect(changed).not.toBe(script);
+    const spy = vi.spyOn(artifactWorkers, 'artifactNodeScript').mockReturnValue(changed);
+    try {
+      const response = await restoreArtifacts(new NextRequest('http://localhost/api/orchestrator/workspace/preservation', {
+        method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+        body: JSON.stringify({ sourcePacketId, targetPacketId, paths: [relative],
+          clientMutationId: 'artifact-restore-parent-substitution-once' }),
+      }));
+      expect(response.status).toBe(409);
+      expect(readFileSync(path.join(outside, 'sentinel.bin'))).toEqual(outsideBytes);
+      expect(readdirSync(outside)).toEqual(['sentinel.bin']);
+      expect(existsSync(path.join(target.created.path, '.o8-retained'))).toBe(true);
+      expect(existsSync(path.join(target.created.path, '.o8-retained/recovery/nested/checkpoint.bin'))).toBe(false);
+      expect(existsSync(target.created.path)).toBe(true);
+      expect(getWorkspaceSnapshot(repo.id, targetPacketId)?.state).not.toBe('retired');
+    } finally { spy.mockRestore(); }
     finished = true;
   }, 60_000);
 
