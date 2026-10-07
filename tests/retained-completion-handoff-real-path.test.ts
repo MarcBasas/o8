@@ -65,6 +65,7 @@ const { readCompletionHandoff } = await import('@/lib/workspace/completion-hando
 // Establish the actual owned-session root registry before supplying the
 // transcript-only provider fixture. The production liveness probe stays real.
 const { registerRuntime } = await import('@/lib/runtimes');
+const { resetOwnedSessionIndex } = await import('@/lib/runtimes/shared/owned-session-index');
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 }).trim();
@@ -156,6 +157,8 @@ async function fixture(retained = true) {
       packetId, cwd: workspacePath, version: 1, verifiedAt: completedAt },
   };
   writeFileSync(join(sessionDir, 'session.json'), JSON.stringify(session));
+  // Read each directly published fixture session from current persisted evidence.
+  resetOwnedSessionIndex();
   const exitEvent = recordLaneEvent(lane.id, 'runtime_process_exit', 'system', { surfaceId: sessionKey, exitCode: 0 });
   const evidence = `tracked.txt:1; lane event ${exitEvent.id}; provider session ${sessionKey}`;
   const transcriptText = `${summary}\n<self-review>${JSON.stringify({ passed: true, confidence: 'high',
