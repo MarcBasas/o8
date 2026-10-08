@@ -43,6 +43,7 @@ import {
 import { SettingsNavItem } from './settings/SettingsNavItem';
 import { useSettingsSectionNavigation } from './settings/useSettingsSectionNavigation';
 import { GeneralTab } from './settings/GeneralTab';
+import { AccountTab } from './settings/AccountTab';
 import type { GitHubConnectionProps } from './settings/GitHubTab';
 import { GitPrsTab } from './settings/GitPrsTab';
 import { IndexingTab } from './settings/IndexingTab';
@@ -81,6 +82,10 @@ function GearNavIcon({ size = 16 }: { size?: number }) {
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </svg>
   );
+}
+
+function AccountNavIcon() {
+  return <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" style={{ display: 'block', flexShrink: 0 }}><circle cx="12" cy="8" r="4" /><path d="M4 21v-2a8 8 0 0 1 16 0v2" /></svg>;
 }
 
 function CpuNavIcon({ size = 16 }: { size?: number }) {
@@ -557,6 +562,7 @@ export function SettingsPage({ initialTab = 'general', onClose }: { initialTab?:
           <>
           <SectionHeader>General</SectionHeader>
           <SettingsNavItem label="General" icon={<GearNavIcon />} active={activeTab === 'general'} tab="general" openTab={openNavTab} onOpen={setOpenNavTab} onNavigate={navigate} />
+          <SettingsNavItem label="Account" icon={<AccountNavIcon />} active={activeTab === 'account'} tab="account" openTab={openNavTab} onOpen={setOpenNavTab} onNavigate={navigate} />
           <SettingsNavItem label="Appearance" icon={<PaletteIcon />} active={activeTab === 'appearance'} tab="appearance" openTab={openNavTab} onOpen={setOpenNavTab} onNavigate={navigate} />
           <SettingsNavItem label="Voice" icon={<MicIcon />} active={activeTab === 'voice'} tab="voice" openTab={openNavTab} onOpen={setOpenNavTab} onNavigate={navigate} />
           <SettingsNavItem label="Permissions" icon={<ShieldNavIcon />} active={activeTab === 'permissions'} tab="permissions" openTab={openNavTab} onOpen={setOpenNavTab} onNavigate={navigate} />
@@ -608,6 +614,7 @@ export function SettingsPage({ initialTab = 'general', onClose }: { initialTab?:
           {activeTab === 'general' && (
             <GeneralTab onNavigateTab={setActiveTab} />
           )}
+          {activeTab === 'account' && <AccountTab />}
           {activeTab === 'local-models' && <LocalModelsTab />}
           {activeTab === 'api-keys' && (
             <APIKeysTab />

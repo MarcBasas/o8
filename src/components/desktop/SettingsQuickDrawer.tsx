@@ -8,28 +8,17 @@ import {
   ChevronDown,
   ChevronRight,
   CircleUser,
-  Cpu,
   Download,
   ExternalLink,
   Gauge,
   Globe,
-  LogOut,
   MessageSquare,
   Settings2,
 } from './lucide-shims';
-import { useO8Auth, type O8AuthState } from '@/components/auth/O8AuthProvider';
-import {
-  clearDesktopAuthError,
-  getDesktopAuthError,
-  subscribeDesktopAuthError,
-  type DesktopAuthError,
-} from '@/lib/auth/desktop-auth-error';
 import { useTheme } from '@/lib/theme/context';
-import { useEntitlement } from '@/lib/entitlement/context';
-import { PLAN_LABELS } from '@/lib/entitlement/display';
 import { openExternalUrl } from '@/lib/desktop/open-external';
-import { SignInErrorCard } from '@/components/desktop/SignInErrorCard';
-import { ThemeContrastGlyph, AppearanceControl } from './settings-quick-drawer/theme-rows';
+import { OPEN_KEYBOARD_SHORTCUTS_EVENT, OPEN_SETTINGS_TAB_EVENT } from '@/lib/desktop/events';
+import { ThemeContrastGlyph } from './settings-quick-drawer/theme-rows';
 import { CapacityRows, capacitySummary } from './settings-quick-drawer/capacity-rows';
 
 const FONT = 'var(--font-sans-system)';
@@ -50,10 +39,12 @@ const MUTED = 'var(--t-text-muted, #64748b)';
 const FAINT = 'color-mix(in srgb, var(--t-text-muted, #64748b) 62%, transparent)';
 
 interface SettingsQuickDrawerProps {
+  id?: string;
   open: boolean;
   anchorRect: DOMRect | null;
   onClose: () => void;
   onOpenSettings: () => void;
+  onOpenShortcuts?: () => void;
 }
 
 type UsageState =
@@ -145,181 +136,24 @@ function separatorStyle(): CSSProperties {
   };
 }
 
-/** Lifetime mark on the drawer account row: a quiet dot and tabular serial.
- *  The plan name lives in the tooltip. Hides while View-as-free is active
- *  because the effective entitlement's `founder` goes null under the override. */
-const FOUNDER_ORANGE = '#ff5a1f';
-
-function FoundingSerialChip({ operatorNumber }: { operatorNumber: number }) {
-  const serial = String(operatorNumber).padStart(3, '0');
-  return (
-    <div
-      title={`${PLAN_LABELS.founder} · No. ${serial}`}
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        marginRight: 5,
-        userSelect: 'none',
-        whiteSpace: 'nowrap',
-        flexShrink: 0,
-      }}
-    >
-      <span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: 999, background: FOUNDER_ORANGE, opacity: 0.9, flexShrink: 0 }} />
-      <span
-        style={{
-          fontFamily: 'var(--font-sans-system)',
-          fontSize: 10.5,
-          fontWeight: 400,
-          letterSpacing: '0.08em',
-          color: 'var(--t-text-muted)',
-          fontVariantNumeric: 'tabular-nums',
-        }}
-      >
-        {serial}
-      </span>
-    </div>
-  );
-}
-
-/**
- * Identity header for the quick drawer. Signed-out is a complete local profile;
- * account sign-in stays available as an optional account action.
- */
-function AccountSection({ auth }: { auth: O8AuthState }) {
-  const { founder } = useEntitlement();
-  const [authError, setAuthError] = useState<DesktopAuthError | null>(() => getDesktopAuthError());
-  const [signingOut, setSigningOut] = useState(false);
-  const [waitingForSignOut, setWaitingForSignOut] = useState(false);
-  const [signOutError, setSignOutError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!signingOut) return;
-    const timer = window.setTimeout(() => setWaitingForSignOut(true), 3000);
-    return () => window.clearTimeout(timer);
-  }, [signingOut]);
-
-  const signOut = async () => {
-    if (signingOut) return;
-    setSigningOut(true);
-    setWaitingForSignOut(false);
-    setSignOutError(null);
-    try { await auth.signOut(); } catch {
-      setSignOutError('Sign-out could not be saved. Try again.');
-    } finally {
-      setSigningOut(false);
-    }
-  };
-
-  useEffect(() => {
-    return subscribeDesktopAuthError(() => {
-      setAuthError(getDesktopAuthError());
-    });
-  }, []);
-
-  useEffect(() => {
-    if (auth.signedIn && authError) clearDesktopAuthError();
-  }, [auth.signedIn, authError]);
-
-  if (!auth.signedIn) {
-    return (
-      <>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 7px 1px', minWidth: 0 }}>
-          <IconFrame><Cpu size={15} /></IconFrame>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ color: 'var(--t-text-faint)', fontSize: 9.5, fontWeight: 260, letterSpacing: '-0.4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              Local desktop profile
-            </div>
-            <div style={{ color: TEXT, fontSize: 13.5, fontWeight: 300, letterSpacing: '-0.1px', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              Free
-            </div>
-          </div>
-          {founder ? <FoundingSerialChip operatorNumber={founder.operatorNumber} /> : null}
-        </div>
-        {auth.clerkEnabled ? (
-          <RowButton onClick={auth.signIn}>
-            <IconFrame><CircleUser size={13} /></IconFrame>
-            <span style={{ flex: 1, color: TEXT, fontSize: 13.5, fontWeight: 300, letterSpacing: '-0.1px' }}>Sign in to o8</span>
-          </RowButton>
-        ) : null}
-        {authError ? <SignInErrorCard key={authError.id} authError={authError} onRetry={auth.signIn} /> : null}
-        <div style={separatorStyle()} />
-      </>
-    );
-  }
-
-  const user = auth.user;
-  const displayName = user?.name || user?.email || 'Signed in';
-  return (
-    <>
-      {/* The identity header IS the manage-account affordance (Q ruling
-          2026-07-16): a separate "Manage account" row doubled the same verb
-          and made the drawer taller. Clicking your own name/avatar opens
-          account management — one row shorter. */}
-      <RowButton onClick={auth.openManageAccount}>
-        {user?.avatarUrl ? (
-          <div
-            aria-hidden="true"
-            style={{
-              width: 26,
-              height: 26,
-              borderRadius: 999,
-              flexShrink: 0,
-              backgroundImage: `url("${user.avatarUrl}")`,
-              backgroundSize: 'cover',
-              backgroundPosition: 'center',
-              border: `1px solid ${BORDER}`,
-            }}
-          />
-        ) : (
-          <IconFrame><CircleUser size={15} /></IconFrame>
-        )}
-        <div style={{ flex: 1, minWidth: 0, paddingTop: 2, paddingBottom: 1 }}>
-          <div style={{ color: TEXT, fontSize: 13.5, fontWeight: 300, letterSpacing: '-0.1px', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {displayName}
-          </div>
-          {user?.email ? (
-            <div style={{ color: 'var(--t-text-faint)', fontSize: 9.5, fontWeight: 260, letterSpacing: '-0.4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {user.email}
-            </div>
-          ) : null}
-        </div>
-        {founder ? <FoundingSerialChip operatorNumber={founder.operatorNumber} /> : null}
-      </RowButton>
-
-      <div style={separatorStyle()} />
-
-      <RowButton onClick={() => { void signOut(); }} disabled={signingOut}>
-        <IconFrame><LogOut size={13} /></IconFrame>
-        <span style={{ flex: 1, color: TEXT, fontSize: 13.5, fontWeight: 300, letterSpacing: '-0.1px' }}>{signingOut ? waitingForSignOut ? 'Waiting for sign-out…' : 'Signing out…' : 'Sign out'}</span>
-      </RowButton>
-      {signOutError ? (
-        <div role="alert" style={{ color: MUTED, fontSize: 11, fontWeight: 300, lineHeight: 1.35, paddingTop: 4, paddingBottom: 4, paddingLeft: 7, paddingRight: 7 }}>
-          {signOutError}
-        </div>
-      ) : null}
-
-      <div style={separatorStyle()} />
-    </>
-  );
-}
-
-// The merged Appearance control (palette segments + glass latch) lives in
-// ./settings-quick-drawer/theme-rows.tsx (extracted for the 800-line ceiling).
-
 export function SettingsQuickDrawer({
+  id,
   open,
   anchorRect,
   onClose,
   onOpenSettings,
+  onOpenShortcuts,
 }: SettingsQuickDrawerProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [mounted, setMounted] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [usageState, setUsageState] = useState<UsageState>({ status: 'idle', snapshot: null, error: null });
-  const auth = useO8Auth();
-  const { paletteId, setPalette, surface, setReduceTransparency, workspaceGlass, setWorkspaceGlass } = useTheme();
+  const { paletteId, workspaceGlass } = useTheme();
+  const openSettingsTab = (tab: string) => {
+    onClose();
+    window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_TAB_EVENT, { detail: { tab } }));
+  };
   // CLI usage telemetry is ungated (Q ruling 2026-07-31, supersedes the #1450
   // founders-mode visibility): it reads the operator's OWN local CLI files, so
   // neither an account nor an entitlement has any business gating it. The
@@ -397,13 +231,32 @@ export function SettingsQuickDrawer({
   }, [loadUsage, open, usageOpen]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !mounted) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusable = () => Array.from(panelRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), [tabindex="0"]') ?? []);
+    focusable()[0]?.focus();
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      } else if (event.key === 'Tab') {
+        const controls = focusable();
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault(); last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault(); first?.focus();
+        }
+      }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, open]);
+    document.addEventListener('keydown', handleKeyDown, true);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown, true);
+      if (previousFocus?.isConnected && !previousFocus.closest('[inert]')) previousFocus.focus();
+    };
+  }, [onClose, open, mounted]);
 
   const panelStyle = useMemo<CSSProperties>(() => {
     const viewportWidth = typeof window === 'undefined' ? 640 : window.innerWidth;
@@ -453,17 +306,23 @@ export function SettingsQuickDrawer({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div ref={panelRef} role="dialog" aria-label="Quick settings" style={panelStyle}>
+      <div id={id} ref={panelRef} role="dialog" aria-modal="true" aria-label="Quick settings" style={panelStyle}>
         <div
           style={{
             maxHeight: 'inherit',
-            overflowY: 'auto',
+            overflowY: 'auto', scrollbarWidth: 'none',
             padding: 7,
             display: 'grid',
             gap: 4,
           }}
         >
-          <AccountSection auth={auth} />
+          <RowButton onClick={() => openSettingsTab('account')}>
+            <IconFrame><CircleUser size={13} /></IconFrame>
+            <span style={{ flex: 1, color: TEXT, fontSize: 13.5, fontWeight: 300, letterSpacing: '-0.1px' }}>Account</span>
+            <ChevronRight size={12} color={MUTED} />
+          </RowButton>
+
+          <div style={separatorStyle()} />
 
           <RowButton onClick={onOpenSettings}>
             <IconFrame><Settings2 size={13} /></IconFrame>
@@ -471,15 +330,12 @@ export function SettingsQuickDrawer({
             <span style={{ color: FAINT, fontFamily: MONO, fontSize: 10, fontWeight: 300, letterSpacing: '0.5px' }}>⌘,</span>
           </RowButton>
 
-          {/* ONE merged Appearance row (Q ruling 2026-07-16): the Light/Dark
-              segments carry the palette, the icon latch after the divider
-              carries glass. Replaced the separate Theme + Glass rows — one
-              row shorter, same one-click reach for every state. */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 30, paddingLeft: 7, paddingRight: 7 }}>
+          <RowButton onClick={() => openSettingsTab('appearance')}>
             <IconFrame><ThemeContrastGlyph /></IconFrame>
             <span style={{ flex: 1, color: TEXT, fontSize: 13.5, fontWeight: 300, letterSpacing: '-0.1px' }}>Appearance</span>
-            <AppearanceControl paletteId={paletteId} setPalette={setPalette} surface={surface} setReduceTransparency={setReduceTransparency} allGlass={workspaceGlass} onLeaveAllGlass={() => setWorkspaceGlass(false)} />
-          </div>
+            <span style={{ color: MUTED, fontSize: 10 }}>{workspaceGlass ? 'All Glass' : paletteId === 'light' ? 'Light Solid' : 'Dark Solid'}</span>
+            <ChevronRight size={12} color={MUTED} />
+          </RowButton>
 
           <div style={separatorStyle()} />
 
@@ -551,6 +407,15 @@ export function SettingsQuickDrawer({
 
           {helpOpen ? (
             <div style={{ display: 'grid', gap: 2, paddingTop: 0, paddingRight: 4, paddingBottom: 3, paddingLeft: 28 }}>
+              <RowButton onClick={() => {
+                onClose();
+                if (onOpenShortcuts) onOpenShortcuts();
+                else window.dispatchEvent(new CustomEvent(OPEN_KEYBOARD_SHORTCUTS_EVENT));
+              }}>
+                <IconFrame><span aria-hidden="true" style={{ fontSize: 12 }}>?</span></IconFrame>
+                <span style={{ flex: 1, color: TEXT, fontSize: 13.5, fontWeight: 300, letterSpacing: '-0.1px' }}>Keyboard shortcuts</span>
+                <span style={{ color: FAINT, fontFamily: MONO, fontSize: 10 }}>⌘/</span>
+              </RowButton>
               <RowButton onClick={() => openExternalUrl(DISCORD_URL)}>
                 <IconFrame><MessageSquare size={13} /></IconFrame>
                 <span style={{ flex: 1, color: TEXT, fontSize: 13.5, fontWeight: 300, letterSpacing: '-0.1px' }}>Community Discord</span>

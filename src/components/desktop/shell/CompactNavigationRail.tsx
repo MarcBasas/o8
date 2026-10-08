@@ -7,6 +7,7 @@ import { SmoothCorners } from '@lisse/react';
 import { AutoFlash, ControlSlider, Delivery, HomeSimple, InputSearch } from 'iconoir-react';
 import { CircleUser, Gauge, GitPullRequest, MessageSquare, Play, Terminal, Settings2 as Settings } from '@/components/desktop/lucide-shims';
 import { useO8Auth } from '@/components/auth/O8AuthProvider';
+import { SettingsQuickDrawer } from '@/components/desktop/SettingsQuickDrawer';
 import type { RuntimeCapacityControlSnapshot } from '@/lib/runtime/capacity-service';
 import type { NavSection } from '@/app/dashboard/types';
 import { TrafficLightsOrSpacer } from './TrafficLights';
@@ -40,7 +41,7 @@ type RailNavAction = 'handoffs' | 'automations' | 'customize' | 'projects';
 
 export function CompactNavigationRail({
   sidebarVisible, onToggleSidebar, activeDestination, glassSurface,
-  onHome, onNewSession, onCreateTerminal, onSearch, onOpenProjects, onOpenSettings, onOpenPRs,
+  onHome, onNewSession, onCreateTerminal, onSearch, onOpenProjects, onOpenSettings, onOpenShortcuts, onOpenPRs,
 }: {
   sidebarVisible: boolean;
   onToggleSidebar: () => void;
@@ -52,9 +53,20 @@ export function CompactNavigationRail({
   onSearch: () => void;
   onOpenProjects: () => void;
   onOpenSettings: () => void;
+  onOpenShortcuts: () => void;
   onOpenPRs: () => void;
 }) {
   const auth = useO8Auth();
+  const profileRef = useRef<HTMLButtonElement | null>(null);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileAnchor, setProfileAnchor] = useState<DOMRect | null>(null);
+  const closeProfile = useCallback(() => setProfileOpen(false), []);
+  useEffect(() => {
+    if (!profileOpen) return;
+    const updateAnchor = () => setProfileAnchor(profileRef.current?.getBoundingClientRect() ?? null);
+    window.addEventListener('resize', updateAnchor);
+    return () => window.removeEventListener('resize', updateAnchor);
+  }, [profileOpen]);
   const isGlass = glassSurface;
   const [usageOpen, setUsageOpen] = useState(false);
   const [usagePosition, setUsagePosition] = useState({ left: 0, bottom: 0 });
@@ -145,7 +157,7 @@ export function CompactNavigationRail({
       style={{
         position: 'fixed',
         top: 44,
-        bottom: 44,
+        bottom: 8,
         left: 8,
         width: 56,
         zIndex: 190,
@@ -275,13 +287,31 @@ export function CompactNavigationRail({
         document.body,
       ) : null}
       <button
+        ref={profileRef}
+        id="o8-profile-menu-button"
         type="button"
-        aria-label={auth.signedIn ? 'Manage o8 account' : 'Sign in to o8'}
-        title={auth.signedIn ? 'Manage o8 account' : auth.clerkEnabled ? 'Sign in to o8' : 'Sign in unavailable in this build'}
-        onClick={() => { if (auth.signedIn) auth.openManageAccount(); else if (auth.clerkEnabled) auth.signIn(); }}
+        aria-label="Open quick settings"
+        aria-haspopup="dialog"
+        aria-expanded={profileOpen}
+        aria-controls={profileOpen ? 'o8-rail-quick-settings' : undefined}
+        title="Quick settings"
+        onClick={() => {
+          setUsageOpen(false);
+          profileRef.current?.focus();
+          setProfileAnchor(profileRef.current?.getBoundingClientRect() ?? null);
+          setProfileOpen((open) => !open);
+        }}
         style={{ ...railButton, flexShrink: 0, color: auth.signedIn ? 'var(--t-text)' : 'var(--t-text-muted)' }}
       >{auth.signedIn && auth.user?.avatarUrl ? <Image src={auth.user.avatarUrl} alt="" width={27} height={27} unoptimized style={{ width: 27, height: 27, borderRadius: '50%', objectFit: 'cover' }} /> : <CircleUser size={22} strokeWidth={1.7} />}</button>
     </nav>
+    <SettingsQuickDrawer
+      id="o8-rail-quick-settings"
+      open={profileOpen}
+      anchorRect={profileAnchor}
+      onClose={closeProfile}
+      onOpenSettings={() => { closeProfile(); onOpenSettings(); }}
+      onOpenShortcuts={onOpenShortcuts}
+    />
     </>
   );
 }

@@ -4,6 +4,7 @@ import type { SettingsTab } from './shared';
 // Once a tab is active, the menu reads its rendered section markers instead.
 const SECTIONS: Partial<Record<SettingsTab, string[]>> = {
   general: ['Plan', 'Presentation', 'Privacy'],
+  account: ['Profile'],
   appearance: ['Theme'],
   'api-keys': ['Provider keys', 'Symon & voice keys', 'Key storage'],
   'local-models': ['Local models'],

@@ -10,6 +10,7 @@ import type { O8AuthState } from '@/components/auth/O8AuthProvider';
 
 const mocks = vi.hoisted(() => ({
   signedIn: false,
+  userLoaded: true,
   user: null as { id: string; reload: () => Promise<void> } | null,
   clerk: {} as Record<string, unknown>,
   signIn: {} as Record<string, unknown>,
@@ -19,7 +20,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('@clerk/nextjs', () => ({
   ClerkProvider: ({ children }: { children: unknown }) => children,
-  useUser: () => ({ isLoaded: true, isSignedIn: mocks.signedIn, user: mocks.user }),
+  useUser: () => ({ isLoaded: mocks.userLoaded, isSignedIn: mocks.signedIn, user: mocks.user }),
   useClerk: () => mocks.clerk,
   useSignIn: () => ({ signIn: mocks.signIn }),
 }));
@@ -42,6 +43,7 @@ vi.mock('@/lib/auth/tauri-clerk-store', async (original) => ({
 
 let dataDir: string;
 let root: Root;
+let host: HTMLDivElement;
 let state: O8AuthState;
 let render: () => void;
 let fetchMock: ReturnType<typeof vi.fn<(input: string, init?: RequestInit) => Promise<Response>>>;
@@ -53,19 +55,19 @@ function localRequest(input: string, init?: RequestInit) {
   });
 }
 
-async function mount(withDrawer = false) {
+async function mount(withAccount = false) {
   const { O8AuthProvider, useO8Auth } = await import('@/components/auth/O8AuthProvider');
-  const Drawer = withDrawer ? (await import('@/components/desktop/SettingsQuickDrawer')).SettingsQuickDrawer : null;
+  const Account = withAccount ? (await import('@/components/desktop/settings/AccountTab')).AccountTab : null;
   const Probe = () => {
     const value = useO8Auth();
     useEffect(() => { state = value; }, [value]);
     return null;
   };
-  root = createRoot(document.createElement('div'));
+  host = document.createElement('div');
+  document.body.append(host);
+  root = createRoot(host);
   render = () => root.render(createElement(O8AuthProvider, null, createElement(Fragment, null,
-    createElement(Probe), Drawer && createElement(Drawer, {
-      open: true, anchorRect: null, onClose: () => {}, onOpenSettings: () => {},
-    }),
+    createElement(Probe), Account && createElement(Account),
   )));
   await act(async () => { render(); });
 }
@@ -95,6 +97,7 @@ async function deliver(raw: string) {
 beforeEach(() => {
   vi.resetModules();
   mocks.signedIn = false;
+  mocks.userLoaded = true;
   mocks.user = null;
   mocks.opened.mockClear();
   mocks.ticket.mockClear();
@@ -140,6 +143,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await act(async () => { root?.unmount(); });
+  host?.remove();
   delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
   rmSync(dataDir, { recursive: true, force: true });
   vi.unstubAllEnvs();
@@ -147,6 +151,19 @@ afterEach(async () => {
 });
 
 describe('round 2 handoff through the native provider, real callback handler and persisted route state', () => {
+  it('opens native sign-in from Account settings while the account SDK is still loading', async () => {
+    mocks.userLoaded = false;
+    await mount(true);
+    const button = [...host.querySelectorAll('button')].find((element) => element.textContent?.trim() === 'Sign in to o8');
+    expect(button).toBeDefined();
+    await act(async () => {
+      button!.click();
+      await vi.waitFor(() => expect(mocks.opened).toHaveBeenCalledOnce());
+    });
+    expect(state.signedIn).toBe(false);
+    expect(new URL(String(mocks.opened.mock.calls[0][0])).searchParams.has('state')).toBe(true);
+  });
+
   it('rejects a delayed callback from a handoff begun before explicit sign-out', async () => {
     await mount();
     const raw = await beginHandoff();

@@ -74,6 +74,7 @@ import {
   FOCUS_REPO_WORKSPACE_TAB_EVENT,
   OPEN_MOBILE_PAIRING_EVENT,
   OPEN_SETTINGS_TAB_EVENT,
+  OPEN_KEYBOARD_SHORTCUTS_EVENT,
   type OpenSettingsTabDetail,
 } from '@/lib/desktop/events';
 // ApprovalQueuePanel retired — was only consumed by the dead workspace-side-panel ReviewTab.
@@ -1562,8 +1563,13 @@ function DashboardInner() {
       event.preventDefault();
       setShortcutsOpen((current) => !current);
     };
+    const openHelp = () => setShortcutsOpen(true);
     window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    window.addEventListener(OPEN_KEYBOARD_SHORTCUTS_EVENT, openHelp);
+    return () => {
+      window.removeEventListener('keydown', handler);
+      window.removeEventListener(OPEN_KEYBOARD_SHORTCUTS_EVENT, openHelp);
+    };
   }, []);
 
   // Active-workspace switch — clear the owned-session fleet cache so the next
@@ -4081,7 +4087,9 @@ function DashboardInner() {
     if (!settingsTakeoverActive) {
       if (settingsWasOpenRef.current) {
         requestAnimationFrame(() => {
-          workspaceSurfaceRef.current?.querySelector<HTMLTextAreaElement>('textarea:not([disabled])')?.focus();
+          const composer = Array.from(workspaceSurfaceRef.current?.querySelectorAll<HTMLTextAreaElement>('textarea:not([disabled])') ?? [])
+            .find((element) => element.getClientRects().length > 0 && !element.closest('[inert]'));
+          (composer ?? document.getElementById('o8-profile-menu-button'))?.focus();
         });
       }
       settingsWasOpenRef.current = false;
@@ -4523,8 +4531,8 @@ function DashboardInner() {
         </div>
       ) : null}
 
-      {/* Keyboard-shortcuts reference. Opened on ⌘/ or `?`, and from the
-          status-bar `?` button. Only mounts the chunk once requested. */}
+      {/* Keyboard-shortcuts reference. Opened on ⌘/ or `?`, and from
+          Quick settings → Get help. Only mounts the chunk once requested. */}
       {shortcutsOpen ? (
         <Suspense fallback={null}>
           <LazyKeyboardShortcutsOverlay
@@ -5280,6 +5288,7 @@ function DashboardInner() {
         onToggleSidebar={toggleSidebarFromChrome}
         onHome={leaveNavTakeover}
         onOpenSettings={() => handleOpenSettingsTab('general')}
+        onOpenShortcuts={() => setShortcutsOpen(true)}
         onNewSession={() => {
           leaveNavTakeover();
           const repo = leftPanelFocus.view?.selectedRepo
@@ -5316,13 +5325,7 @@ function DashboardInner() {
 
       </div>{/* end center+right row */}
 
-      {/* ── Bottom chrome: transparent status strip with branch + chrome buttons ──
-          Lives INSIDE the center+right column (not page-wide) so the sidebar
-          column beside it runs full-height (Q ruling 2026-07-16). The pill
-          defaults to the project's HEAD branch. When the active
-          orchestrator tab has a worktree pick that targets the same repo,
-          the pill mirrors that branch so MergeActionCluster's PR + lane
-          state (ready / push / merge) tracks the operator's pick. */}
+      {/* Optional development indicator; the workspace uses the full height. */}
       <DesktopStatusBar
         branchName={(() => {
           const projectBranch = globalRepoEntry?.readiness?.currentBranch
@@ -5352,7 +5355,6 @@ function DashboardInner() {
         parkedLanes={parkedLanes}
         onOpenReviewLane={handleOpenReviewLane}
         onOpenAwaitingMerge={handleOpenAwaitingMerge}
-        onOpenShortcuts={() => setShortcutsOpen(true)}
         rightColumnWidth={showRightPanelColumn ? (rightPanelKind === 'o8' ? o8Width : rightWidth) : 0}
       />
       </div>{/* end center+right column */}

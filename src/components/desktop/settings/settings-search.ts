@@ -62,6 +62,7 @@ export function searchSettings(
 
 /** Registry population is generated from the tab inventory — see module doc. */
 export const SETTINGS_SEARCH_REGISTRY: SettingsSearchEntry[] = [
+  { tab: 'account', tabLabel: 'Account', group: 'Profile', label: 'Manage account', description: 'Your o8 profile and sign-in', keywords: ['identity', 'email', 'login', 'sign in', 'sign out'] },
   { tab: 'models', tabLabel: 'Models & providers', group: 'Advanced orchestrator options', label: 'OpenCode fallback model', description: 'Used only when a request supplies no model; composer choices take precedence', keywords: ['opencode', 'orchestrator', 'default'] },
   { tab: 'worktrees', tabLabel: 'Worktrees & storage', group: 'Storage usage', label: 'Space for new tasks', description: 'Free disk space, task reservations, and space available after minimum free space is kept', keywords: ['headroom', 'reserved', 'capacity'] },
   { tab: 'worktrees', tabLabel: 'Worktrees & storage', group: 'Storage usage', label: 'Workspace files', description: 'Disk space used and total file size across repositories', keywords: ['usage', 'allocated', 'logical'] },
