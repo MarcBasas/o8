@@ -124,7 +124,7 @@ export const PrPanel = memo(function PrPanel({ prNumber, repoSlug, repoPath, onC
 
   return (
     <div id={id || panelId} data-pr-detail={detail.number} style={containerStyle} onKeyDown={onKeyDown}>
-      <PrPanelHeader detail={detail} repoSlug={repoSlug} repoPath={repoPath} onRefresh={refresh} onComposerMode={changeComposerMode} onAsk={(prompt) => {
+      <PrPanelHeader detail={detail} repoSlug={repoSlug} repoPath={repoPath} showDiffStats={view.activeTab !== 'changes'} onRefresh={refresh} onComposerMode={changeComposerMode} onAsk={(prompt) => {
         update({ composerMode: 'brain', ...(prompt ? { questionDraft: view.questionDraft ? view.questionDraft + '\n\n' + prompt : prompt } : {}) });
         window.requestAnimationFrame(() => document.getElementById(id || panelId)?.querySelector<HTMLTextAreaElement>('[data-pr-brain-chat] textarea')?.focus({ preventScroll: true }));
       }} />

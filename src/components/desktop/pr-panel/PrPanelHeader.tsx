@@ -6,24 +6,26 @@ import { PrPanelTitle } from './PrPanelTitle';
 import { PrPanelActions } from './PrPanelActions';
 import type { PrComposerMode, PrDetail } from './types';
 
-export const PrPanelHeader = memo(function PrPanelHeader({ detail, repoSlug, repoPath, onRefresh, onAsk, onComposerMode }: {
-  detail: PrDetail; repoSlug?: string | null; repoPath?: string | null; onRefresh: () => void; onAsk: (prompt?: string) => void; onComposerMode: (mode: PrComposerMode) => void;
+export const PrPanelHeader = memo(function PrPanelHeader({ detail, repoSlug, repoPath, showDiffStats, onRefresh, onAsk, onComposerMode }: {
+  detail: PrDetail; repoSlug?: string | null; repoPath?: string | null; showDiffStats: boolean; onRefresh: () => void; onAsk: (prompt?: string) => void; onComposerMode: (mode: PrComposerMode) => void;
 }) {
   const state = detail.mergedAt ? 'Merged' : detail.state.toLowerCase() === 'closed' ? 'Closed' : detail.draft ? 'Draft' : 'Open';
   const stateColor = state === 'Open' ? 'var(--t-success)' : state === 'Closed' ? 'var(--t-danger)' : state === 'Draft' ? 'var(--t-text-muted)' : 'var(--t-accent)';
   const repo = detail.resolvedRepo || repoSlug;
   return <header style={{ display: 'grid', gap: 16, paddingTop: 14, paddingRight: 18, paddingBottom: 16, paddingLeft: 18, borderBottom: '1px solid var(--t-divider-subtle)' }}>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 28 }}>
-      <a href={detail.url} target="_blank" rel="noopener noreferrer" aria-label={`View PR #${detail.number} on GitHub`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, color: 'var(--t-text-muted)', fontSize: 12, textDecoration: 'none' }}>
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{repo || 'Pull request'}</span><span style={{ color: stateColor, flexShrink: 0 }}>#{detail.number}</span><ExternalLink size={12} aria-hidden="true" />
-      </a>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: stateColor, fontSize: 10, marginLeft: 'auto' }}><GitPullRequest size={12} aria-hidden="true" />{state}</span>
+    <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, minHeight: 30 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, maxWidth: '100%', flex: '1 1 220px' }}>
+        <a href={detail.url} target="_blank" rel="noopener noreferrer" aria-label={`View PR #${detail.number} on GitHub`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, color: 'var(--t-text-muted)', fontSize: 12, textDecoration: 'none' }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{repo || 'Pull request'}</span><span style={{ color: stateColor, flexShrink: 0 }}>#{detail.number}</span><ExternalLink size={12} aria-hidden="true" style={{ flexShrink: 0 }} />
+        </a>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: stateColor, fontSize: 10, flexShrink: 0 }}><GitPullRequest size={12} aria-hidden="true" />{state}</span>
+      </div>
+      <PrPanelActions key={`${repo}:${detail.number}:${repoPath || ''}`} detail={detail} repoSlug={repoSlug} repoPath={repoPath} onRefresh={onRefresh} onAsk={onAsk} onComposerMode={onComposerMode} />
     </div>
-    <PrPanelActions key={`${repo}:${detail.number}:${repoPath || ''}`} detail={detail} repoSlug={repoSlug} repoPath={repoPath} onRefresh={onRefresh} onAsk={onAsk} onComposerMode={onComposerMode} />
     <PrPanelTitle title={detail.title} author={detail.author} avatarUrl={detail.avatarUrl} updatedAt={detail.updatedAt} />
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, fontSize: 11, color: 'var(--t-text-muted)' }}>
       <span title={`${detail.baseRefName} ← ${detail.headRefName}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, minWidth: 0, maxWidth: '100%', fontFamily: 'var(--font-mono)' }}><span style={{ color: 'var(--t-text-secondary)', flexShrink: 0 }}>{detail.baseRefName}</span><span aria-hidden="true">←</span><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{detail.headRefName}</span></span>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}><span>{detail.changedFiles} file{detail.changedFiles === 1 ? '' : 's'}</span><span style={{ color: 'var(--t-success)' }}>+{detail.additions.toLocaleString()}</span><span style={{ color: 'var(--t-danger)' }}>−{detail.deletions.toLocaleString()}</span></span>
+      {showDiffStats ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}><span>{detail.changedFiles} file{detail.changedFiles === 1 ? '' : 's'}</span><span style={{ color: 'var(--t-success)' }}>+{detail.additions.toLocaleString()}</span><span style={{ color: 'var(--t-danger)' }}>−{detail.deletions.toLocaleString()}</span></span> : null}
     </div>
   </header>;
 });

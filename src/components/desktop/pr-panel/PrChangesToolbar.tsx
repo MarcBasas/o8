@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, type CSSProperties } from 'react';
 import { useTheme } from '@/lib/theme/context';
+import { getPalette } from '@/lib/theme/registry';
 import { PrFileTree } from './PrFileTree';
 import type { PrFile } from './types';
 
@@ -16,13 +17,15 @@ export function PrChangesToolbar({ files, totalFiles, additions, deletions, allO
 }) {
   const id = useId(); const trigger = useRef<HTMLButtonElement>(null); const tree = useRef<HTMLDivElement>(null); const toolbar = useRef<HTMLDivElement>(null);
   const { workspaceGlass } = useTheme();
+  // Back the glass tint with an opaque palette surface so scrolled text cannot show through.
+  const backing = workspaceGlass ? getPalette('dark').solidTokens['--t-panel-solid'] : 'var(--t-panel-solid)';
   useEffect(() => {
     if (!treeOpen) return;
     const close = (event: PointerEvent) => { if (!toolbar.current?.contains(event.target as Node)) onTreeOpenChange?.(false); };
     document.addEventListener('pointerdown', close); return () => document.removeEventListener('pointerdown', close);
   }, [treeOpen, onTreeOpenChange]);
-  return <div ref={toolbar} data-pr-changes-toolbar style={{ position: 'sticky', top: 0, zIndex: 3, background: workspaceGlass ? 'var(--t-popover-surface)' : 'var(--t-panel-solid)', backdropFilter: workspaceGlass ? 'blur(22px) saturate(1.2)' : 'none', WebkitBackdropFilter: workspaceGlass ? 'blur(22px) saturate(1.2)' : 'none', borderBottom: '1px solid var(--t-divider-subtle)' }}>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 9, height: 40, boxSizing: 'border-box', paddingTop: 6, paddingRight: 12, paddingBottom: 6, paddingLeft: 14 }}>
+  return <div ref={toolbar} data-pr-changes-toolbar style={{ position: 'sticky', top: 0, zIndex: 3, background: workspaceGlass ? `var(--t-popover-surface), linear-gradient(${backing}, ${backing})` : backing, backdropFilter: workspaceGlass ? 'blur(22px) saturate(1.2)' : 'none', WebkitBackdropFilter: workspaceGlass ? 'blur(22px) saturate(1.2)' : 'none', borderBottom: '1px solid var(--t-divider-subtle)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 40, boxSizing: 'border-box', paddingTop: 6, paddingRight: 18, paddingBottom: 6, paddingLeft: 18 }}>
       <span style={{ fontSize: 11, color: 'var(--t-text-muted)', whiteSpace: 'nowrap' }}>{totalFiles} file{totalFiles === 1 ? '' : 's'}</span>
       <span aria-label={`${additions} additions, ${deletions} deletions`} style={{ display: 'inline-flex', gap: 5, fontSize: 11, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}><span style={{ color: 'var(--t-success)' }}>+{additions.toLocaleString()}</span><span style={{ color: 'var(--t-danger)' }}>−{deletions.toLocaleString()}</span></span>
       <span style={{ flex: 1 }} />

@@ -9,7 +9,7 @@ export const PrPanelTitle = memo(function PrPanelTitle({ title, author, avatarUr
   title: string; author: string; avatarUrl?: string | null; updatedAt: string;
 }) {
   const timestamp = Date.parse(updatedAt);
-  return <div style={{ display: 'grid', gap: 10 }}>
+  return <div style={{ display: 'grid', gap: 6 }}>
     <h2 style={{ margin: 0, fontSize: 15, fontWeight: 350, letterSpacing: '-0.1px', lineHeight: 1.4, overflowWrap: 'anywhere' }}>{title}</h2>
     <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--t-text-secondary)' }}>
       {avatarUrl ? <Image src={avatarUrl} alt="" width={20} height={20} unoptimized style={{ borderRadius: '50%' }} /> : <CircleUser size={20} aria-hidden="true" />}
