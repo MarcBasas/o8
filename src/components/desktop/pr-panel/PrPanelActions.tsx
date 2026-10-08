@@ -54,7 +54,7 @@ export function PrPanelActions({ detail, repoSlug, repoPath, onRefresh, onAsk, o
     const done = await write.post('', action.action, action.head, action.method);
     if (done && mounted.current) { setConfirmation(null); onRefresh(); setNotice(action.action === 'merge' ? 'Pull request merged.' : action.action === 'close' ? 'Pull request closed.' : action.action === 'enable-auto-merge' ? 'Auto-merge enabled.' : action.action === 'disable-auto-merge' ? 'Auto-merge disabled.' : action.action === 'draft' ? 'Converted to draft.' : 'Ready for review.'); }
   };
-  return <div ref={root} data-pr-actions style={{ position: 'relative', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 7 }}>
+  return <div ref={root} data-pr-actions style={{ position: 'relative', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
     <PrActionMenu label="Check out pull request" disabled={busy} items={[
       { label: 'Create review workspace…', disabled: !repoPath || !detail.headSha || blocked, onSelect: () => prepare('checkout', 'Check out in a new workspace') },
       { label: 'Copy checkout command', disabled: !repo, onSelect: () => void copy(`gh pr checkout ${detail.number} --repo ${repo}`, 'Checkout command copied.') },
