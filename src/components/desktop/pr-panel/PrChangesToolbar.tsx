@@ -2,7 +2,6 @@
 
 import { useEffect, useId, useRef, type CSSProperties } from 'react';
 import { useTheme } from '@/lib/theme/context';
-import { getPalette } from '@/lib/theme/registry';
 import { PrFileTree } from './PrFileTree';
 import type { PrFile } from './types';
 
@@ -17,14 +16,12 @@ export function PrChangesToolbar({ files, totalFiles, additions, deletions, allO
 }) {
   const id = useId(); const trigger = useRef<HTMLButtonElement>(null); const tree = useRef<HTMLDivElement>(null); const toolbar = useRef<HTMLDivElement>(null);
   const { workspaceGlass } = useTheme();
-  // Back the glass tint with an opaque palette surface so scrolled text cannot show through.
-  const backing = workspaceGlass ? getPalette('dark').solidTokens['--t-panel-solid'] : 'var(--t-panel-solid)';
   useEffect(() => {
     if (!treeOpen) return;
     const close = (event: PointerEvent) => { if (!toolbar.current?.contains(event.target as Node)) onTreeOpenChange?.(false); };
     document.addEventListener('pointerdown', close); return () => document.removeEventListener('pointerdown', close);
   }, [treeOpen, onTreeOpenChange]);
-  return <div ref={toolbar} data-pr-changes-toolbar style={{ position: 'sticky', top: 0, zIndex: 3, background: workspaceGlass ? `var(--t-popover-surface), linear-gradient(${backing}, ${backing})` : backing, backdropFilter: workspaceGlass ? 'blur(22px) saturate(1.2)' : 'none', WebkitBackdropFilter: workspaceGlass ? 'blur(22px) saturate(1.2)' : 'none', borderBottom: '1px solid var(--t-divider-subtle)' }}>
+  return <div ref={toolbar} data-pr-changes-toolbar style={{ position: 'relative', flexShrink: 0, zIndex: 3, background: 'var(--t-panel)', borderBottom: '1px solid var(--t-divider-subtle)' }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 40, boxSizing: 'border-box', paddingTop: 6, paddingRight: 18, paddingBottom: 6, paddingLeft: 18 }}>
       <span style={{ fontSize: 11, color: 'var(--t-text-muted)', whiteSpace: 'nowrap' }}>{totalFiles} file{totalFiles === 1 ? '' : 's'}</span>
       <span aria-label={`${additions} additions, ${deletions} deletions`} style={{ display: 'inline-flex', gap: 5, fontSize: 11, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}><span style={{ color: 'var(--t-success)' }}>+{additions.toLocaleString()}</span><span style={{ color: 'var(--t-danger)' }}>−{deletions.toLocaleString()}</span></span>
@@ -35,6 +32,6 @@ export function PrChangesToolbar({ files, totalFiles, additions, deletions, allO
       </div> : null}
       {onTreeOpenChange ? <button ref={trigger} id={`${id}-trigger`} type="button" aria-label="Changed file tree" title="Changed file tree" aria-expanded={treeOpen} aria-controls={treeOpen ? id : undefined} onClick={() => { const next = !treeOpen; onTreeOpenChange(next); if (next) window.requestAnimationFrame(() => tree.current?.querySelector<HTMLElement>('summary,button')?.focus()); }} style={{ ...iconStyle, color: treeOpen ? 'var(--t-text)' : 'var(--t-text-muted)', background: treeOpen ? 'var(--t-hover)' : 'transparent' }}><Glyph kind="tree" /></button> : null}
     </div>
-    {treeOpen ? <div ref={tree} id={id} role="region" aria-labelledby={`${id}-trigger`} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onTreeOpenChange?.(false); trigger.current?.focus(); } }} style={{ position: 'absolute', right: 12, top: 46, width: 'min(360px, calc(100% - 24px))', maxHeight: 'min(360px, 50vh)', overflowY: 'auto', overscrollBehavior: 'contain', border: '1px solid var(--t-border)', borderRadius: 12, background: 'var(--t-popover-surface)', color: 'var(--t-text)', boxShadow: 'var(--t-panel-shadow)', backdropFilter: 'blur(22px) saturate(1.2)' }}><PrFileTree files={files} collapsedFolders={collapsedFolders} onToggleFolder={onToggleFolder || (() => {})} onSelect={(path) => { onTreeOpenChange?.(false); onNavigate?.(path); }} /></div> : null}
+    {treeOpen ? <div ref={tree} id={id} role="region" aria-labelledby={`${id}-trigger`} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onTreeOpenChange?.(false); trigger.current?.focus(); } }} style={{ position: 'absolute', right: 12, top: 46, width: 'min(360px, calc(100% - 24px))', maxHeight: 'min(360px, 50vh, max(80px, calc(100cqh - var(--pr-composer-occlusion, 60px) - 70px)))', overflowY: 'auto', overscrollBehavior: 'contain', border: '1px solid var(--t-border)', borderRadius: 12, background: 'var(--t-popover-surface)', color: 'var(--t-text)', boxShadow: 'var(--t-panel-shadow)', backdropFilter: workspaceGlass ? 'blur(22px) saturate(1.2)' : 'none', WebkitBackdropFilter: workspaceGlass ? 'blur(22px) saturate(1.2)' : 'none' }}><PrFileTree files={files} collapsedFolders={collapsedFolders} onToggleFolder={onToggleFolder || (() => {})} onSelect={(path) => { onTreeOpenChange?.(false); onNavigate?.(path); }} /></div> : null}
   </div>;
 }

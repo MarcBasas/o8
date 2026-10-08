@@ -38,6 +38,7 @@ export function PrBrainComposer({ detail, repoSlug, repoPath, draft, onDraftChan
   const selectedCommand = Math.min(commandIndex, Math.max(0, (matches?.length || 0) - 1));
   const chooseCommand = (next: PrComposerMode) => { setCommandDismissed(true); onModeChange?.(next, ''); };
   const input = useRef<HTMLTextAreaElement>(null);
+  const surfaceRef = useRef<HTMLElement>(null);
   const transcript = useRef<HTMLDivElement>(null);
   const followBottom = useRef(true);
   const [composerHeight, setComposerHeight] = useState(48);
@@ -45,6 +46,18 @@ export function PrBrainComposer({ detail, repoSlug, repoPath, draft, onDraftChan
   const context = useMemo(() => prBrainContext(detail, repoSlug), [detail, repoSlug]);
   const chat = usePrBrainChat(`${repoSlug || detail.resolvedRepo || ''}:${detail.number}:${repoPath || ''}`, repoPath, context);
   const { workspaceGlass, paletteId } = useTheme();
+  useLayoutEffect(() => {
+    const surface = surfaceRef.current;
+    const panel = surface?.closest<HTMLElement>('[data-pr-detail]');
+    if (!surface || !panel) return;
+    // Native vibrancy blurs the desktop, but may not blur sibling DOM content.
+    // Fade the reading surface beneath this floating sheet without moving its scroll position.
+    const measure = () => panel.style.setProperty('--pr-composer-occlusion', `${surface.getBoundingClientRect().height + 12}px`);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(surface);
+    return () => { observer.disconnect(); panel.style.removeProperty('--pr-composer-occlusion'); };
+  }, []);
   useLayoutEffect(() => {
     if (!input.current) return;
     input.current.style.height = 'auto';
@@ -61,8 +74,8 @@ export function PrBrainComposer({ detail, repoSlug, repoPath, draft, onDraftChan
   const canSend = Boolean(draft.trim() && repoPath && !chat.busy && !showCommands);
   const opaqueTokens = resolveTheme(getPalette(paletteId), 'solid').cssVars;
   const surfaceTokens: CSSProperties = workspaceGlass ? {} : opaqueTokens as CSSProperties;
-  const surface = workspaceGlass ? 'var(--t-popover-surface)' : opaqueTokens['--t-popover-surface'];
-  return <section data-pr-brain-chat data-expanded={expanded} aria-label={`${mode === 'brain' ? 'Brain conversation' : 'GitHub ' + mode} about PR #${detail.number}`} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && expanded) { event.preventDefault(); event.stopPropagation(); collapse(); } }} style={{ ...surfaceTokens, color: 'var(--t-text)', position: 'absolute', left: 14, right: 14, bottom: 12, zIndex: 5, display: 'flex', flexDirection: 'column', height: expanded ? `min(${mode === 'review' ? 340 : mode === 'comment' ? 270 : 380}px, calc(100% - 70px))` : composerHeight + (showCommands ? (matches!.length ? 46 + matches!.length * 45 : 66) : 0), minHeight: 48, maxHeight: 'calc(100% - 70px)', border: '1px solid var(--t-border)', borderRadius: expanded || showCommands ? 18 : 26, background: surface, backdropFilter: workspaceGlass ? 'blur(22px) saturate(1.2)' : 'none', WebkitBackdropFilter: workspaceGlass ? 'blur(22px) saturate(1.2)' : 'none', boxShadow: 'var(--t-panel-shadow)', overflow: 'visible', isolation: 'isolate', transition: showCommands ? 'none' : 'height 180ms cubic-bezier(0.22, 1, 0.36, 1), border-radius 180ms cubic-bezier(0.22, 1, 0.36, 1)' }}>
+  const surface = workspaceGlass ? 'var(--t-glass-elevated)' : opaqueTokens['--t-popover-surface'];
+  return <section ref={surfaceRef} data-pr-brain-chat data-expanded={expanded} aria-label={`${mode === 'brain' ? 'Brain conversation' : 'GitHub ' + mode} about PR #${detail.number}`} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && expanded) { event.preventDefault(); event.stopPropagation(); collapse(); } }} style={{ ...surfaceTokens, color: 'var(--t-text)', position: 'absolute', left: 14, right: 14, bottom: 12, zIndex: 5, display: 'flex', flexDirection: 'column', height: expanded ? `min(${mode === 'review' ? 340 : mode === 'comment' ? 270 : 380}px, calc(100% - 70px))` : composerHeight + (showCommands ? (matches!.length ? 46 + matches!.length * 45 : 66) : 0), minHeight: 48, maxHeight: 'calc(100% - 70px)', border: '1px solid var(--t-border)', borderRadius: expanded || showCommands ? 18 : 26, background: surface, backdropFilter: workspaceGlass ? 'blur(22px) saturate(1.2)' : 'none', WebkitBackdropFilter: workspaceGlass ? 'blur(22px) saturate(1.2)' : 'none', boxShadow: 'var(--t-panel-shadow)', overflow: 'visible', isolation: 'isolate', transition: showCommands ? 'none' : 'height 180ms cubic-bezier(0.22, 1, 0.36, 1), border-radius 180ms cubic-bezier(0.22, 1, 0.36, 1)' }}>
     {mode !== 'brain' && onCommentDraftChange ? <PrCommentComposer detail={detail} repoSlug={repoSlug} mode={mode} onModeChange={onModeChange} draft={mode === 'review' ? reviewDraft : commentDraft} onDraftChange={mode === 'review' ? onReviewDraftChange || (() => {}) : onCommentDraftChange} reviewAction={reviewAction} onReviewActionChange={onReviewActionChange} reviewHeadSha={reviewHeadSha} onReviewHeadChange={onReviewHeadChange} onBrain={() => { onModeChange?.('brain'); chat.expand(); }} onCollapse={collapse} onPosted={onCommentPosted} /> : <>
     {chat.expanded ? <>
       <header style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 40, flexShrink: 0, paddingTop: 0, paddingRight: 10, paddingBottom: 0, paddingLeft: 14, borderBottom: '1px solid var(--t-divider-subtle)' }}>
