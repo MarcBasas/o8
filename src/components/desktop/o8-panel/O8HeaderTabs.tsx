@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { PageEdit } from 'iconoir-react';
 import type { O8Tab } from './types';
@@ -119,14 +119,19 @@ export function O8HeaderTabs({
   activeTab,
   onTabChange,
   ariaLabelPrefix = 'Panel view',
+  opener = false,
+  onNewPage,
 }: {
   activeTab: O8Tab;
   onTabChange: (tab: O8Tab) => void;
   ariaLabelPrefix?: string;
+  opener?: boolean;
+  onNewPage?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
   const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
 
   // prs + compare are contextual surfaces without their own drawer row — show
@@ -136,7 +141,7 @@ export function O8HeaderTabs({
 
   // Portal-fixed drawer under the trigger (the top strip clips absolute
   // children) — same pattern as the composer chip popovers.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open || !anchorRef.current) return;
     const rect = anchorRef.current.getBoundingClientRect();
     const menuWidth = menuRef.current?.offsetWidth ?? 340;
@@ -147,6 +152,7 @@ export function O8HeaderTabs({
       ? below
       : Math.max(8, rect.top - menuHeight - 6);
     setCoords({ top, left });
+    menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
   }, [open]);
 
   useEffect(() => {
@@ -156,7 +162,9 @@ export function O8HeaderTabs({
       if (anchorRef.current?.contains(event.target as Node)) return;
       setOpen(false);
     };
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setOpen(false); triggerRef.current?.focus(); }
+    };
     window.addEventListener('mousedown', onDocDown);
     window.addEventListener('keydown', onKey);
     return () => {
@@ -165,13 +173,25 @@ export function O8HeaderTabs({
     };
   }, [open]);
 
+  const onMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Tab') { setOpen(false); triggerRef.current?.focus(); return; }
+    if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault(); event.stopPropagation();
+    const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') || []);
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (['ArrowDown', 'ArrowRight'].includes(event.key) ? 1 : -1) + items.length) % items.length;
+    items[next]?.focus();
+  };
+
   return (
     <div ref={anchorRef} style={{ position: 'relative', display: 'inline-flex', flexShrink: 0, ['WebkitAppRegion' as string]: 'no-drag' }}>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
-        title="Switch panel view"
-        aria-label={`${ariaLabelPrefix}: ${activeDef.label}`}
+        onKeyDown={(event) => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); } }}
+        title={opener ? 'Open a panel' : 'Switch panel view'}
+        aria-label={opener ? 'Open a panel' : `${ariaLabelPrefix}: ${activeDef.label}`}
         aria-haspopup="menu"
         aria-expanded={open}
         data-no-drag
@@ -179,18 +199,20 @@ export function O8HeaderTabs({
           display: 'inline-flex',
           alignItems: 'center',
           gap: 6,
-          height: 26,
+          height: 28,
+          width: opener ? 28 : undefined,
           paddingTop: 0,
           paddingBottom: 0,
-          paddingLeft: 9,
-          paddingRight: 8,
+          paddingLeft: opener ? 0 : 9,
+          paddingRight: opener ? 0 : 8,
+          justifyContent: 'center',
           border: 'none',
           borderRadius: 7,
           background: open ? 'var(--t-input-bg)' : 'transparent',
           color: O8_ICON_ACTIVE,
           cursor: 'pointer',
           flexShrink: 0,
-          marginTop: -3,
+          marginTop: opener ? 0 : -3,
           transition: 'background 140ms cubic-bezier(0.22, 1, 0.36, 1)',
           WebkitTapHighlightColor: 'transparent',
           ['WebkitAppRegion' as string]: 'no-drag',
@@ -198,6 +220,7 @@ export function O8HeaderTabs({
         onMouseEnter={(event) => { if (!open) event.currentTarget.style.background = 'var(--t-hover)'; }}
         onMouseLeave={(event) => { if (!open) event.currentTarget.style.background = open ? 'var(--t-input-bg)' : 'transparent'; }}
       >
+        {opener ? <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg> : <>
         {/* Browser keeps its brand-orange globe when selected (Q ruling
             2026-07-12) — same accent the TitleBar globe button carries. */}
         {activeDef.icon(activeDef.id === 'browser' ? 'var(--t-brand-orange, #FF5A1F)' : O8_ICON_ACTIVE)}
@@ -216,12 +239,14 @@ export function O8HeaderTabs({
         <svg width={9} height={9} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ opacity: 0.6, flexShrink: 0 }}>
           <path d="M6 9l6 6 6-6" />
         </svg>
+        </>}
       </button>
       {open && typeof document !== 'undefined' ? createPortal(
         <div
           ref={menuRef}
           role="menu"
           aria-label="Panel views"
+          onKeyDown={onMenuKeyDown}
           style={{
             position: 'fixed',
             top: coords?.top ?? 0,
@@ -241,6 +266,7 @@ export function O8HeaderTabs({
             fontFamily: 'var(--font-sans-system)',
           }}
         >
+          {onNewPage ? <button type="button" role="menuitem" tabIndex={-1} onClick={() => { onNewPage(); setOpen(false); triggerRef.current?.focus(); }} style={{ display: 'flex', alignItems: 'center', gap: 9, width: '100%', border: 0, background: 'transparent', color: 'var(--t-text)', fontFamily: 'inherit', fontSize: 12.5, paddingTop: 7, paddingRight: 11, paddingBottom: 7, paddingLeft: 11, cursor: 'pointer', textAlign: 'left' }}><IconGlobe size={15} />New browser page</button> : null}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
             {[O8_TABS.slice(0, 7), O8_TABS.slice(7)].map((group, index) => (
               <div key={index} style={{ minWidth: 0 }}>
@@ -253,6 +279,7 @@ export function O8HeaderTabs({
                     onClick={() => {
                       onTabChange(def.id);
                       setOpen(false);
+                      triggerRef.current?.focus();
                     }}
                   />
                 ))}
@@ -281,6 +308,8 @@ function O8DrawerItem({
     <button
       type="button"
       role="menuitem"
+      tabIndex={-1}
+      aria-current={selected ? 'page' : undefined}
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}

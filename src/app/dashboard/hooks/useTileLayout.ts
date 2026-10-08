@@ -600,6 +600,7 @@ export function useTileLayout({
     switch (tab.kind) {
       case 'issue':
       case 'pr':
+      case 'pull-requests':
       case 'file':
       case 'diff':
       case 'commit':

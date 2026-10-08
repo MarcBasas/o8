@@ -98,7 +98,7 @@ export const SETTINGS_SEARCH_REGISTRY: SettingsSearchEntry[] = [
   { tab: 'about', tabLabel: 'About', group: "Links", label: "GitHub", description: "hurttlocker/o8" },
   { tab: 'about', tabLabel: 'About', group: "Links", label: "Releases", description: "Changelog and downloads" },
   { tab: 'about', tabLabel: 'About', group: "Onboarding", label: "Replay onboarding", description: "Replays the welcome flow (intro, repos, runtimes)" },
-  { tab: 'appearance', tabLabel: 'Appearance', group: "Theme", label: "Workspace theme", description: "Light Solid, Dark Solid, Light Glass, Dark Glass, or All Glass", keywords: ['window chrome', 'palette', 'transparency'] },
+  { tab: 'appearance', tabLabel: 'Appearance', group: "Theme", label: "Workspace theme", description: "Light Solid, Dark Solid, or All Glass", keywords: ['window chrome', 'palette', 'transparency'] },
   { tab: 'appearance', tabLabel: 'Appearance', group: "Theme", label: "All Glass", description: "Glass across the entire window" },
   { tab: 'billing', tabLabel: 'Plan & Billing', label: "Have a license key?", description: "Pro · Lifetime licenses activate here, or just sign in (expander row)" },
   { tab: 'billing', tabLabel: 'Plan & Billing', label: "License key textarea", description: "Paste a signed license for Pro · Lifetime" },

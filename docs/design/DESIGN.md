@@ -1,5 +1,19 @@
 # o8 Desktop — Design Language (v1)
 
+**Scrollbar rule:** no visible scrollbar tracks anywhere in the app. Preserve
+scrolling and keyboard access, keep focus visible, and reserve no scrollbar
+gutter. See [`STYLEGUIDE.md`](./STYLEGUIDE.md) for the shared interaction rules.
+
+Inline code uses theme text tokens, with a restrained cyan for calls and shell
+snippets. Clickable file references use the accent blue. Avoid hardcoded bright
+code colors that compete with links, failures, or the surrounding prose.
+
+Contextual chat grows from its composer inside the current panel. Keep the document
+in view and let it scroll behind the bottom composer. Collapse retains the
+conversation; incoming answers do not reopen it. Use the existing frosted overlay
+tokens in All Glass and opaque palette tokens in other appearances. Avoid launching
+a second popup for the same conversation.
+
 The authoritative reference for styling every surface in the o8 desktop app. A sister spec to the marketing site's THEME.md — shared lineage, different medium.
 
 If you are building or touching any surface in this app, read this first. If a choice is not covered here, derive it from the principles. If a rule here is wrong, update this file before you ship the exception.
@@ -193,7 +207,10 @@ The dashboard composition, from top to bottom:
 └─────────────────────────────────────────────────────┘
 ```
 
-NavRail was retired in epic #1089 — do not reference or reintroduce it.
+Desktop navigation uses `CompactNavigationRail` beside the retained
+`ChatListColumn`. The rail stays visible when the chat list collapses or a
+destination opens. List width and collapse preference are independent of the
+rail. Keep the existing compact mobile shell below the desktop breakpoint.
 
 ### Key containers
 
@@ -201,6 +218,8 @@ NavRail was retired in epic #1089 — do not reference or reintroduce it.
 |---|---|---|
 | Main layout | `src/app/dashboard/page.tsx` | Layout orchestrator — do not expand, keep as thin composer |
 | Agent panel | `src/components/desktop/AgentPanel.tsx` | Left-side repo/agent view |
+| Navigation rail | `src/components/desktop/shell/CompactNavigationRail.tsx` | Permanent desktop destinations; transparent in native glass |
+| Chat list column | `src/components/desktop/shell/ChatListColumn.tsx` | Retained, independently collapsible and resizable |
 | Workspace terminal | `src/components/desktop/workspace-terminal/` | Center tabbed workspace |
 | Orchestrator tab | `workspace-terminal/OrchestratorTab.tsx` | Full-width orchestrator surface |
 | LLM chat | `src/components/desktop/LLMChat.tsx` | Assistant surface |
@@ -432,7 +451,7 @@ Rules that are permanent. No exceptions, no grandfather clauses.
 - **Never bypass the middleware in `src/middleware.ts`** — gates all dangerous API routes on loopback + ws-token.
 - **Never use Material Design patterns** — no borderLeft accents as emphasis, no MD elevation tiers.
 - **Never reintroduce retired orchestrator tile kinds** — `thoughts`, `mission-control`, `orchestrator-history` are deleted. The Orchestrator is a tab inside `WorkspaceTerminal`.
-- **Never add chrome launchers for orchestrator/mission/history** — the NavRail is retired; the status bar bottom is reserved for ports, alerts, settings.
+- **Keep destination launchers in the permanent desktop rail** — reuse existing routing and workspace handlers. The status bar remains reserved for workspace status, ports, and alerts.
 - **Never use native `<select>` or `<input>` inside packet cards** — custom popover rows only.
 
 ### ALWAYS

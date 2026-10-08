@@ -17,7 +17,8 @@ import type { RepoRegistryEntry } from './repo-registry/shared';
 import { refreshProjectsFromExternalMutation, useProjects, type ProjectRecord } from './repo-registry/useProjects';
 import { MessageSquare, Play, Plus, Sparkles, Terminal, type LucideIcon } from './lucide-shims';
 import { MiniAgentPanelAction } from './MiniAgentPanelAction';
-import { AutoFlash, ControlSlider, Delivery, InputSearch } from 'iconoir-react';
+import { MiniAgentPanelNavigation } from './agent-panel/MiniAgentPanelNavigation';
+import { Delivery } from 'iconoir-react';
 import { repoSlugFromRemote } from './canvas-utils';
 import { canCreateOrchestratorForRepo, deriveActiveProjectRepos, deriveAgentPanelRailRepos, resolveGlobalNewSessionRepo } from './agent-panel-repo-selection';
 import { groupProjectNavigationItems, selectWorkingRepository, visibleProjectNavigationItems } from './agent-panel/project-navigation';
@@ -28,15 +29,6 @@ import { dispatchFocusRepoWorkspaceTab } from '@/lib/desktop/events';
 // uses width/height. Tiny wrappers keep the AgentPanel callsite clean.
 const FolderIcon: LucideIcon = ({ size = 24, strokeWidth = 2, color = 'currentColor' }) => (
   <Delivery width={size} height={size} strokeWidth={Number(strokeWidth)} color={color} />
-);
-const SearchIcon: LucideIcon = ({ size = 24, strokeWidth = 2, color = 'currentColor' }) => (
-  <InputSearch width={size} height={size} strokeWidth={Number(strokeWidth)} color={color} />
-);
-const AutomationsIcon: LucideIcon = ({ size = 24, strokeWidth = 2, color = 'currentColor' }) => (
-  <AutoFlash width={size} height={size} strokeWidth={Number(strokeWidth)} color={color} />
-);
-const CustomizeIcon: LucideIcon = ({ size = 24, strokeWidth = 2, color = 'currentColor' }) => (
-  <ControlSlider width={size} height={size} strokeWidth={Number(strokeWidth)} color={color} />
 );
 import {
   AgentPanelEmptyState,
@@ -54,6 +46,7 @@ const MINI_ROW_DIVIDER = '1px solid color-mix(in srgb, var(--t-divider-subtle) 6
 export const AgentPanel = memo(function AgentPanel(props: AgentPanelProps = {}) {
   const {
     activeSessionKey,
+    navigationRail = false,
     selectedRepo,
     selectedRepoLocalPath,
     workingRepoPath,
@@ -260,7 +253,7 @@ export const AgentPanel = memo(function AgentPanel(props: AgentPanelProps = {}) 
         <ConnectionPill />
         <FixedReportCard />
         <UpdateCard />
-        <AccountBlock onOpenSettings={onOpenSettings} onOpenMobilePairing={onOpenMobilePairing} />
+        {!navigationRail ? <AccountBlock onOpenSettings={onOpenSettings} onOpenMobilePairing={onOpenMobilePairing} /> : null}
       </div>
     );
   }
@@ -289,6 +282,7 @@ export const AgentPanel = memo(function AgentPanel(props: AgentPanelProps = {}) 
 
       {projects.activeProject ? (
         <MiniAgentPanelHeader
+          navigationRail={navigationRail}
           onCreateOrchestrator={handleCreateOrchestrator}
           onCreateChat={handleCreateChat}
           onCreateTerminal={handleCreateTerminal}
@@ -423,7 +417,7 @@ export const AgentPanel = memo(function AgentPanel(props: AgentPanelProps = {}) 
             onSelectSession={onSelectSession}
             onOpenHistoryChat={onOpenHistoryChat}
             variant="mini"
-            hideWhenEmpty
+            hideWhenEmpty={false}
             sectionLabel={null}
             sections={PROJECT_HISTORY_SECTIONS}
             showLiveSessions={false}
@@ -453,12 +447,13 @@ export const AgentPanel = memo(function AgentPanel(props: AgentPanelProps = {}) 
       <ConnectionPill />
       <FixedReportCard />
       <UpdateCard />
-      <AccountBlock onOpenSettings={onOpenSettings} onOpenMobilePairing={onOpenMobilePairing} />
+      {!navigationRail ? <AccountBlock onOpenSettings={onOpenSettings} onOpenMobilePairing={onOpenMobilePairing} /> : null}
     </div>
   );
 });
 
 function MiniAgentPanelHeader({
+  navigationRail,
   onCreateOrchestrator,
   onCreateChat,
   onCreateTerminal,
@@ -477,6 +472,7 @@ function MiniAgentPanelHeader({
   onCreateOrchestrator?: () => void;
   onCreateChat?: () => void;
   onCreateTerminal?: () => void;
+  navigationRail: boolean;
   onSearch?: () => void;
   projects: ProjectRecord[];
   activeProjectId: string | null;
@@ -524,54 +520,17 @@ function MiniAgentPanelHeader({
             onCreateTerminal={() => runSessionAction(onCreateTerminal)}
           />
         ) : null}
-        <MiniAgentPanelAction icon={Terminal} label="Terminal" onClick={() => runSessionAction(onCreateTerminal)} disabled={!onCreateTerminal} />
-        <MiniAgentPanelAction
-          icon={SearchIcon}
-          label="Search"
-          onClick={() => {
-            setSessionMenuOpen(false);
-            onSearch?.();
-          }}
-          disabled={!onSearch}
-        />
-        <MiniAgentPanelAction
-          icon={MessageSquare}
-          label="Handoffs"
-          onClick={() => {
-            setSessionMenuOpen(false);
-            window.dispatchEvent(new CustomEvent('o8:open-handoffs'));
-          }}
-        />
-        <MiniAgentPanelAction
-          icon={AutomationsIcon}
-          label="Automations"
-          onClick={() => {
-            setSessionMenuOpen(false);
-            // Dashboard listens for this and flips activeNavSection to 'automations'.
-            if (typeof window !== 'undefined') {
-              window.dispatchEvent(new CustomEvent('o8:open-automations'));
-            }
-          }}
-        />
-        <MiniAgentPanelAction
-          icon={CustomizeIcon}
-          label="Customize"
-          onClick={() => {
-            setSessionMenuOpen(false);
-            // Same page-takeover pattern as Automations (vid3 Cursor study).
-            if (typeof window !== 'undefined') {
-              window.dispatchEvent(new CustomEvent('o8:open-customize'));
-            }
-          }}
-        />
+        {!navigationRail ? <MiniAgentPanelNavigation onCreateTerminal={onCreateTerminal} onSearch={onSearch} onBeforeNavigate={() => setSessionMenuOpen(false)} /> : null}
         <MiniAgentPanelAction
           icon={FolderIcon}
-          label="Projects"
+          label={navigationRail ? projects.find((project) => project.id === activeProjectId)?.name ?? 'Project' : 'Projects'}
+          disclosure={navigationRail ? 'menu' : undefined}
           active={projectsOpen}
           onClick={() => {
             setSessionMenuOpen(false);
             refreshProjectsFromExternalMutation();
-            onManageProjects();
+            if (navigationRail) onProjectsOpenChange(!projectsOpen);
+            else onManageProjects();
           }}
           // Add-repo lives here now (moved out of the status-bar footer,
           // Q ruling 2026-07-11) — contextual to Projects, left of the

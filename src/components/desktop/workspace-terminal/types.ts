@@ -244,6 +244,7 @@ export interface TerminalTabHandle {
       id: string;
       label: string;
       kind: TerminalTab['kind'];
+      canvasKind?: CanvasTab['kind'];
       sessionKey?: string;
       laneId?: string | null;
       packetId?: string | null;

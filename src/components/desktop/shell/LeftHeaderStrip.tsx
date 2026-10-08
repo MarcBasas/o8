@@ -28,9 +28,10 @@ interface LeftHeaderStripProps {
    * hairline instead of the chrome band + seam.
    */
   inCard?: boolean;
+  windowControls?: boolean;
 }
 
-export function LeftHeaderStrip({ sidebarVisible = true, onToggleSidebar, togglePillYNudge, inCard = false }: LeftHeaderStripProps) {
+export function LeftHeaderStrip({ sidebarVisible = true, onToggleSidebar, togglePillYNudge, inCard = false, windowControls = true }: LeftHeaderStripProps) {
   return (
     <ColumnHeaderStrip
       drag
@@ -57,12 +58,12 @@ export function LeftHeaderStrip({ sidebarVisible = true, onToggleSidebar, toggle
               puts the first light back at 14 — matching the workspace strip
               so the cluster doesn't jump when the sidebar collapses.
               See TrafficLights.tsx. */}
-          <TrafficLightsOrSpacer yNudge={togglePillYNudge ?? 3.3} leadInPx={6} />
-          <SidebarTogglePill
+          {windowControls ? <TrafficLightsOrSpacer yNudge={togglePillYNudge ?? 3.3} leadInPx={6} /> : null}
+          {onToggleSidebar ? <SidebarTogglePill
             sidebarVisible={sidebarVisible}
             onClick={onToggleSidebar}
             yNudge={togglePillYNudge}
-          />
+          /> : null}
         </>
       }
     />

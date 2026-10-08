@@ -647,6 +647,7 @@ const CanvasPanel = memo(function CanvasPanel({
   return (
     <div
       aria-hidden={!active}
+      inert={!active}
       style={{
         display: 'flex',
         flexDirection: 'column',
@@ -662,6 +663,7 @@ const CanvasPanel = memo(function CanvasPanel({
     >
       <Suspense fallback={null}>
         <LazyCanvas
+          active={active}
           tabs={[tab.canvasTab]}
           activeTabId={tab.canvasTab.id}
           onSelectTab={() => undefined}

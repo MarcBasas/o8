@@ -1,24 +1,16 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import Image from 'next/image';
 import { SmoothCorners } from '@lisse/react';
 import { AutoFlash, ControlSlider, Delivery, HomeSimple, InputSearch } from 'iconoir-react';
-import { ArrowRight, CircleUser, Gauge, MessageSquare, MoreHorizontal, Play, Terminal } from '@/components/desktop/lucide-shims';
+import { CircleUser, Gauge, GitPullRequest, MessageSquare, Play, Terminal, Settings2 as Settings } from '@/components/desktop/lucide-shims';
 import { useO8Auth } from '@/components/auth/O8AuthProvider';
-import { useTheme } from '@/lib/theme/context';
-import { historyIsVisibleForRepos, historyRepoContext } from '@/components/desktop/repo-focus/tabs/chats/helpers';
-import { toRepoFocusRepo } from '@/components/desktop/repo-focus/types';
-import type { ChatHistoryItem } from '@/components/desktop/repo-focus/tabs/chats/types';
-import type { RepoRegistryEntry } from '@/lib/repos/types';
-import type { SavedChatRepoContext } from '@/lib/llm/chat-history';
 import type { RuntimeCapacityControlSnapshot } from '@/lib/runtime/capacity-service';
+import type { NavSection } from '@/app/dashboard/types';
+import { TrafficLightsOrSpacer } from './TrafficLights';
 import { WORKSPACE_RAIL_CORNER_RADIUS, WORKSPACE_RAIL_CORNER_SMOOTHING } from '@/components/desktop/branch-rail-geometry';
-
-function chatInitials(title: string): string {
-  return title.trim().split(/\s+/).slice(0, 2).map((word) => word[0]?.toUpperCase() ?? '').join('') || '·';
-}
 
 function runtimeName(runtime: string): string {
   if (runtime === 'codex') return 'Codex';
@@ -47,44 +39,29 @@ const railButton: CSSProperties = {
 type RailNavAction = 'handoffs' | 'automations' | 'customize' | 'projects';
 
 export function CompactNavigationRail({
-  onHoverReveal,
-  onHoverLeave,
-  onPinSidebar,
-  onHome,
-  onCreateTerminal,
-  onSearch,
-  onOpenProjects,
-  onOpenHistoryChat,
-  repos,
-  activeSessionKey,
-  previewOpen,
+  sidebarVisible, onToggleSidebar, activeDestination, glassSurface,
+  onHome, onNewSession, onCreateTerminal, onSearch, onOpenProjects, onOpenSettings, onOpenPRs,
 }: {
-  onHoverReveal: () => void;
-  onHoverLeave: () => void;
-  onPinSidebar: () => void;
+  sidebarVisible: boolean;
+  onToggleSidebar: () => void;
+  activeDestination: NavSection;
+  glassSurface: boolean;
   onHome: () => void;
+  onNewSession: () => void;
   onCreateTerminal: () => void;
   onSearch: () => void;
-  onOpenProjects?: () => void;
-  onOpenHistoryChat: (tabId: string, title: string, repo?: SavedChatRepoContext | null) => void;
-  repos: RepoRegistryEntry[];
-  activeSessionKey?: string | null;
-  previewOpen: boolean;
+  onOpenProjects: () => void;
+  onOpenSettings: () => void;
+  onOpenPRs: () => void;
 }) {
   const auth = useO8Auth();
-  const { surface, workspaceGlass } = useTheme();
-  const isGlass = surface === 'glass' || workspaceGlass;
-  const focusRepos = useMemo(() => repos.map(toRepoFocusRepo), [repos]);
-  const [chats, setChats] = useState<ChatHistoryItem[]>([]);
-  const [hoveredChatId, setHoveredChatId] = useState<string | null>(null);
-  const [hoveredChatPosition, setHoveredChatPosition] = useState({ top: 0, left: 0 });
+  const isGlass = glassSurface;
   const [usageOpen, setUsageOpen] = useState(false);
   const [usagePosition, setUsagePosition] = useState({ left: 0, bottom: 0 });
   const [usageSnapshot, setUsageSnapshot] = useState<RuntimeCapacityControlSnapshot | null>(null);
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageError, setUsageError] = useState<string | null>(null);
   const usageCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hoveredChat = chats.find((chat) => chat.tabId === hoveredChatId);
   const knownUsageRatios = usageSnapshot?.capacities.flatMap((capacity) =>
     capacity.status === 'available'
       ? capacity.buckets.flatMap((bucket) => typeof bucket.usedRatio === 'number' ? [bucket.usedRatio] : [])
@@ -103,9 +80,6 @@ export function CompactNavigationRail({
     usageCloseTimerRef.current = setTimeout(() => setUsageOpen(false), 160);
   }, [cancelUsageClose]);
   useEffect(() => () => cancelUsageClose(), [cancelUsageClose]);
-  useEffect(() => {
-    if (previewOpen) setUsageOpen(false);
-  }, [previewOpen]);
   useEffect(() => {
     if (!usageOpen) return;
     const controller = new AbortController();
@@ -143,32 +117,8 @@ export function CompactNavigationRail({
     });
     setUsageOpen(true);
   };
-  const loadChats = useCallback(async (signal: AbortSignal) => {
-    try {
-      const response = await fetch('/api/v2/chat-history/list?include=orchestrator&archived=include', { cache: 'no-store', signal });
-      if (!response.ok) return;
-      const payload = await response.json() as { conversations?: ChatHistoryItem[] };
-      if (signal.aborted) return;
-      setChats((payload.conversations ?? [])
-        .filter((chat) => !chat.archivedAt && historyIsVisibleForRepos(chat, focusRepos))
-        .sort((a, b) => Date.parse(b.modifiedAt) - Date.parse(a.modifiedAt))
-        .slice(0, 8));
-    } catch {
-      // The real AgentPanel owns the full history and can still load it on hover.
-    }
-  }, [focusRepos]);
-  useEffect(() => {
-    const controller = new AbortController();
-    const initialLoad = window.setTimeout(() => { void loadChats(controller.signal); }, 0);
-    const refresh = () => { void loadChats(controller.signal); };
-    window.addEventListener('o8:chat-history-updated', refresh);
-    return () => {
-      window.clearTimeout(initialLoad);
-      controller.abort();
-      window.removeEventListener('o8:chat-history-updated', refresh);
-    };
-  }, [loadChats]);
   const openNav = (action: RailNavAction) => {
+    setUsageOpen(false);
     if (action === 'projects') {
       onOpenProjects?.();
       return;
@@ -183,11 +133,15 @@ export function CompactNavigationRail({
   ] as const;
 
   return (
-    <div
+    <>
+    <div data-mcp-scope="navigation-window-controls" style={{ position: 'fixed', top: 0, left: 0, width: 68, height: 36, display: 'flex', alignItems: 'center', paddingLeft: 8, WebkitAppRegion: 'drag', zIndex: 190 } as CSSProperties}>
+      <TrafficLightsOrSpacer leadInPx={6} yNudge={3.3} />
+    </div>
+    <nav
       data-mcp-scope="compact-navigation-rail"
       data-chrome-surface={isGlass ? 'true' : undefined}
-      aria-label="Compact navigation with recent chats"
-      onMouseLeave={() => { setHoveredChatId(null); onHoverLeave(); }}
+      data-vibrancy-passthrough={isGlass ? 'true' : undefined}
+      aria-label="Workspace navigation"
       style={{
         position: 'fixed',
         top: 44,
@@ -195,99 +149,39 @@ export function CompactNavigationRail({
         left: 8,
         width: 56,
         zIndex: 190,
-        // The preview's large bottom-left curve otherwise reveals a sliver
-        // of this narrower rail underneath, even when their boxes align.
-        opacity: previewOpen ? 0 : 1,
-        transition: 'opacity 90ms ease',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         paddingTop: 8,
         paddingBottom: 8,
-        border: '1px solid var(--t-divider-subtle)',
+        border: isGlass ? '1px solid transparent' : '1px solid var(--t-divider-subtle)',
         borderRadius: 16,
-        background: isGlass ? 'var(--t-bg)' : 'var(--t-panel-solid)',
-        backdropFilter: isGlass ? 'blur(24px) saturate(150%)' : undefined,
-        WebkitBackdropFilter: isGlass ? 'blur(24px) saturate(150%)' : undefined,
-        boxShadow: isGlass ? '0 12px 32px rgba(8, 12, 18, 0.14)' : '0 18px 44px rgba(8, 12, 18, 0.3)',
+        background: isGlass ? 'transparent' : 'var(--t-panel-solid)',
+        boxShadow: 'none',
         fontFamily: 'var(--font-sans-system)',
       }}
     >
-      <button type="button" aria-label="Home" title="Home · start a new chat" onClick={onHome} style={railButton}><HomeSimple width={20} height={20} strokeWidth={1.8} /></button>
-      <button type="button" aria-label="New session" title="New session" onClick={onPinSidebar} style={railButton}><Play size={19} strokeWidth={1.8} /></button>
+      <button type="button" aria-label="Home" title="Workspace" aria-current={activeDestination === 'agents' ? 'page' : undefined} onClick={onHome} style={railButton}><HomeSimple width={20} height={20} strokeWidth={1.8} /></button>
+      <button type="button" aria-label="New session" title="New session" onClick={onNewSession} style={railButton}><Play size={19} strokeWidth={1.8} /></button>
       <button type="button" aria-label="Terminal" title="Terminal" onClick={onCreateTerminal} style={railButton}><Terminal size={19} strokeWidth={1.8} /></button>
+      <button id="o8-chat-list-toggle" type="button" aria-label={sidebarVisible ? 'Hide chats' : 'Show chats'} title={sidebarVisible ? 'Hide chats' : 'Show chats'} aria-expanded={sidebarVisible} aria-controls="o8-chat-list" onClick={onToggleSidebar} style={{ ...railButton, background: sidebarVisible ? 'var(--t-hover)' : 'transparent' }}>
+        <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M9 4v16" /></svg>
+      </button>
       <button type="button" aria-label="Search" title="Search" onClick={onSearch} style={railButton}><InputSearch width={20} height={20} strokeWidth={1.8} /></button>
       <div style={{ width: 27, height: 1, marginTop: 6, marginBottom: 6, flexShrink: 0, background: 'var(--t-divider-subtle)' }} />
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 0, flexShrink: 1, overflowY: 'auto', scrollbarWidth: 'none' }}>
         {navItems.map((item) => (
-          <button key={item.id} type="button" aria-label={item.label} title={item.label} onClick={() => openNav(item.id)} style={{ ...railButton, flexShrink: 0 }}>{item.icon}</button>
+          <button key={item.id} type="button" aria-label={item.label} title={item.label} aria-current={activeDestination === item.id ? 'page' : undefined} onClick={() => openNav(item.id)} style={{ ...railButton, flexShrink: 0, background: activeDestination === item.id ? 'var(--t-hover)' : 'transparent' }}>{item.icon}</button>
         ))}
+        <button type="button" aria-label="PRs" title="Pull requests" onClick={onOpenPRs} style={{ ...railButton, flexShrink: 0 }}><GitPullRequest size={19} strokeWidth={1.8} /></button>
       </div>
       <div style={{ width: 27, height: 1, marginTop: 6, marginBottom: 6, flexShrink: 0, background: 'var(--t-divider-subtle)' }} />
-      <div style={{ minHeight: 40, flex: '1 1 80px', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, overflowY: 'auto', scrollbarWidth: 'none' }}>
-        {chats.map((chat) => (
-          <button
-            key={chat.tabId}
-            type="button"
-            aria-label={`Chat: ${chat.title}`}
-            aria-describedby={hoveredChatId === chat.tabId && !previewOpen ? 'o8-rail-chat-tooltip' : undefined}
-            onMouseEnter={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setHoveredChatPosition({ top: rect.top, left: rect.right + 16 }); setHoveredChatId(chat.tabId); }}
-            onFocus={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setHoveredChatPosition({ top: rect.top, left: rect.right + 16 }); setHoveredChatId(chat.tabId); }}
-            onMouseLeave={() => setHoveredChatId(null)}
-            onClick={() => onOpenHistoryChat(chat.tabId, chat.title, historyRepoContext(chat))}
-            style={{ ...railButton, flexShrink: 0, background: activeSessionKey?.includes(chat.tabId) ? 'var(--t-hover)' : 'color-mix(in srgb, var(--t-text-faint) 12%, transparent)' }}
-          >
-            <span style={{ fontSize: 10, fontWeight: 300, letterSpacing: '-0.1px' }}>{chatInitials(chat.title)}</span>
-            {chat.pinned || activeSessionKey?.includes(chat.tabId) ? <span aria-hidden="true" style={{ position: 'absolute', top: 3, right: 3, width: 6, height: 6, borderRadius: '50%', background: activeSessionKey?.includes(chat.tabId) ? 'var(--t-accent)' : 'var(--t-brand-orange)' }} /> : null}
-          </button>
-        ))}
-        <button type="button" aria-label="More chats" title="More chats · click to open full list" onClick={onPinSidebar} style={{ ...railButton, flexShrink: 0 }}><MoreHorizontal size={19} strokeWidth={1.8} /></button>
-        <button type="button" aria-label="Preview full sidebar" title="Preview sidebar · click to keep open" onMouseEnter={onHoverReveal} onFocus={onHoverReveal} onClick={onPinSidebar} style={{ ...railButton, flexShrink: 0 }}><ArrowRight size={19} strokeWidth={1.8} /></button>
-      </div>
-      {hoveredChat && !previewOpen && typeof document !== 'undefined' ? createPortal(
-        <div id="o8-rail-chat-tooltip" role="tooltip" style={{
-          position: 'fixed',
-          top: `min(${hoveredChatPosition.top}px, calc(100vh - 120px))`,
-          left: hoveredChatPosition.left,
-          width: 252,
-          border: `1px solid ${isGlass ? 'var(--t-border)' : 'var(--t-divider-subtle)'}`,
-          borderRadius: WORKSPACE_RAIL_CORNER_RADIUS,
-          boxShadow: '0 18px 48px rgba(15, 23, 42, 0.32), 0 4px 14px rgba(15, 23, 42, 0.16)',
-          color: 'var(--t-text)',
-          fontFamily: 'var(--font-sans-system)',
-          pointerEvents: 'none',
-          zIndex: 210,
-          ...(isGlass ? {
-            ['--t-text' as string]: '#e8ecf2',
-            ['--t-text-secondary' as string]: '#bcc5d0',
-            ['--t-text-muted' as string]: '#8b95a3',
-            ['--t-text-faint' as string]: '#5f6b7a',
-          } : {}),
-        } as CSSProperties}>
-          <SmoothCorners
-            corners={{ radius: WORKSPACE_RAIL_CORNER_RADIUS, smoothing: WORKSPACE_RAIL_CORNER_SMOOTHING }}
-            autoEffects={false}
-            style={{
-              overflow: 'hidden',
-              background: isGlass ? 'var(--t-bg)' : 'var(--t-panel-solid)',
-              backdropFilter: isGlass ? 'blur(18px) saturate(1.15)' : undefined,
-              WebkitBackdropFilter: isGlass ? 'blur(18px) saturate(1.15)' : undefined,
-            } as CSSProperties}
-          >
-            <div style={{ paddingTop: 13, paddingRight: 14, paddingBottom: 13, paddingLeft: 14 }}>
-              <div style={{ fontSize: 13.5, fontWeight: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{hoveredChat.title}</div>
-              <div style={{ marginTop: 7, color: 'var(--t-text-muted)', fontSize: 10, fontWeight: 300 }}>{hoveredChat.repoName || 'Conversation'}</div>
-              <div style={{ marginTop: 9, paddingTop: 9, borderTop: '1px solid var(--t-divider-subtle)', color: isGlass ? 'var(--t-text-secondary)' : 'var(--t-text-faint)', fontSize: 10, fontWeight: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{hoveredChat.preview || 'Open this chat to continue'}</div>
-            </div>
-          </SmoothCorners>
-        </div>,
-        document.body,
-      ) : null}
-      <div style={{ width: 27, height: 1, marginTop: 5, marginBottom: 5, flexShrink: 0, background: 'var(--t-divider-subtle)' }} />
+      <div aria-hidden="true" style={{ flex: 1, minHeight: 0 }} />
+      <button type="button" aria-label="Settings" title="Settings" aria-current={activeDestination === 'settings' ? 'page' : undefined} onClick={onOpenSettings} style={railButton}><Settings size={19} strokeWidth={1.8} /></button>
       <button
         type="button"
         aria-label="Runtime usage"
-        aria-describedby={usageOpen && !previewOpen ? 'o8-rail-usage-tooltip' : undefined}
+        aria-describedby={usageOpen ? 'o8-rail-usage-tooltip' : undefined}
         title="Runtime usage"
         onMouseEnter={(event) => showUsage(event.currentTarget)}
         onMouseLeave={scheduleUsageClose}
@@ -301,7 +195,7 @@ export function CompactNavigationRail({
           {highestKnownUsage !== null ? <span style={{ display: 'block', width: `${Math.max(0, Math.min(1, highestKnownUsage)) * 100}%`, height: '100%', background: usageMeterColor }} /> : null}
         </span>
       </button>
-      {usageOpen && !previewOpen && typeof document !== 'undefined' ? createPortal(
+      {usageOpen && typeof document !== 'undefined' ? createPortal(
         <div
           id="o8-rail-usage-tooltip"
           role="tooltip"
@@ -387,6 +281,7 @@ export function CompactNavigationRail({
         onClick={() => { if (auth.signedIn) auth.openManageAccount(); else if (auth.clerkEnabled) auth.signIn(); }}
         style={{ ...railButton, flexShrink: 0, color: auth.signedIn ? 'var(--t-text)' : 'var(--t-text-muted)' }}
       >{auth.signedIn && auth.user?.avatarUrl ? <Image src={auth.user.avatarUrl} alt="" width={27} height={27} unoptimized style={{ width: 27, height: 27, borderRadius: '50%', objectFit: 'cover' }} /> : <CircleUser size={22} strokeWidth={1.7} />}</button>
-    </div>
+    </nav>
+    </>
   );
 }

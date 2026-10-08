@@ -1,5 +1,9 @@
 # o8 — Interaction Styleguide (review-gating)
 
+**Scrollbar rule:** hide visible scrollbar tracks throughout the app. Preserve
+wheel, trackpad, touch, and keyboard scrolling. Keep scrollable content reachable
+and keyboard focus visible; never reserve layout space for a scrollbar.
+
 *The third design doc, and the one with teeth. [`DESIGN.md`](./DESIGN.md) is the visual **language** (palette, type, motifs); [`hurttlocker.md`](./hurttlocker.md) is the operator-locked **look** (row geometry, font weights, icons). This is the **interaction half** they don't cover — how a surface behaves over time: feedback timing, sibling cohesion, button hierarchy.*
 
 **These are review-gating rules, not suggestions.** The `reviewer` agent and any UI review check changes against this file. A change that adds a control, a loading state, or a group of sibling elements must satisfy the relevant rule below or call out why it's exempt. Each rule is phrased so it's checkable from a diff.

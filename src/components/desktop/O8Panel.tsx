@@ -72,6 +72,7 @@ interface O8PanelProps {
   onClearCommit?: () => void;
   onSelectCommit?: (hash: string, meta?: Record<string, string>) => void;
   onSelectPR?: (prNumber: number, repo?: string) => void;
+  onClosePR?: (prNumber: number, repo?: string | null) => void;
   onSelectIssue?: (issueNumber: number, repo?: string) => void;
   registerContextualPanelHandle?: (tileId: string, handle: ContextualPanelHandle | null) => void;
   sendTerminalCreate?: ContextualPanelProps['sendTerminalCreate'];
@@ -110,6 +111,8 @@ export function O8Panel({
   onSelectedFileChange,
   onSelectCommit,
   onSelectIssue,
+  onSelectPR,
+  onClosePR,
   registerContextualPanelHandle,
   sendTerminalCreate,
   sendTerminalAttach,
@@ -516,6 +519,8 @@ export function O8Panel({
           onSelectRepoPath={onRepoPathChange}
           onSelectCommit={onSelectCommit}
           onSelectIssue={onSelectIssue}
+          onSelectPR={onSelectPR}
+          onClosePR={onClosePR}
           selectedPrNumber={prNumber ?? null}
           selectedPrRepo={prRepo ?? null}
         />
